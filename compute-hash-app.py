@@ -227,7 +227,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
     def setup_main_content(self):
+        self.main_content_overlay = Gtk.Overlay()
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(200, 200)
+        self.spinner.set_valign(Gtk.Align.CENTER)
+        self.spinner.start()
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.main_content_overlay.add_overlay(self.spinner)
+        self.main_content_overlay.add_overlay(self.main_box)
         self.results_group = Adw.PreferencesGroup()
         self.results_group.set_hexpand(True)
         self.results_group.set_vexpand(True)
@@ -321,7 +328,6 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.set_show_text(False)
-        self.progress_bar.set_hexpand(True)
         self.progress_bar.set_visible(False)
 
     def setup_drag_and_drop(self):
@@ -377,14 +383,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.cancel_event.clear()
         self.progress_bar.set_fraction(0.0)
         self.progress_bar.set_opacity(1.0)
+        self.spinner.set_visible(True)
         self.progress_bar.set_visible(True)
         self.button_cancel.set_visible(True)
         self.button_open_fdialog.set_sensitive(False)
-        self.toolbar_view.set_content(self.main_box)
+        self.toolbar_view.set_content(self.main_content_overlay)
         self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths,), daemon=True)
         self.processing_thread.start()
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_HIGH)
-        GLib.timeout_add(100, self.hide_progress_bar, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(100, self.hide_progress, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
 
     def process_queue(self):
@@ -405,10 +412,10 @@ class MainWindow(Adw.ApplicationWindow):
                 iterations += 1
         return True  # Continue processing updates
 
-    def hide_progress_bar(self):
+    def hide_progress(self):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
             Adw.TimedAnimation(
-                widget=self,
+                widget=self.progress_bar,
                 value_from=1.0,
                 value_to=0,
                 duration=2000,
@@ -416,6 +423,16 @@ class MainWindow(Adw.ApplicationWindow):
                     lambda opacity: self.progress_bar.set_opacity(opacity),
                 ),
             ).play()
+            Adw.TimedAnimation(
+                widget=self.spinner,
+                value_from=1.0,
+                value_to=0,
+                duration=2000,
+                target=Adw.CallbackAnimationTarget.new(
+                    lambda opacity: self.spinner.set_opacity(opacity),
+                ),
+            ).play()
+            GLib.timeout_add(2000, self.spinner.set_visible, False)
             GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
             return False  # Stop monitoring
         return True  # Continue monitoring
