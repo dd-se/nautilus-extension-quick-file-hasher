@@ -1,0 +1,583 @@
+#!/usr/bin/env python3
+import hashlib
+import os
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from queue import Queue
+from typing import Literal
+
+import gi  # type: ignore
+
+gi.require_version(namespace="Gtk", version="4.0")
+gi.require_version(namespace="Adw", version="1")
+gi.require_version(namespace="Nautilus", version="4.0")
+import logging
+
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
+
+Adw.init()
+
+
+def get_logger(name: str) -> logging.Logger:
+    loglevel_str = os.getenv("LOGLEVEL", "INFO").upper()
+    loglevel = getattr(logging, loglevel_str, logging.INFO)
+    logger = logging.getLogger(name)
+    logger.setLevel(loglevel)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("[%(asctime)s] %(levelname)s %(name)s.%(funcName)s(): %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+
+    return logger
+
+
+logger = get_logger(__name__)
+
+
+class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
+    def __init__(self):
+        pass
+
+    def launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo]):
+        file_paths = [f.get_location().get_path() for f in files if f.get_location()]
+        cmd = ["python3", Path(__file__).as_posix()] + file_paths
+        subprocess.Popen(cmd)
+
+    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
+        item = Nautilus.MenuItem(
+            name="AdwNautilusExtension::OpenFolderInApp",
+            label="Compute Hashes",
+        )
+        item.connect("activate", self.launch_app, [current_folder])
+        return [item]
+
+    def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
+        if not files:
+            return []
+        item = Nautilus.MenuItem(
+            name="AdwNautilusExtension::OpenFilesInApp",
+            label="Compute Hashes",
+        )
+        item.connect("activate", self.launch_app, files)
+        return [item]
+
+
+class HashResultRow(Adw.ActionRow):
+    def __init__(self, file_name: str, hash_value: str, hash_algorithm: str, **kwargs):
+        super().__init__(**kwargs)
+        self.file_name = file_name
+        self.hash_value = hash_value
+        self.algo = hash_algorithm
+
+        prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        prefix_box.set_valign(Gtk.Align.CENTER)
+        self.file_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        prefix_box.append(self.file_icon)
+        prefix_box.append(Gtk.Label(label=self.algo.upper()))
+        self.add_prefix(prefix_box)
+
+        self.set_title(self.file_name)
+        self.set_subtitle(self.hash_value)
+        self.set_subtitle_lines(1)
+        self.set_title_lines(1)
+
+        self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
+        self.button_copy_hash.set_valign(Gtk.Align.CENTER)
+        self.button_copy_hash.set_tooltip_text("Copy hash")
+        self.button_copy_hash.connect("clicked", self.on_copy_clicked)
+
+        self.button_compare = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        self.button_compare.set_valign(Gtk.Align.CENTER)
+        self.button_compare.set_tooltip_text("Compare with clipboard")
+        self.button_compare.connect("clicked", self.on_compare_clicked)
+
+        self.button_delete = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        self.button_delete.set_valign(Gtk.Align.CENTER)
+        self.button_delete.set_tooltip_text("Remove this result")
+        self.button_delete.connect("clicked", self.on_delete_clicked)
+
+        self.add_suffix(self.button_copy_hash)
+        self.add_suffix(self.button_compare)
+        self.add_suffix(self.button_delete)
+
+    def __str__(self):
+        return f"{self.file_name}:{self.hash_value}:{self.algo}"
+
+    def on_copy_clicked(self, button: Gtk.Button):
+        button.set_sensitive(False)
+        button.get_clipboard().set(self.hash_value)
+        original_child = button.get_child()
+        button.set_child(Gtk.Label(label="Copied!"))
+        GLib.timeout_add(1500, lambda: (button.set_child(original_child), button.set_sensitive(True)))
+
+    def on_compare_clicked(self, button: Gtk.Button):
+        def handle_clipboard_comparison(clipboard, result):
+            main_window: MainWindow = button.get_root()
+            try:
+                self.button_compare.set_sensitive(False)
+                clipboard_text: str = clipboard.read_text_finish(result).strip()
+                if clipboard_text == self.hash_value:
+                    self.set_icon_("emblem-ok-symbolic")
+                    self.set_css_("success")
+                    main_window.add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
+                else:
+                    self.set_icon_("dialog-error-symbolic")
+                    self.set_css_("error")
+                    main_window.add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
+
+                GLib.timeout_add(
+                    3000,
+                    lambda: (
+                        self.set_css_classes(self.old_css),
+                        self.set_icon_(self.old_file_icon_name),
+                        self.button_compare.set_sensitive(True),
+                    ),
+                )
+            except Exception as e:
+                logger.exception(f"Error reading clipboard: {e}")
+                main_window.add_toast(f"<big>❌ Clipboard read error: {e}</big>")
+
+        clipboard = button.get_clipboard()
+        clipboard.read_text_async(None, handle_clipboard_comparison)
+
+    def set_icon_(
+        self,
+        icon_name: Literal[
+            "text-x-generic-symbolic",
+            "emblem-ok-symbolic",
+            "dialog-error-symbolic",
+        ],
+    ):
+        self.old_file_icon_name = self.file_icon.get_icon_name()
+        self.file_icon.set_from_icon_name(icon_name)
+
+    def set_css_(self, css_class: Literal["success", "error"]):
+        self.old_css = self.get_css_classes()
+        self.add_css_class(css_class)
+
+    def error(self):
+        self.add_css_class("error")
+        self.set_icon_("dialog-error-symbolic")
+        self.button_compare.set_sensitive(False)
+
+    def on_delete_clicked(self, button: Gtk.Button):
+        button.set_sensitive(False)
+        target = Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity))
+        anim = Adw.TimedAnimation(
+            widget=self,
+            value_from=1.0,
+            value_to=0.0,
+            duration=200,
+            target=target,
+        )
+
+        def on_fade_done(animation):
+            main_window: MainWindow = button.get_root()
+            main_window.ui_results.remove(self)
+            if main_window.ui_results.get_first_child() is None:
+                main_window.has_results()
+
+        anim.connect("done", on_fade_done)
+        anim.play()
+
+
+class MainWindow(Adw.ApplicationWindow):
+    algo: str = "sha256"
+
+    def __init__(self, app, paths: list[Path] | None = None):
+        super().__init__(application=app)
+        self.set_default_size(width=600, height=600)
+        self.set_size_request(width=600, height=120)
+        self.empty_placeholder = Adw.StatusPage(
+            title="No Results",
+            description="Select files or folders to compute their hashes.",
+            icon_name="text-x-generic-symbolic",
+        )
+        self.update_queue = Queue()
+        self.cancel_event = threading.Event()
+
+        self.toast_overlay = Adw.ToastOverlay()
+        self.set_content(self.toast_overlay)
+        self.create_widgets()
+        self.toast_overlay.set_child(self.toolbar_view)
+
+        if paths:
+            self.start_job(paths)
+
+    def create_widgets(self):
+        self.toolbar_view = Adw.ToolbarView()
+        self.toolbar_view.set_margin_top(6)
+        self.toolbar_view.set_margin_bottom(6)
+        self.toolbar_view.set_margin_start(12)
+        self.toolbar_view.set_margin_end(12)
+
+        self.top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, margin_bottom=3)
+        self.setup_buttons()
+        self.setup_headerbar()
+        self.setup_main_content()
+        self.setup_progress_bar()
+        self.setup_drag_and_drop()
+
+        self.toolbar_view.add_top_bar(self.top_bar_box)
+        self.toolbar_view.set_content(self.empty_placeholder)
+        self.toolbar_view.add_bottom_bar(self.progress_bar)
+
+    def setup_main_content(self):
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.results_group = Adw.PreferencesGroup()
+        self.results_group.set_hexpand(True)
+        self.results_group.set_vexpand(True)
+        self.ui_results = Gtk.ListBox()
+        self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.ui_results.add_css_class("boxed-list")
+        self.results_group.add(self.ui_results)
+        self.scrolled_window = Gtk.ScrolledWindow()
+        self.scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.scrolled_window.set_child(self.results_group)
+        self.main_box.append(self.scrolled_window)
+
+    def setup_buttons(self):
+        self.button_open_fdialog = Gtk.Button(label="Open")
+        self.button_open_fdialog.add_css_class("suggested-action")
+        self.button_open_fdialog.set_valign(Gtk.Align.CENTER)
+        self.button_open_fdialog.set_tooltip_text("Select files to add")
+        self.button_open_fdialog.connect("clicked", self.on_select_files_clicked)
+        self.top_bar_box.append(self.button_open_fdialog)
+
+        self.button_copy_all = Gtk.Button(label="Copy")
+        self.button_copy_all.set_sensitive(False)
+        self.button_copy_all.add_css_class("suggested-action")
+        self.button_copy_all.set_valign(Gtk.Align.CENTER)
+        self.button_copy_all.set_tooltip_text("Copy results to clipboard")
+        self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
+        self.top_bar_box.append(self.button_copy_all)
+
+        self.button_sort = Gtk.Button(label="Sort")
+        self.button_sort.set_sensitive(False)
+        self.button_sort.set_valign(Gtk.Align.CENTER)
+        self.button_sort.set_tooltip_text("Sort results by path")
+        self.button_sort.connect(
+            "clicked",
+            lambda _: (
+                self.ui_results.set_sort_func(lambda r1, r2: (r1.get_title() > r2.get_title()) - (r1.get_title() < r2.get_title())),
+                self.ui_results.set_sort_func(None),
+                self.add_toast("<big>✅ Results sorted by file path</big>"),
+            ),
+        )
+        self.top_bar_box.append(self.button_sort)
+
+        self.button_clear = Gtk.Button(label="Clear")
+        self.button_clear.set_sensitive(False)
+        self.button_clear.add_css_class("destructive-action")
+        self.button_clear.set_valign(Gtk.Align.CENTER)
+        self.button_clear.set_tooltip_text("Clear all results")
+
+        self.button_clear.connect(
+            "clicked",
+            lambda _: (
+                self.ui_results.remove_all(),
+                self.has_results(),
+                self.add_toast("<big>✅ Results cleared</big>"),
+            ),
+        )
+        self.top_bar_box.append(self.button_clear)
+
+        available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=available_algorithms)
+        self.drop_down_algo_button.set_selected(available_algorithms.index("sha256"))
+        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
+        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
+        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
+        self.top_bar_box.append(self.drop_down_algo_button)
+
+        self.button_cancel = Gtk.Button(label="Cancel Job")
+        self.button_cancel.add_css_class("destructive-action")
+        self.button_cancel.set_visible(False)
+        self.button_cancel.set_tooltip_text("Cancel the current operation")
+        self.button_cancel.set_valign(Gtk.Align.CENTER)
+        self.button_cancel.connect(
+            "clicked",
+            lambda _: (
+                self.cancel_event.set(),
+                self.add_toast("<big>❌ Job cancelled</big>"),
+            ),
+        )
+        self.top_bar_box.append(self.button_cancel)
+
+        self.spacer = Gtk.Box()
+        self.spacer.set_hexpand(True)
+        self.top_bar_box.append(self.spacer)
+
+    def setup_headerbar(self):
+        self.header_bar = Adw.HeaderBar()
+        self.header_title_widget = Gtk.Label(label=f"<big><b>Compute {self.algo.upper()} Hashes</b></big>", use_markup=True)
+        self.header_bar.set_title_widget(self.header_title_widget)
+        self.top_bar_box.append(self.header_bar)
+
+    def setup_progress_bar(self):
+        self.progress_bar = Gtk.ProgressBar()
+        self.progress_bar.set_show_text(False)
+        self.progress_bar.set_hexpand(True)
+        self.progress_bar.set_visible(False)
+
+    def setup_drag_and_drop(self):
+        self.dnd = Adw.StatusPage(
+            title="Drop Files Here",
+            icon_name="folder-open-symbolic",
+        )
+
+        self.drop = Gtk.DropTargetAsync.new(None, Gdk.DragAction.COPY)
+        self.drop.connect(
+            "drag-enter",
+            lambda *_: (
+                self.toolbar_view.set_content(self.dnd),
+                Gdk.DragAction.COPY,
+            )[1],
+        )
+        self.drop.connect(
+            "drag-leave",
+            lambda *_: (
+                self.has_results(),
+                Gdk.DragAction.COPY,
+            )[1],
+        )
+
+        def on_read_value(drop: Gdk.Drop, result):
+            try:
+                files = drop.read_value_finish(result)
+                paths = [Path(f.get_path()) for f in files.get_files()]
+                action = Gdk.DragAction.COPY
+            except Exception as e:
+                action = 0
+                self.add_toast(f"Drag & Drop failed: {e}")
+            else:
+                self.start_job(paths)
+            finally:
+                drop.finish(action)
+
+        self.drop.connect(
+            "drop",
+            lambda ctrl, drop, x, y: (
+                self.has_results(),
+                drop.read_value_async(
+                    Gdk.FileList,
+                    GLib.PRIORITY_DEFAULT,
+                    None,
+                    on_read_value,
+                ),
+            ),
+        )
+        self.add_controller(self.drop)
+
+    def start_job(self, paths: list[Path]):
+        self.cancel_event.clear()
+        self.progress_bar.set_fraction(0.0)
+        self.progress_bar.set_opacity(1.0)
+        self.progress_bar.set_visible(True)
+        self.button_cancel.set_visible(True)
+        self.button_open_fdialog.set_sensitive(False)
+        self.toolbar_view.set_content(self.main_box)
+        self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths,), daemon=True)
+        self.processing_thread.start()
+        GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_HIGH)
+        GLib.timeout_add(100, self.hide_progress_bar, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
+
+    def process_queue(self):
+        iterations = 0
+        while not self.update_queue.empty() and iterations < 5:
+            update = self.update_queue.get_nowait()
+            if update[0] == "progress":
+                _, progress = update
+                self.progress_bar.set_fraction(progress)
+            elif update[0] == "result":
+                _, fname, hash_value = update
+                self.add_result(fname, hash_value)
+                iterations += 1
+            elif update[0] == "error":
+                _, fname, err = update
+                row = self.add_result(fname, err)
+                row.error()
+                iterations += 1
+        return True  # Continue processing updates
+
+    def hide_progress_bar(self):
+        if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
+            Adw.TimedAnimation(
+                widget=self,
+                value_from=1.0,
+                value_to=0,
+                duration=2000,
+                target=Adw.CallbackAnimationTarget.new(
+                    lambda opacity: self.progress_bar.set_opacity(opacity),
+                ),
+            ).play()
+            GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
+            return False  # Stop monitoring
+        return True  # Continue monitoring
+
+    def check_processing_complete(self):
+        if not self.processing_thread.is_alive():
+            self.button_cancel.set_visible(False)
+            self.button_open_fdialog.set_sensitive(True)
+            self.has_results()
+            return False  # Stop monitoring
+        return True  # Continue monitoring
+
+    def compute_hash(self, paths: list[Path]):
+        total_bytes = 0
+        jobs = []
+        for path in paths:
+            try:
+                if path.is_dir():
+                    files = [f for f in path.glob("**/*") if f.is_file()]
+                    total_bytes += sum(f.stat().st_size for f in files)
+                    jobs.extend(files)
+                else:
+                    total_bytes += path.stat().st_size
+                    jobs.append(path)
+            except Exception as e:
+                logger.exception(f"Error processing file: {e}")
+                self.update_queue.put(("error", str(path), str(e)))
+
+        if total_bytes == 0:
+            self.progress_bar.set_fraction(1.0)
+
+        def hash_task(file: Path, chunk_size: int = 1024 * 1024, shake_length: int = 32):
+            hash_obj = hashlib.new(self.algo)
+            try:
+                with open(file, "rb") as f:
+                    while chunk := f.read(chunk_size):
+                        if self.cancel_event.is_set():
+                            self.update_queue.put(("error", file.as_posix(), "Cancelled"))
+                            return
+                        hash_obj.update(chunk)
+                        hash_task.bytes_read += len(chunk)
+                        self.update_queue.put(("progress", min(hash_task.bytes_read / total_bytes, 1.0)))
+                self.update_queue.put(
+                    (
+                        "result",
+                        file.as_posix(),
+                        hash_obj.hexdigest(shake_length) if "shake" in self.algo else hash_obj.hexdigest(),
+                    )
+                )
+            except Exception as e:
+                logger.exception(f"Error computing hash for file: {file.as_posix()}")
+                self.update_queue.put(("error", str(file), str(e)))
+
+        hash_task.bytes_read = 0
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(hash_task, jobs))
+
+    def scroll_to_bottom(self):
+        vadjustment = self.scrolled_window.get_vadjustment()
+        current_value = vadjustment.get_value()
+        target_value = vadjustment.get_upper() - vadjustment.get_page_size()
+        animation_target = Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value))
+        Adw.TimedAnimation(
+            widget=self,
+            value_from=current_value,
+            value_to=target_value,
+            duration=500,
+            target=animation_target,
+        ).play()
+
+    def add_result(self, file_name: str, hash_value: str):
+        row = HashResultRow(file_name, hash_value, self.algo)
+        self.ui_results.append(row)
+        return row
+
+    def has_results(self):
+        has_results = self.ui_results.get_first_child() is not None
+        self.toolbar_view.set_content(self.main_box if has_results else self.empty_placeholder)
+        self.button_copy_all.set_sensitive(has_results)
+        self.button_sort.set_sensitive(has_results)
+        self.button_clear.set_sensitive(has_results)
+        animation_target = Adw.CallbackAnimationTarget.new(lambda opacity: self.empty_placeholder.set_opacity(opacity))
+        Adw.TimedAnimation(
+            widget=self.empty_placeholder,
+            value_from=1.0 if has_results else 0,
+            value_to=0 if has_results else 1.0,
+            duration=500,
+            target=animation_target,
+        ).play()
+
+    def on_select_files_clicked(self, _):
+        file_dialog = Gtk.FileDialog()
+        file_dialog.set_title(title="Select files")
+        file_dialog.open_multiple(
+            parent=self,
+            callback=self.on_files_dialog_dismissed,
+        )
+
+    def on_files_dialog_dismissed(self, file_dialog: Gtk.FileDialog, gio_task):
+        files = file_dialog.open_multiple_finish(gio_task)
+        paths = [Path(f.get_path()) for f in files]
+        self.start_job(paths)
+
+    def on_copy_all_clicked(self, button: Gtk.Button):
+        clipboard = button.get_clipboard()
+        clipboard.set("\n".join(str(r) for r in self.ui_results))
+        self.add_toast("<big>✅ Results copied to clipboard</big>")
+
+    def on_selected_item(self, drop_down: Gtk.DropDown, g_param_object):
+        self.algo = drop_down.get_selected_item().get_string()
+        self.header_title_widget.set_label(f"<big><b>Compute {self.algo.upper()} Hashes</b></big>")
+
+    def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
+        toast = Adw.Toast(
+            custom_title=Gtk.Label(
+                label=toast_label,
+                use_markup=True,
+                ellipsize=Pango.EllipsizeMode.MIDDLE,
+            ),
+            timeout=timeout,
+            priority=priority,
+        )
+        self.toast_overlay.add_toast(toast)
+
+
+class Application(Adw.Application):
+    def __init__(self):
+        super().__init__(
+            application_id="com.github.dd-se.hash-app",
+            flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
+        )
+
+    def do_activate(self):
+        logger.info(f"App {self.get_application_id()} activated")
+        win = self.props.active_window
+        if not win:
+            win = MainWindow(self)
+        win.present()
+
+    def do_open(self, files, n_files, hint):
+        logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
+        paths = [Path(f.get_path()) for f in files if f.get_path()]
+        win = self.props.active_window
+        if not win:
+            win = MainWindow(self, paths)
+        else:
+            win.start_job(paths)
+        win.present()
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+
+    def do_shutdown(self):
+        Adw.Application.do_shutdown(self)
+
+
+if __name__ == "__main__":
+    app = Application()
+    try:
+        app.run(sys.argv)
+    except KeyboardInterrupt:
+        logger.info("App interrupted by user.")
+    finally:
+        app.quit()

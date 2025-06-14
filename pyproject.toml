@@ -1,0 +1,9 @@
+[project]
+name = "nautilus-extension-compute-hash-app"
+version = "0.1.0"
+description = "Nautilus extension for computing file hashes"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pygobject-stubs>=2.13.0",
+]

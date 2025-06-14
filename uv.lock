@@ -1,0 +1,20 @@
+version = 1
+revision = 2
+requires-python = ">=3.12"
+
+[[package]]
+name = "nautilus-extension-compute-hash-app"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pygobject-stubs" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pygobject-stubs", specifier = ">=2.13.0" }]
+
+[[package]]
+name = "pygobject-stubs"
+version = "2.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/3f/d9a43ab76ad7a2d6d3a2968513b76760100c33128c6a0d3ac996dfb37c77/pygobject_stubs-2.13.0.tar.gz", hash = "sha256:4f608f5dfe10c3173f0a082416e22e27b693743c2a635de245c78a51458e2ab6", size = 870193, upload-time = "2025-03-13T21:22:38.156Z" }
