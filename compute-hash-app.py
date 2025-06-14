@@ -466,6 +466,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.progress_bar.set_fraction(1.0)
 
         def hash_task(file: Path, chunk_size: int = 1024 * 1024, shake_length: int = 32):
+            if self.cancel_event.is_set():
+                return
             hash_obj = hashlib.new(self.algo)
             try:
                 with open(file, "rb") as f:
