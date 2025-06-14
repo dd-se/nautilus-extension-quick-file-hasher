@@ -383,6 +383,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.cancel_event.clear()
         self.progress_bar.set_fraction(0.0)
         self.progress_bar.set_opacity(1.0)
+        self.spinner.set_opacity(1.0)
         self.spinner.set_visible(True)
         self.progress_bar.set_visible(True)
         self.button_cancel.set_visible(True)
