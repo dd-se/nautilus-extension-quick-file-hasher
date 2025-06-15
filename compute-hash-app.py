@@ -188,6 +188,7 @@ class HashResultRow(Adw.ActionRow):
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
+    MAX_UI_ROWS = 20
     algo: str = "sha256"
 
     def __init__(self, app, paths: list[Path] | None = None):
@@ -199,6 +200,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.setup_ui()
         if paths:
             self.start_job(paths)
+
+    def not_exceeded_limit(self):
+        return self.MAX_UI_ROWS > len(self.ui_results)
 
     def setup_ui(self):
         self.empty_placeholder = Adw.StatusPage(
@@ -249,18 +253,30 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_box.append(self.scrolled_window)
 
     def setup_buttons(self):
-        self.button_open_fdialog = Gtk.Button()
-        self.button_open_fdialog.add_css_class("suggested-action")
-        self.button_open_fdialog.set_valign(Gtk.Align.CENTER)
-        self.button_open_fdialog.set_tooltip_text("Select files to add")
-        self.button_open_fdialog.connect("clicked", self.on_select_files_clicked)
-        self_button_open_fdialog_content = Adw.ButtonContent.new()
-        self_button_open_fdialog_content.set_icon_name(icon_name="document-open-symbolic")
-        self_button_open_fdialog_content.set_label(label="_Open")
-        self_button_open_fdialog_content.set_use_underline(use_underline=True)
-        self.button_open_fdialog.set_child(self_button_open_fdialog_content)
+        self.button_open = Gtk.Button()
+        self.button_open.add_css_class("suggested-action")
+        self.button_open.set_valign(Gtk.Align.CENTER)
+        self.button_open.set_tooltip_text("Select files to add")
+        self.button_open.connect("clicked", self.on_select_files_clicked)
+        self.button_open_content = Adw.ButtonContent.new()
+        self.button_open_content.set_icon_name(icon_name="document-open-symbolic")
+        self.button_open_content.set_label(label="_Open")
+        self.button_open_content.set_use_underline(use_underline=True)
+        self.button_open.set_child(self.button_open_content)
+        self.top_bar_box.append(self.button_open)
 
-        self.top_bar_box.append(self.button_open_fdialog)
+        self.button_save = Gtk.Button()
+        self.button_save.set_sensitive(False)
+        self.button_save.add_css_class("suggested-action")
+        self.button_save.set_valign(Gtk.Align.CENTER)
+        self.button_save.set_tooltip_text("Save results to file")
+        self.button_save.connect("clicked", self.on_save_clicked)
+        self.button_save_content = Adw.ButtonContent.new()
+        self.button_save_content.set_icon_name(icon_name="document-save-symbolic")
+        self.button_save_content.set_label(label="_Save")
+        self.button_save_content.set_use_underline(use_underline=True)
+        self.button_save.set_child(self.button_save_content)
+        self.top_bar_box.append(self.button_save)
 
         self.button_copy_all = Gtk.Button(label="Copy")
         self.button_copy_all.set_sensitive(False)
@@ -394,12 +410,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.spinner.set_visible(True)
         self.progress_bar.set_visible(True)
         self.button_cancel.set_visible(True)
-        self.button_open_fdialog.set_sensitive(False)
+        self.button_open.set_sensitive(False)
         self.drop_down_algo_button.set_sensitive(False)
         self.toolbar_view.set_content(self.main_content_overlay)
         self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths,), daemon=True)
         self.processing_thread.start()
-        GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_HIGH)
+        GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.hide_progress, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
 
@@ -451,9 +467,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def check_processing_complete(self):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
-            logger.info(self.processing_thread.is_alive())
             self.button_cancel.set_visible(False)
-            self.button_open_fdialog.set_sensitive(True)
+            self.button_open.set_sensitive(True)
             self.drop_down_algo_button.set_sensitive(True)
             self.has_results()
             return False  # Stop monitoring
@@ -465,7 +480,7 @@ class MainWindow(Adw.ApplicationWindow):
         for path in paths:
             try:
                 if path.is_dir():
-                    files = [f for f in path.glob("**/*") if f.is_file()]
+                    files = [f for f in path.iterdir() if f.is_file()]
                     total_bytes += sum(f.stat().st_size for f in files)
                     jobs.extend(files)
                 else:
@@ -527,35 +542,55 @@ class MainWindow(Adw.ApplicationWindow):
     def has_results(self):
         has_results = self.ui_results.get_first_child() is not None
         self.toolbar_view.set_content(self.main_box if has_results else self.empty_placeholder)
+        self.button_save.set_sensitive(has_results)
         self.button_copy_all.set_sensitive(has_results)
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results)
-        animation_target = Adw.CallbackAnimationTarget.new(lambda opacity: self.empty_placeholder.set_opacity(opacity))
         Adw.TimedAnimation(
             widget=self.empty_placeholder,
             value_from=1.0 if has_results else 0,
             value_to=0 if has_results else 1.0,
             duration=500,
-            target=animation_target,
+            target=Adw.CallbackAnimationTarget.new(lambda opacity: self.empty_placeholder.set_opacity(opacity)),
         ).play()
 
     def on_select_files_clicked(self, _):
         file_dialog = Gtk.FileDialog()
         file_dialog.set_title(title="Select files")
+
+        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
+            files = file_dialog.open_multiple_finish(gio_task)
+            paths = [Path(f.get_path()) for f in files]
+            self.start_job(paths)
+
         file_dialog.open_multiple(
             parent=self,
-            callback=self.on_files_dialog_dismissed,
+            callback=on_files_dialog_dismissed,
         )
-
-    def on_files_dialog_dismissed(self, file_dialog: Gtk.FileDialog, gio_task):
-        files = file_dialog.open_multiple_finish(gio_task)
-        paths = [Path(f.get_path()) for f in files]
-        self.start_job(paths)
 
     def on_copy_all_clicked(self, button: Gtk.Button):
         clipboard = button.get_clipboard()
         clipboard.set("\n".join(str(r) for r in self.ui_results))
         self.add_toast("<big>✅ Results copied to clipboard</big>")
+
+    def on_save_clicked(self, widget):
+        file_dialog = Gtk.FileDialog()
+        file_dialog.set_title(title="Save")
+        file_dialog.set_initial_name(name="results.txt")
+        file_dialog.set_modal(modal=True)
+
+        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
+            local_file = file_dialog.save_finish(gio_task)
+            print(f"File path: {local_file.get_path()}")
+            path: str = local_file.get_path()
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(str(r) for r in self.ui_results))
+                self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
+            except Exception as e:
+                self.add_toast(f"<big>❌ Failed to save: {e}</big>")
+
+        file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
 
     def on_selected_item(self, drop_down: Gtk.DropDown, g_param_object):
         self.algo = drop_down.get_selected_item().get_string()
