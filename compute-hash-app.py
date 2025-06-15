@@ -186,34 +186,35 @@ class HashResultRow(Adw.ActionRow):
 
 
 class MainWindow(Adw.ApplicationWindow):
+    DEFAULT_WIDTH = 970
+    DEFAULT_HIGHT = 600
     algo: str = "sha256"
 
     def __init__(self, app, paths: list[Path] | None = None):
         super().__init__(application=app)
-        self.set_default_size(width=600, height=600)
-        self.set_size_request(width=600, height=120)
+        self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
+        self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
+        self.update_queue = Queue()
+        self.cancel_event = threading.Event()
+        self.setup_ui()
+        if paths:
+            self.start_job(paths)
+
+    def setup_ui(self):
         self.empty_placeholder = Adw.StatusPage(
             title="No Results",
             description="Select files or folders to compute their hashes.",
             icon_name="text-x-generic-symbolic",
         )
-        self.update_queue = Queue()
-        self.cancel_event = threading.Event()
-
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
-        self.create_widgets()
-        self.toast_overlay.set_child(self.toolbar_view)
 
-        if paths:
-            self.start_job(paths)
-
-    def create_widgets(self):
         self.toolbar_view = Adw.ToolbarView()
         self.toolbar_view.set_margin_top(6)
         self.toolbar_view.set_margin_bottom(6)
         self.toolbar_view.set_margin_start(12)
         self.toolbar_view.set_margin_end(12)
+        self.toast_overlay.set_child(self.toolbar_view)
 
         self.top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, margin_bottom=3)
         self.setup_buttons()
@@ -394,6 +395,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.progress_bar.set_visible(True)
         self.button_cancel.set_visible(True)
         self.button_open_fdialog.set_sensitive(False)
+        self.drop_down_algo_button.set_sensitive(False)
         self.toolbar_view.set_content(self.main_content_overlay)
         self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths,), daemon=True)
         self.processing_thread.start()
@@ -402,6 +404,9 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
 
     def process_queue(self):
+        if self.cancel_event.is_set():
+            self.update_queue = Queue()
+            return False
         iterations = 0
         while not self.update_queue.empty() and iterations < 5:
             update = self.update_queue.get_nowait()
@@ -445,9 +450,11 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def check_processing_complete(self):
-        if not self.processing_thread.is_alive():
+        if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
+            logger.info(self.processing_thread.is_alive())
             self.button_cancel.set_visible(False)
             self.button_open_fdialog.set_sensitive(True)
+            self.drop_down_algo_button.set_sensitive(True)
             self.has_results()
             return False  # Stop monitoring
         return True  # Continue monitoring
@@ -479,7 +486,6 @@ class MainWindow(Adw.ApplicationWindow):
                 with open(file, "rb") as f:
                     while chunk := f.read(chunk_size):
                         if self.cancel_event.is_set():
-                            self.update_queue.put(("error", file.as_posix(), "Cancelled"))
                             return
                         hash_obj.update(chunk)
                         hash_task.bytes_read += len(chunk)
@@ -588,9 +594,9 @@ class Application(Adw.Application):
         win = self.props.active_window
         if not win:
             win = MainWindow(self, paths)
-            win.present()
         else:
             win.start_job(paths)
+        win.present()
 
     def do_startup(self):
         Adw.Application.do_startup(self)
