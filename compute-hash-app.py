@@ -248,11 +248,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_box.append(self.scrolled_window)
 
     def setup_buttons(self):
-        self.button_open_fdialog = Gtk.Button(label="Open")
+        self.button_open_fdialog = Gtk.Button()
         self.button_open_fdialog.add_css_class("suggested-action")
         self.button_open_fdialog.set_valign(Gtk.Align.CENTER)
         self.button_open_fdialog.set_tooltip_text("Select files to add")
         self.button_open_fdialog.connect("clicked", self.on_select_files_clicked)
+        self_button_open_fdialog_content = Adw.ButtonContent.new()
+        self_button_open_fdialog_content.set_icon_name(icon_name="document-open-symbolic")
+        self_button_open_fdialog_content.set_label(label="_Open")
+        self_button_open_fdialog_content.set_use_underline(use_underline=True)
+        self.button_open_fdialog.set_child(self_button_open_fdialog_content)
+
         self.top_bar_box.append(self.button_open_fdialog)
 
         self.button_copy_all = Gtk.Button(label="Copy")
@@ -582,9 +588,9 @@ class Application(Adw.Application):
         win = self.props.active_window
         if not win:
             win = MainWindow(self, paths)
+            win.present()
         else:
             win.start_job(paths)
-        win.present()
 
     def do_startup(self):
         Adw.Application.do_startup(self)
