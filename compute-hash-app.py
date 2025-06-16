@@ -85,6 +85,12 @@ class HashResultRow(Adw.ActionRow):
         self.set_subtitle_lines(1)
         self.set_title_lines(1)
 
+        self.button_make_hashes = Gtk.Button()
+        self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
+        self.button_make_hashes.set_valign(Gtk.Align.CENTER)
+        self.button_make_hashes.set_tooltip_text("Run all available hash types")
+        self.button_make_hashes.connect("clicked", self.on_click_make_hashes)
+
         self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
         self.button_copy_hash.set_valign(Gtk.Align.CENTER)
         self.button_copy_hash.set_tooltip_text("Copy hash")
@@ -100,12 +106,18 @@ class HashResultRow(Adw.ActionRow):
         self.button_delete.set_tooltip_text("Remove this result")
         self.button_delete.connect("clicked", self.on_delete_clicked)
 
+        self.add_suffix(self.button_make_hashes)
         self.add_suffix(self.button_copy_hash)
         self.add_suffix(self.button_compare)
         self.add_suffix(self.button_delete)
 
     def __str__(self):
         return f"{self.file_name}:{self.hash_value}:{self.algo}"
+
+    def on_click_make_hashes(self, button: Gtk.Button):
+        main_window: MainWindow = button.get_root()
+        for algo in main_window.available_algorithms:
+            main_window.start_job([Path(self.get_title())], algo)
 
     def on_copy_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -197,14 +209,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
         self.update_queue = Queue()
         self.cancel_event = threading.Event()
-        self.setup_ui()
+        self.build_ui()
         if paths:
             self.start_job(paths)
 
     def not_exceeded_limit(self):
         return self.MAX_UI_ROWS > len(self.ui_results)
 
-    def setup_ui(self):
+    def build_ui(self):
         self.empty_placeholder = Adw.StatusPage(
             title="No Results",
             description="Select files or folders to compute their hashes.",
@@ -234,7 +246,7 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_main_content(self):
         self.main_content_overlay = Gtk.Overlay()
         self.spinner = Gtk.Spinner()
-        self.spinner.set_size_request(200, 200)
+        self.spinner.set_size_request(100, 100)
         self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.start()
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -316,9 +328,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.top_bar_box.append(self.button_clear)
 
-        available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=available_algorithms)
-        self.drop_down_algo_button.set_selected(available_algorithms.index("sha256"))
+        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
         self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
@@ -402,7 +414,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_controller(self.drop)
 
-    def start_job(self, paths: list[Path]):
+    def start_job(self, paths: list[Path], algo: str | None = None):
         self.cancel_event.clear()
         self.progress_bar.set_fraction(0.0)
         self.progress_bar.set_opacity(1.0)
@@ -413,7 +425,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_open.set_sensitive(False)
         self.drop_down_algo_button.set_sensitive(False)
         self.toolbar_view.set_content(self.main_content_overlay)
-        self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths,), daemon=True)
+        self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.hide_progress, priority=GLib.PRIORITY_DEFAULT)
@@ -430,12 +442,12 @@ class MainWindow(Adw.ApplicationWindow):
                 _, progress = update
                 self.progress_bar.set_fraction(progress)
             elif update[0] == "result":
-                _, fname, hash_value = update
-                self.add_result(fname, hash_value)
+                _, fname, hash_value, algo = update
+                self.add_result(fname, hash_value, algo)
                 iterations += 1
             elif update[0] == "error":
-                _, fname, err = update
-                row = self.add_result(fname, err)
+                _, fname, err, algo = update
+                row = self.add_result(fname, err, algo)
                 row.error()
                 iterations += 1
         return True  # Continue processing updates
@@ -474,21 +486,22 @@ class MainWindow(Adw.ApplicationWindow):
             return False  # Stop monitoring
         return True  # Continue monitoring
 
-    def compute_hash(self, paths: list[Path]):
+    def compute_hash(self, paths: list[Path], algo: str):
         total_bytes = 0
         jobs = []
         for path in paths:
             try:
                 if path.is_dir():
-                    files = [f for f in path.iterdir() if f.is_file()]
-                    total_bytes += sum(f.stat().st_size for f in files)
-                    jobs.extend(files)
+                    for f in path.iterdir():
+                        if f.is_file():
+                            total_bytes += f.stat().st_size
+                            jobs.append(f)
                 else:
                     total_bytes += path.stat().st_size
                     jobs.append(path)
             except Exception as e:
                 logger.exception(f"Error processing file: {e}")
-                self.update_queue.put(("error", str(path), str(e)))
+                self.update_queue.put(("error", str(path), str(e), algo))
 
         if total_bytes == 0:
             self.progress_bar.set_fraction(1.0)
@@ -496,7 +509,7 @@ class MainWindow(Adw.ApplicationWindow):
         def hash_task(file: Path, chunk_size: int = 1024 * 1024, shake_length: int = 32):
             if self.cancel_event.is_set():
                 return
-            hash_obj = hashlib.new(self.algo)
+            hash_obj = hashlib.new(algo)
             try:
                 with open(file, "rb") as f:
                     while chunk := f.read(chunk_size):
@@ -505,16 +518,17 @@ class MainWindow(Adw.ApplicationWindow):
                         hash_obj.update(chunk)
                         hash_task.bytes_read += len(chunk)
                         self.update_queue.put(("progress", min(hash_task.bytes_read / total_bytes, 1.0)))
-                self.update_queue.put(
-                    (
-                        "result",
-                        file.as_posix(),
-                        hash_obj.hexdigest(shake_length) if "shake" in self.algo else hash_obj.hexdigest(),
+                    self.update_queue.put(
+                        (
+                            "result",
+                            file.as_posix(),
+                            hash_obj.hexdigest(shake_length) if "shake" in algo else hash_obj.hexdigest(),
+                            algo,
+                        )
                     )
-                )
             except Exception as e:
                 logger.exception(f"Error computing hash for file: {file.as_posix()}")
-                self.update_queue.put(("error", str(file), str(e)))
+                self.update_queue.put(("error", str(file), str(e), algo))
 
         hash_task.bytes_read = 0
 
@@ -534,8 +548,8 @@ class MainWindow(Adw.ApplicationWindow):
             target=animation_target,
         ).play()
 
-    def add_result(self, file_name: str, hash_value: str):
-        row = HashResultRow(file_name, hash_value, self.algo)
+    def add_result(self, file_name: str, hash_value: str, algo: str):
+        row = HashResultRow(file_name, hash_value, algo)
         self.ui_results.append(row)
         return row
 
