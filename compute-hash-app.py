@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import logging
 import os
 import subprocess
 import sys
@@ -14,7 +15,6 @@ import gi  # type: ignore
 gi.require_version(namespace="Gtk", version="4.0")
 gi.require_version(namespace="Adw", version="1")
 gi.require_version(namespace="Nautilus", version="4.0")
-import logging
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
@@ -72,23 +72,22 @@ class HashResultRow(Adw.ActionRow):
         self.file_name = file_name
         self.hash_value = hash_value
         self.algo = hash_algorithm
-
-        prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        prefix_box.set_valign(Gtk.Align.CENTER)
-        self.file_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
-        prefix_box.append(self.file_icon)
-        prefix_box.append(Gtk.Label(label=self.algo.upper()))
-        self.add_prefix(prefix_box)
-
         self.set_title(self.file_name)
         self.set_subtitle(self.hash_value)
         self.set_subtitle_lines(1)
         self.set_title_lines(1)
 
+        self.prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.prefix_box.set_valign(Gtk.Align.CENTER)
+        self.file_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        self.prefix_box.append(self.file_icon)
+        self.prefix_box.append(Gtk.Label(label=self.algo.upper()))
+        self.add_prefix(self.prefix_box)
+
         self.button_make_hashes = Gtk.Button()
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_make_hashes.set_valign(Gtk.Align.CENTER)
-        self.button_make_hashes.set_tooltip_text("Run all available hash types")
+        self.button_make_hashes.set_tooltip_text("Compute all available hash types for this file")
         self.button_make_hashes.connect("clicked", self.on_click_make_hashes)
 
         self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
@@ -96,7 +95,7 @@ class HashResultRow(Adw.ActionRow):
         self.button_copy_hash.set_tooltip_text("Copy hash")
         self.button_copy_hash.connect("clicked", self.on_copy_clicked)
 
-        self.button_compare = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        self.button_compare = Gtk.Button.new_from_icon_name("edit-paste-symbolic")
         self.button_compare.set_valign(Gtk.Align.CENTER)
         self.button_compare.set_tooltip_text("Compare with clipboard")
         self.button_compare.connect("clicked", self.on_compare_clicked)
@@ -117,7 +116,8 @@ class HashResultRow(Adw.ActionRow):
     def on_click_make_hashes(self, button: Gtk.Button):
         main_window: MainWindow = button.get_root()
         for algo in main_window.available_algorithms:
-            main_window.start_job([Path(self.get_title())], algo)
+            if algo != self.algo:
+                main_window.start_job([Path(self.get_title())], algo)
 
     def on_copy_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -156,26 +156,6 @@ class HashResultRow(Adw.ActionRow):
         clipboard = button.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
-    def set_icon_(
-        self,
-        icon_name: Literal[
-            "text-x-generic-symbolic",
-            "emblem-ok-symbolic",
-            "dialog-error-symbolic",
-        ],
-    ):
-        self.old_file_icon_name = self.file_icon.get_icon_name()
-        self.file_icon.set_from_icon_name(icon_name)
-
-    def set_css_(self, css_class: Literal["success", "error"]):
-        self.old_css = self.get_css_classes()
-        self.add_css_class(css_class)
-
-    def error(self):
-        self.add_css_class("error")
-        self.set_icon_("dialog-error-symbolic")
-        self.button_compare.set_sensitive(False)
-
     def on_delete_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
         target = Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity))
@@ -196,11 +176,32 @@ class HashResultRow(Adw.ActionRow):
         anim.connect("done", on_fade_done)
         anim.play()
 
+    def set_icon_(
+        self,
+        icon_name: Literal[
+            "text-x-generic-symbolic",
+            "emblem-ok-symbolic",
+            "dialog-error-symbolic",
+        ],
+    ):
+        self.old_file_icon_name = self.file_icon.get_icon_name()
+        self.file_icon.set_from_icon_name(icon_name)
+
+    def set_css_(self, css_class: Literal["success", "error"]):
+        self.old_css = self.get_css_classes()
+        self.add_css_class(css_class)
+
+    def error(self):
+        self.add_css_class("error")
+        self.set_icon_("dialog-error-symbolic")
+        self.button_copy_hash.set_tooltip_text("Copy error message to clipboard")
+        self.button_compare.set_sensitive(False)
+        self.button_make_hashes.set_sensitive(False)
+
 
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
-    MAX_UI_ROWS = 20
     algo: str = "sha256"
 
     def __init__(self, app, paths: list[Path] | None = None):
@@ -212,9 +213,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.build_ui()
         if paths:
             self.start_job(paths)
-
-    def not_exceeded_limit(self):
-        return self.MAX_UI_ROWS > len(self.ui_results)
 
     def build_ui(self):
         self.empty_placeholder = Adw.StatusPage(
@@ -436,7 +434,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.update_queue = Queue()
             return False
         iterations = 0
-        while not self.update_queue.empty() and iterations < 5:
+        while not self.update_queue.empty() and iterations < 8:
             update = self.update_queue.get_nowait()
             if update[0] == "progress":
                 _, progress = update
@@ -506,9 +504,13 @@ class MainWindow(Adw.ApplicationWindow):
         if total_bytes == 0:
             self.progress_bar.set_fraction(1.0)
 
-        def hash_task(file: Path, chunk_size: int = 1024 * 1024, shake_length: int = 32):
+        def hash_task(file: Path, shake_length: int = 32):
             if self.cancel_event.is_set():
                 return
+            if file.stat().st_size > 1024 * 1024 * 100:
+                chunk_size = 1024 * 1024 * 4
+            else:
+                chunk_size = 1024 * 1024
             hash_obj = hashlib.new(algo)
             try:
                 with open(file, "rb") as f:
@@ -531,8 +533,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.update_queue.put(("error", str(file), str(e), algo))
 
         hash_task.bytes_read = 0
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=max(1, os.cpu_count() - 1)) as executor:
             list(executor.map(hash_task, jobs))
 
     def scroll_to_bottom(self):
@@ -555,7 +556,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def has_results(self):
         has_results = self.ui_results.get_first_child() is not None
-        self.toolbar_view.set_content(self.main_box if has_results else self.empty_placeholder)
+        self.toolbar_view.set_content(self.main_content_overlay if has_results else self.empty_placeholder)
         self.button_save.set_sensitive(has_results)
         self.button_copy_all.set_sensitive(has_results)
         self.button_sort.set_sensitive(has_results)
