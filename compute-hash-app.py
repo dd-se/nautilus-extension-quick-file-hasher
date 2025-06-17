@@ -37,21 +37,11 @@ def get_logger(name: str) -> logging.Logger:
 logger = get_logger(__name__)
 
 css = b"""
-button.green-button {
-    background-color: #209539;
-    color: white;
-    }
-button.green-button:hover {
-    background-color: #23a03e;
-    }
-button.green-button:active {
-    background-color: #1e7330;
-    }
-
-stackswitcher button:nth-child(1):checked {
-    background-color: #209539;
+.view-switcher button:nth-child(1):checked {
+    background-color: #2b66b8;
 }
-stackswitcher button:nth-child(2):checked {
+
+.view-switcher button:nth-child(2):checked {
     background-color: #c7162b;
 }
 """
@@ -280,12 +270,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_content_overlay.add_overlay(self.spinner)
         self.main_content_overlay.add_overlay(self.main_box)
 
-        self.content_stack = Gtk.Stack()
-        self.content_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.content_stack.set_vexpand(True)
-        self.content_stack.set_hexpand(True)
-        self.stack_switcher.set_stack(self.content_stack)
-
+        self.view_stack = Adw.ViewStack()
+        self.view_stack.set_vexpand(True)
+        self.view_stack.set_hexpand(True)
+        self.view_switcher.set_stack(self.view_stack)
+        self.view_switcher.add_css_class("view-switcher")
         self.results_group = Adw.PreferencesGroup()
         self.results_group.set_hexpand(True)
         self.results_group.set_vexpand(True)
@@ -296,7 +285,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_scrolled_window = Gtk.ScrolledWindow()
         self.results_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.results_scrolled_window.set_child(self.results_group)
-        self.results_stack_page = self.content_stack.add_titled(self.results_scrolled_window, "results", "Results")
+        self.results_stack_page = self.view_stack.add_titled(self.results_scrolled_window, "results", "Results")
+        self.results_stack_page.set_icon_name("view-list-symbolic")
+        self.results_stack_page.set_use_underline(True)
 
         self.errors_group = Adw.PreferencesGroup()
         self.errors_group.set_hexpand(True)
@@ -308,10 +299,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_scrolled_window = Gtk.ScrolledWindow()
         self.errors_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.errors_scrolled_window.set_child(self.errors_group)
-        self.errors_stack_page = self.content_stack.add_titled(self.errors_scrolled_window, "errors", "Errors")
-
-        self.content_stack.set_visible_child_name("results")
-        self.main_box.append(self.content_stack)
+        self.errors_stack_page = self.view_stack.add_titled(self.errors_scrolled_window, "errors", "Errors")
+        self.errors_stack_page.set_icon_name("dialog-error-symbolic")
+        self.view_stack.set_visible_child_name("results")
+        self.main_box.append(self.view_stack)
 
     def setup_buttons(self):
         self.button_open = Gtk.Button()
@@ -354,10 +345,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.spacer.set_hexpand(True)
         self.first_top_bar_box.append(self.spacer)
 
-        self.stack_switcher = Gtk.StackSwitcher()
-        self.stack_switcher.set_sensitive(False)
-        self.stack_switcher.set_hexpand(True)
-        self.second_top_bar_box.append(self.stack_switcher)
+        self.view_switcher = Adw.ViewSwitcher()
+        self.view_switcher.set_sensitive(False)
+        self.view_switcher.set_hexpand(True)
+        self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        self.second_top_bar_box.append(self.view_switcher)
 
         self.spacer = Gtk.Box()
         self.spacer.set_hexpand(True)
@@ -619,13 +611,13 @@ class MainWindow(Adw.ApplicationWindow):
     def has_results(self):
         has_results = self.ui_results.get_first_child() is not None or self.ui_errors.get_first_child() is not None
         self.toolbar_view.set_content(self.main_content_overlay if has_results else self.empty_placeholder)
-        self.stack_switcher.set_sensitive(has_results)
+        self.view_switcher.set_sensitive(has_results)
         self.button_save.set_sensitive(has_results)
         self.button_copy_all.set_sensitive(has_results)
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results)
-        self.results_stack_page.set_title(f"Results {sum(has_results for r in self.ui_results) if has_results else ''}")
-        self.errors_stack_page.set_title(f"Errors {sum(has_results for r in self.ui_errors) if has_results else ''}")
+        self.results_stack_page.set_badge_number(sum(has_results for r in self.ui_results) if has_results else 0)
+        self.errors_stack_page.set_badge_number(sum(has_results for r in self.ui_errors) if has_results else 0)
         Adw.TimedAnimation(
             widget=self.empty_placeholder,
             value_from=1.0 if has_results else 0,
