@@ -254,8 +254,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.set_margin_end(12)
         self.toast_overlay.set_child(self.toolbar_view)
 
-        self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=15)
-        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=8)
+        self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
+        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
         self.setup_buttons()
         self.setup_headerbar()
         self.setup_main_content()
@@ -269,13 +269,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     def setup_main_content(self):
         self.main_content_overlay = Gtk.Overlay()
+
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(100, 100)
         self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.start()
+
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
         self.main_content_overlay.add_overlay(self.spinner)
         self.main_content_overlay.add_overlay(self.main_box)
+
         self.content_stack = Gtk.Stack()
         self.content_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.content_stack.set_vexpand(True)
@@ -312,7 +316,6 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_buttons(self):
         self.button_open = Gtk.Button()
         self.button_open.add_css_class("suggested-action")
-        self.button_open.set_valign(Gtk.Align.CENTER)
         self.button_open.set_tooltip_text("Select files to add")
         self.button_open.connect("clicked", self.on_select_files_clicked)
         self.button_open_content = Adw.ButtonContent.new()
@@ -325,7 +328,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save = Gtk.Button()
         self.button_save.set_sensitive(False)
         self.button_save.add_css_class("suggested-action")
-        self.button_save.set_valign(Gtk.Align.CENTER)
         self.button_save.set_tooltip_text("Save results to file")
         self.button_save.connect("clicked", self.on_save_clicked)
         self.button_save_content = Adw.ButtonContent.new()
@@ -335,19 +337,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save.set_child(self.button_save_content)
         self.first_top_bar_box.append(self.button_save)
 
-        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
-        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
-        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
-        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        self.first_top_bar_box.append(self.drop_down_algo_button)
-
         self.button_cancel = Gtk.Button(label="Cancel Job")
         self.button_cancel.add_css_class("destructive-action")
         self.button_cancel.set_visible(False)
         self.button_cancel.set_tooltip_text("Cancel the current operation")
-        self.button_cancel.set_valign(Gtk.Align.CENTER)
         self.button_cancel.connect(
             "clicked",
             lambda _: (
@@ -362,8 +355,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.first_top_bar_box.append(self.spacer)
 
         self.stack_switcher = Gtk.StackSwitcher()
-        self.stack_switcher.set_halign(Gtk.Align.CENTER)
+        self.stack_switcher.set_sensitive(False)
+        self.stack_switcher.set_hexpand(True)
         self.second_top_bar_box.append(self.stack_switcher)
+
+        self.spacer = Gtk.Box()
+        self.spacer.set_hexpand(True)
+        self.second_top_bar_box.append(self.spacer)
 
         self.button_copy_all = Gtk.Button(label="Copy")
         self.button_copy_all.set_sensitive(False)
@@ -375,7 +373,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.button_sort = Gtk.Button(label="Sort")
         self.button_sort.set_sensitive(False)
-        self.button_sort.add_css_class("green-button")
+
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
         self.button_sort.connect(
@@ -388,8 +386,17 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.second_top_bar_box.append(self.button_sort)
 
+        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
+        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
+        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
+        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
+        self.second_top_bar_box.append(self.drop_down_algo_button)
+
         self.button_clear = Gtk.Button(label="Clear")
         self.button_clear.set_sensitive(False)
+
         self.button_clear.add_css_class("destructive-action")
         self.button_clear.set_valign(Gtk.Align.CENTER)
         self.button_clear.set_tooltip_text("Clear all results")
@@ -468,9 +475,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.cancel_event.clear()
         self.progress_bar.set_fraction(0.0)
         self.progress_bar.set_opacity(1.0)
+        self.progress_bar.set_visible(True)
         self.spinner.set_opacity(1.0)
         self.spinner.set_visible(True)
-        self.progress_bar.set_visible(True)
         self.button_cancel.set_visible(True)
         self.button_open.set_sensitive(False)
         self.drop_down_algo_button.set_sensitive(False)
@@ -498,6 +505,7 @@ class MainWindow(Adw.ApplicationWindow):
             elif update[0] == "error":
                 _, fname, err, algo = update
                 self.add_result(fname, err, algo, is_error=True)
+                self.add_toast(f"<big>❌ {err}</big>")
                 iterations += 1
         return True  # Continue monitoring
 
@@ -528,8 +536,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def check_processing_complete(self):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
-            self.button_cancel.set_visible(False)
             self.button_open.set_sensitive(True)
+            self.button_cancel.set_visible(False)
             self.drop_down_algo_button.set_sensitive(True)
             self.has_results()
             return False  # Stop monitoring
