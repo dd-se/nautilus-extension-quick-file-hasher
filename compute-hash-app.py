@@ -31,11 +31,33 @@ def get_logger(name: str) -> logging.Logger:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False
-
     return logger
 
 
 logger = get_logger(__name__)
+
+css = b"""
+button.green-button {
+    background-color: #209539;
+    color: white;
+    }
+button.green-button:hover {
+    background-color: #23a03e;
+    }
+button.green-button:active {
+    background-color: #1e7330;
+    }
+
+stackswitcher button:nth-child(1):checked {
+    background-color: #2b66b8;
+}
+stackswitcher button:nth-child(2):checked {
+    background-color: #c7162b;
+}
+"""
+css_provider = Gtk.CssProvider()
+css_provider.load_from_data(css)
+Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -169,9 +191,11 @@ class HashResultRow(Adw.ActionRow):
 
         def on_fade_done(animation):
             main_window: MainWindow = button.get_root()
-            main_window.ui_results.remove(self)
-            if main_window.ui_results.get_first_child() is None:
-                main_window.has_results()
+            if self.get_parent() == main_window.ui_results:
+                main_window.ui_results.remove(self)
+            else:
+                main_window.ui_errors.remove(self)
+            main_window.has_results()
 
         anim.connect("done", on_fade_done)
         anim.play()
@@ -230,14 +254,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.set_margin_end(12)
         self.toast_overlay.set_child(self.toolbar_view)
 
-        self.top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, margin_bottom=3)
+        self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=15)
+        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=8)
         self.setup_buttons()
         self.setup_headerbar()
         self.setup_main_content()
         self.setup_progress_bar()
         self.setup_drag_and_drop()
 
-        self.toolbar_view.add_top_bar(self.top_bar_box)
+        self.toolbar_view.add_top_bar(self.first_top_bar_box)
+        self.toolbar_view.add_top_bar(self.second_top_bar_box)
         self.toolbar_view.set_content(self.empty_placeholder)
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
@@ -250,6 +276,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.main_content_overlay.add_overlay(self.spinner)
         self.main_content_overlay.add_overlay(self.main_box)
+        self.content_stack = Gtk.Stack()
+        self.content_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.content_stack.set_vexpand(True)
+        self.content_stack.set_hexpand(True)
+        self.stack_switcher.set_stack(self.content_stack)
+
         self.results_group = Adw.PreferencesGroup()
         self.results_group.set_hexpand(True)
         self.results_group.set_vexpand(True)
@@ -257,10 +289,25 @@ class MainWindow(Adw.ApplicationWindow):
         self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_results.add_css_class("boxed-list")
         self.results_group.add(self.ui_results)
-        self.scrolled_window = Gtk.ScrolledWindow()
-        self.scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        self.scrolled_window.set_child(self.results_group)
-        self.main_box.append(self.scrolled_window)
+        self.results_scrolled_window = Gtk.ScrolledWindow()
+        self.results_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.results_scrolled_window.set_child(self.results_group)
+        self.content_stack.add_titled(self.results_scrolled_window, "results", "Results")
+
+        self.errors_group = Adw.PreferencesGroup()
+        self.errors_group.set_hexpand(True)
+        self.errors_group.set_vexpand(True)
+        self.ui_errors = Gtk.ListBox()
+        self.ui_errors.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.ui_errors.add_css_class("boxed-list")
+        self.errors_group.add(self.ui_errors)
+        self.errors_scrolled_window = Gtk.ScrolledWindow()
+        self.errors_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.errors_scrolled_window.set_child(self.errors_group)
+        self.content_stack.add_titled(self.errors_scrolled_window, "errors", "Errors")
+
+        self.content_stack.set_visible_child_name("results")
+        self.main_box.append(self.content_stack)
 
     def setup_buttons(self):
         self.button_open = Gtk.Button()
@@ -273,7 +320,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_open_content.set_label(label="_Open")
         self.button_open_content.set_use_underline(use_underline=True)
         self.button_open.set_child(self.button_open_content)
-        self.top_bar_box.append(self.button_open)
+        self.first_top_bar_box.append(self.button_open)
 
         self.button_save = Gtk.Button()
         self.button_save.set_sensitive(False)
@@ -286,45 +333,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save_content.set_label(label="_Save")
         self.button_save_content.set_use_underline(use_underline=True)
         self.button_save.set_child(self.button_save_content)
-        self.top_bar_box.append(self.button_save)
-
-        self.button_copy_all = Gtk.Button(label="Copy")
-        self.button_copy_all.set_sensitive(False)
-        self.button_copy_all.add_css_class("suggested-action")
-        self.button_copy_all.set_valign(Gtk.Align.CENTER)
-        self.button_copy_all.set_tooltip_text("Copy results to clipboard")
-        self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
-        self.top_bar_box.append(self.button_copy_all)
-
-        self.button_sort = Gtk.Button(label="Sort")
-        self.button_sort.set_sensitive(False)
-        self.button_sort.set_valign(Gtk.Align.CENTER)
-        self.button_sort.set_tooltip_text("Sort results by path")
-        self.button_sort.connect(
-            "clicked",
-            lambda _: (
-                self.ui_results.set_sort_func(lambda r1, r2: (r1.get_title() > r2.get_title()) - (r1.get_title() < r2.get_title())),
-                self.ui_results.set_sort_func(None),
-                self.add_toast("<big>✅ Results sorted by file path</big>"),
-            ),
-        )
-        self.top_bar_box.append(self.button_sort)
-
-        self.button_clear = Gtk.Button(label="Clear")
-        self.button_clear.set_sensitive(False)
-        self.button_clear.add_css_class("destructive-action")
-        self.button_clear.set_valign(Gtk.Align.CENTER)
-        self.button_clear.set_tooltip_text("Clear all results")
-
-        self.button_clear.connect(
-            "clicked",
-            lambda _: (
-                self.ui_results.remove_all(),
-                self.has_results(),
-                self.add_toast("<big>✅ Results cleared</big>"),
-            ),
-        )
-        self.top_bar_box.append(self.button_clear)
+        self.first_top_bar_box.append(self.button_save)
 
         self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
         self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
@@ -332,7 +341,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
         self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        self.top_bar_box.append(self.drop_down_algo_button)
+        self.first_top_bar_box.append(self.drop_down_algo_button)
 
         self.button_cancel = Gtk.Button(label="Cancel Job")
         self.button_cancel.add_css_class("destructive-action")
@@ -346,17 +355,60 @@ class MainWindow(Adw.ApplicationWindow):
                 self.add_toast("<big>❌ Job cancelled</big>"),
             ),
         )
-        self.top_bar_box.append(self.button_cancel)
+        self.first_top_bar_box.append(self.button_cancel)
 
         self.spacer = Gtk.Box()
         self.spacer.set_hexpand(True)
-        self.top_bar_box.append(self.spacer)
+        self.first_top_bar_box.append(self.spacer)
+
+        self.stack_switcher = Gtk.StackSwitcher()
+        self.stack_switcher.set_halign(Gtk.Align.CENTER)
+        self.second_top_bar_box.append(self.stack_switcher)
+
+        self.button_copy_all = Gtk.Button(label="Copy")
+        self.button_copy_all.set_sensitive(False)
+        self.button_copy_all.add_css_class("suggested-action")
+        self.button_copy_all.set_valign(Gtk.Align.CENTER)
+        self.button_copy_all.set_tooltip_text("Copy results to clipboard")
+        self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
+        self.second_top_bar_box.append(self.button_copy_all)
+
+        self.button_sort = Gtk.Button(label="Sort")
+        self.button_sort.set_sensitive(False)
+        self.button_sort.add_css_class("green-button")
+        self.button_sort.set_valign(Gtk.Align.CENTER)
+        self.button_sort.set_tooltip_text("Sort results by path")
+        self.button_sort.connect(
+            "clicked",
+            lambda _: (
+                self.ui_results.set_sort_func(lambda r1, r2: (r1.get_title() > r2.get_title()) - (r1.get_title() < r2.get_title())),
+                self.ui_results.set_sort_func(None),
+                self.add_toast("<big>✅ Results sorted by file path</big>"),
+            ),
+        )
+        self.second_top_bar_box.append(self.button_sort)
+
+        self.button_clear = Gtk.Button(label="Clear")
+        self.button_clear.set_sensitive(False)
+        self.button_clear.add_css_class("destructive-action")
+        self.button_clear.set_valign(Gtk.Align.CENTER)
+        self.button_clear.set_tooltip_text("Clear all results")
+        self.button_clear.connect(
+            "clicked",
+            lambda _: (
+                self.ui_results.remove_all(),
+                self.ui_errors.remove_all(),
+                self.has_results(),
+                self.add_toast("<big>✅ Results cleared</big>"),
+            ),
+        )
+        self.second_top_bar_box.append(self.button_clear)
 
     def setup_headerbar(self):
         self.header_bar = Adw.HeaderBar()
         self.header_title_widget = Gtk.Label(label=f"<big><b>Compute {self.algo.upper()} Hashes</b></big>", use_markup=True)
         self.header_bar.set_title_widget(self.header_title_widget)
-        self.top_bar_box.append(self.header_bar)
+        self.first_top_bar_box.append(self.header_bar)
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
@@ -432,7 +484,7 @@ class MainWindow(Adw.ApplicationWindow):
     def process_queue(self):
         if self.cancel_event.is_set():
             self.update_queue = Queue()
-            return False
+            return False  # Stop monitoring
         iterations = 0
         while not self.update_queue.empty() and iterations < 8:
             update = self.update_queue.get_nowait()
@@ -445,10 +497,9 @@ class MainWindow(Adw.ApplicationWindow):
                 iterations += 1
             elif update[0] == "error":
                 _, fname, err, algo = update
-                row = self.add_result(fname, err, algo)
-                row.error()
+                self.add_result(fname, err, algo, is_error=True)
                 iterations += 1
-        return True  # Continue processing updates
+        return True  # Continue monitoring
 
     def hide_progress(self):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
@@ -537,7 +588,7 @@ class MainWindow(Adw.ApplicationWindow):
             list(executor.map(hash_task, jobs))
 
     def scroll_to_bottom(self):
-        vadjustment = self.scrolled_window.get_vadjustment()
+        vadjustment = self.results_scrolled_window.get_vadjustment()
         current_value = vadjustment.get_value()
         target_value = vadjustment.get_upper() - vadjustment.get_page_size()
         animation_target = Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value))
@@ -549,14 +600,19 @@ class MainWindow(Adw.ApplicationWindow):
             target=animation_target,
         ).play()
 
-    def add_result(self, file_name: str, hash_value: str, algo: str):
+    def add_result(self, file_name: str, hash_value: str, algo: str, is_error: bool = False):
         row = HashResultRow(file_name, hash_value, algo)
-        self.ui_results.append(row)
+        if is_error:
+            self.ui_errors.append(row)
+            row.error()
+        else:
+            self.ui_results.append(row)
         return row
 
     def has_results(self):
-        has_results = self.ui_results.get_first_child() is not None
+        has_results = self.ui_results.get_first_child() is not None or self.ui_errors.get_first_child() is not None
         self.toolbar_view.set_content(self.main_content_overlay if has_results else self.empty_placeholder)
+        self.stack_switcher.set_sensitive(has_results)
         self.button_save.set_sensitive(has_results)
         self.button_copy_all.set_sensitive(has_results)
         self.button_sort.set_sensitive(has_results)
@@ -585,7 +641,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_copy_all_clicked(self, button: Gtk.Button):
         clipboard = button.get_clipboard()
-        clipboard.set("\n".join(str(r) for r in self.ui_results))
+        results_text = "\n".join(str(r) for r in self.ui_results)
+        errors_text = "\n".join(str(r) for r in self.ui_errors)
+        clipboard.set(f"{results_text}\n{errors_text}".strip())
         self.add_toast("<big>✅ Results copied to clipboard</big>")
 
     def on_save_clicked(self, widget):
@@ -596,11 +654,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
             local_file = file_dialog.save_finish(gio_task)
-            print(f"File path: {local_file.get_path()}")
             path: str = local_file.get_path()
             try:
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(str(r) for r in self.ui_results))
+                    results_text = "\n".join(str(r) for r in self.ui_results)
+                    errors_text = "\n".join(str(r) for r in self.ui_errors)
+                    f.write(f"{results_text}\n{errors_text}".strip())
                 self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
             except Exception as e:
                 self.add_toast(f"<big>❌ Failed to save: {e}</big>")

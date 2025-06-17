@@ -1,6 +1,6 @@
 # Nautilus Compute Hash App
 
-A modern Nautilus (GNOME Files) Python extension and standalone GTK4/Adwaita app to compute hashes for files and folders, with a beautiful UI and clipboard integration.
+A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita app to compute hashes for files and folders, with a beautiful UI and clipboard integration.
 
 ## Features
 
