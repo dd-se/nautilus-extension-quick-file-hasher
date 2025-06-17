@@ -49,7 +49,7 @@ button.green-button:active {
     }
 
 stackswitcher button:nth-child(1):checked {
-    background-color: #2b66b8;
+    background-color: #209539;
 }
 stackswitcher button:nth-child(2):checked {
     background-color: #c7162b;
@@ -296,7 +296,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_scrolled_window = Gtk.ScrolledWindow()
         self.results_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.results_scrolled_window.set_child(self.results_group)
-        self.content_stack.add_titled(self.results_scrolled_window, "results", "Results")
+        self.results_stack_page = self.content_stack.add_titled(self.results_scrolled_window, "results", "Results")
 
         self.errors_group = Adw.PreferencesGroup()
         self.errors_group.set_hexpand(True)
@@ -308,7 +308,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_scrolled_window = Gtk.ScrolledWindow()
         self.errors_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.errors_scrolled_window.set_child(self.errors_group)
-        self.content_stack.add_titled(self.errors_scrolled_window, "errors", "Errors")
+        self.errors_stack_page = self.content_stack.add_titled(self.errors_scrolled_window, "errors", "Errors")
 
         self.content_stack.set_visible_child_name("results")
         self.main_box.append(self.content_stack)
@@ -386,17 +386,8 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.second_top_bar_box.append(self.button_sort)
 
-        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
-        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
-        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
-        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        self.second_top_bar_box.append(self.drop_down_algo_button)
-
         self.button_clear = Gtk.Button(label="Clear")
         self.button_clear.set_sensitive(False)
-
         self.button_clear.add_css_class("destructive-action")
         self.button_clear.set_valign(Gtk.Align.CENTER)
         self.button_clear.set_tooltip_text("Clear all results")
@@ -410,6 +401,14 @@ class MainWindow(Adw.ApplicationWindow):
             ),
         )
         self.second_top_bar_box.append(self.button_clear)
+
+        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
+        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
+        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
+        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
+        self.second_top_bar_box.append(self.drop_down_algo_button)
 
     def setup_headerbar(self):
         self.header_bar = Adw.HeaderBar()
@@ -505,7 +504,7 @@ class MainWindow(Adw.ApplicationWindow):
             elif update[0] == "error":
                 _, fname, err, algo = update
                 self.add_result(fname, err, algo, is_error=True)
-                self.add_toast(f"<big>❌ {err}</big>")
+                self.add_toast(f"<big>❌ <b>{err}</b></big>")
                 iterations += 1
         return True  # Continue monitoring
 
@@ -625,6 +624,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_copy_all.set_sensitive(has_results)
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results)
+        self.results_stack_page.set_title(f"Results {sum(has_results for r in self.ui_results) if has_results else ''}")
+        self.errors_stack_page.set_title(f"Errors {sum(has_results for r in self.ui_errors) if has_results else ''}")
         Adw.TimedAnimation(
             widget=self.empty_placeholder,
             value_from=1.0 if has_results else 0,
