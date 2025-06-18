@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from typing import Literal
@@ -37,10 +38,26 @@ def get_logger(name: str) -> logging.Logger:
 logger = get_logger(__name__)
 
 css = b"""
+.view-switcher button {
+    background-color: #404040;
+    color: white;
+    transition: background-color 0.5s ease;
+    }
+.view-switcher button:nth-child(1):hover {
+    background-color: #2b66b8;
+}
+.view-switcher button:nth-child(1):active {
+    background-color: #1c457e;
+}
 .view-switcher button:nth-child(1):checked {
     background-color: #2b66b8;
 }
-
+.view-switcher button:nth-child(2):hover {
+    background-color: #c7162b;
+}
+.view-switcher button:nth-child(2):active {
+    background-color: #951323;
+}
 .view-switcher button:nth-child(2):checked {
     background-color: #c7162b;
 }
@@ -170,22 +187,20 @@ class HashResultRow(Adw.ActionRow):
 
     def on_delete_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
-        target = Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity))
         anim = Adw.TimedAnimation(
             widget=self,
             value_from=1.0,
             value_to=0.0,
             duration=200,
-            target=target,
+            target=Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity)),
         )
 
-        def on_fade_done(animation):
-            main_window: MainWindow = button.get_root()
-            if self.get_parent() == main_window.ui_results:
-                main_window.ui_results.remove(self)
-            else:
-                main_window.ui_errors.remove(self)
-            main_window.has_results()
+        def on_fade_done(_):
+            parent: Gtk.ListBox = self.get_parent()
+            parent.remove(self)
+            if parent.get_first_child() is None:
+                main_window: MainWindow = parent.get_root()
+                main_window.has_results()
 
         anim.connect("done", on_fade_done)
         anim.play()
@@ -234,6 +249,10 @@ class MainWindow(Adw.ApplicationWindow):
             description="Select files or folders to compute their hashes.",
             icon_name="text-x-generic-symbolic",
         )
+        self.empty_error_placeholder = Adw.StatusPage(
+            title="No Errors",
+            icon_name="emblem-ok-symbolic",
+        )
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
 
@@ -264,7 +283,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.spinner.set_size_request(100, 100)
         self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.start()
-
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
         self.main_content_overlay.add_overlay(self.spinner)
@@ -304,9 +322,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible_child_name("results")
         self.main_box.append(self.view_stack)
 
+        self.view_stack.connect("notify::visible-child", self.has_results)
+
     def setup_buttons(self):
         self.button_open = Gtk.Button()
         self.button_open.add_css_class("suggested-action")
+        self.button_open.set_valign(Gtk.Align.CENTER)
         self.button_open.set_tooltip_text("Select files to add")
         self.button_open.connect("clicked", self.on_select_files_clicked)
         self.button_open_content = Adw.ButtonContent.new()
@@ -319,6 +340,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save = Gtk.Button()
         self.button_save.set_sensitive(False)
         self.button_save.add_css_class("suggested-action")
+        self.button_save.set_valign(Gtk.Align.CENTER)
         self.button_save.set_tooltip_text("Save results to file")
         self.button_save.connect("clicked", self.on_save_clicked)
         self.button_save_content = Adw.ButtonContent.new()
@@ -365,7 +387,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.button_sort = Gtk.Button(label="Sort")
         self.button_sort.set_sensitive(False)
-
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
         self.button_sort.connect(
@@ -496,8 +517,10 @@ class MainWindow(Adw.ApplicationWindow):
             elif update[0] == "error":
                 _, fname, err, algo = update
                 self.add_result(fname, err, algo, is_error=True)
-                self.add_toast(f"<big>❌ <b>{err}</b></big>")
+                # self.add_toast(f"<big>❌ <b>{err}</b></big>")
                 iterations += 1
+            else:
+                return False
         return True  # Continue monitoring
 
     def hide_progress(self):
@@ -590,13 +613,12 @@ class MainWindow(Adw.ApplicationWindow):
         vadjustment = self.results_scrolled_window.get_vadjustment()
         current_value = vadjustment.get_value()
         target_value = vadjustment.get_upper() - vadjustment.get_page_size()
-        animation_target = Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value))
         Adw.TimedAnimation(
             widget=self,
             value_from=current_value,
             value_to=target_value,
             duration=500,
-            target=animation_target,
+            target=Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value)),
         ).play()
 
     def add_result(self, file_name: str, hash_value: str, algo: str, is_error: bool = False):
@@ -608,22 +630,31 @@ class MainWindow(Adw.ApplicationWindow):
             self.ui_results.append(row)
         return row
 
-    def has_results(self):
-        has_results = self.ui_results.get_first_child() is not None or self.ui_errors.get_first_child() is not None
-        self.toolbar_view.set_content(self.main_content_overlay if has_results else self.empty_placeholder)
-        self.view_switcher.set_sensitive(has_results)
-        self.button_save.set_sensitive(has_results)
-        self.button_copy_all.set_sensitive(has_results)
+    def has_results(self, *signal_from_view_stack):
+        has_results = self.ui_results.get_first_child() is not None
+        has_errors = self.ui_errors.get_first_child() is not None
+
+        self.view_switcher.set_sensitive(has_results or has_errors)
+        self.button_save.set_sensitive(has_results or has_errors)
+        self.button_copy_all.set_sensitive(has_results or has_errors)
         self.button_sort.set_sensitive(has_results)
-        self.button_clear.set_sensitive(has_results)
-        self.results_stack_page.set_badge_number(sum(has_results for r in self.ui_results) if has_results else 0)
-        self.errors_stack_page.set_badge_number(sum(has_results for r in self.ui_errors) if has_results else 0)
+        self.button_clear.set_sensitive(has_results or has_errors)
+        self.results_stack_page.set_badge_number(sum(1 for _ in self.ui_results) if has_results else 0)
+        self.errors_stack_page.set_badge_number(sum(1 for _ in self.ui_errors) if has_errors else 0)
+
+        current_page_name = self.view_stack.get_visible_child_name()
+        show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
+        relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
+        target = relevant_placeholder if show_empty else self.main_content_overlay
+        if self.toolbar_view.get_content() == target and not signal_from_view_stack:
+            return
+        self.toolbar_view.set_content(target)
         Adw.TimedAnimation(
-            widget=self.empty_placeholder,
-            value_from=1.0 if has_results else 0,
-            value_to=0 if has_results else 1.0,
+            widget=self,
+            value_from=0.1,
+            value_to=1.0,
             duration=500,
-            target=Adw.CallbackAnimationTarget.new(lambda opacity: self.empty_placeholder.set_opacity(opacity)),
+            target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
         ).play()
 
     def on_select_files_clicked(self, _):
@@ -640,11 +671,20 @@ class MainWindow(Adw.ApplicationWindow):
             callback=on_files_dialog_dismissed,
         )
 
-    def on_copy_all_clicked(self, button: Gtk.Button):
-        clipboard = button.get_clipboard()
+    def get_all_results(self):
         results_text = "\n".join(str(r) for r in self.ui_results)
         errors_text = "\n".join(str(r) for r in self.ui_errors)
-        clipboard.set(f"{results_text}\n{errors_text}".strip())
+        now = datetime.now().strftime("%B %d, %Y at %I:%H:%M %Z")
+        if results_text:
+            output = f"Results - Saved on {now}:\n{'-' * 40}\n{results_text}\n\n"
+        if errors_text:
+            output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}".strip()
+        return output
+
+    def on_copy_all_clicked(self, button: Gtk.Button):
+        clipboard = button.get_clipboard()
+        output = self.get_all_results()
+        clipboard.set(output)
         self.add_toast("<big>✅ Results copied to clipboard</big>")
 
     def on_save_clicked(self, widget):
@@ -658,9 +698,7 @@ class MainWindow(Adw.ApplicationWindow):
             path: str = local_file.get_path()
             try:
                 with open(path, "w", encoding="utf-8") as f:
-                    results_text = "\n".join(str(r) for r in self.ui_results)
-                    errors_text = "\n".join(str(r) for r in self.ui_errors)
-                    f.write(f"{results_text}\n{errors_text}".strip())
+                    f.write(self.get_all_results())
                 self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
             except Exception as e:
                 self.add_toast(f"<big>❌ Failed to save: {e}</big>")
