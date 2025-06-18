@@ -1,7 +1,7 @@
 [project]
-name = "nautilus-extension-compute-hash-app"
-version = "0.1.0"
-description = "Nautilus extension for computing file hashes"
+name = "nautilus-extension-quick-file-hasher"
+version = "0.7.0"
+description = "Nautilus extension for calculating file hashes."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

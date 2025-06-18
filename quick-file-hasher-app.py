@@ -79,7 +79,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
         item = Nautilus.MenuItem(
             name="AdwNautilusExtension::OpenFolderInApp",
-            label="Compute Hashes",
+            label="Calculate Hashes",
         )
         item.connect("activate", self.launch_app, [current_folder])
         return [item]
@@ -89,7 +89,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             return []
         item = Nautilus.MenuItem(
             name="AdwNautilusExtension::OpenFilesInApp",
-            label="Compute Hashes",
+            label="Calculate Hashes",
         )
         item.connect("activate", self.launch_app, files)
         return [item]
@@ -116,7 +116,7 @@ class HashResultRow(Adw.ActionRow):
         self.button_make_hashes = Gtk.Button()
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_make_hashes.set_valign(Gtk.Align.CENTER)
-        self.button_make_hashes.set_tooltip_text("Compute all available hash types for this file")
+        self.button_make_hashes.set_tooltip_text("Calculate all available hash types for this file")
         self.button_make_hashes.connect("clicked", self.on_click_make_hashes)
 
         self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
@@ -246,7 +246,7 @@ class MainWindow(Adw.ApplicationWindow):
     def build_ui(self):
         self.empty_placeholder = Adw.StatusPage(
             title="No Results",
-            description="Select files or folders to compute their hashes.",
+            description="Select files or folders to calculate their hashes.",
             icon_name="text-x-generic-symbolic",
         )
         self.empty_error_placeholder = Adw.StatusPage(
@@ -363,15 +363,14 @@ class MainWindow(Adw.ApplicationWindow):
             ),
         )
         self.first_top_bar_box.append(self.button_cancel)
-        self.button_about = Gtk.Button()
-        self.button_about.set_valign(Gtk.Align.CENTER)
-        self.button_about.connect("clicked", self.on_click_present_about_dialog)
-        self.button_about_content = Adw.ButtonContent.new()
-        self.button_about_content.set_icon_name(icon_name="help-about-symbolic")
-        self.button_about_content.set_label(label="About")
-        self.button_about_content.set_use_underline(use_underline=True)
-        self.button_about.set_child(self.button_about_content)
-        self.first_top_bar_box.append(self.button_about)
+
+        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
+        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
+        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
+        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
+        self.first_top_bar_box.append(self.drop_down_algo_button)
 
         self.spacer = Gtk.Box()
         self.spacer.set_hexpand(True)
@@ -425,17 +424,19 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.second_top_bar_box.append(self.button_clear)
 
-        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
-        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
-        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
-        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        self.second_top_bar_box.append(self.drop_down_algo_button)
+        self.button_about = Gtk.Button()
+        self.button_about.set_valign(Gtk.Align.CENTER)
+        self.button_about.connect("clicked", self.on_click_present_about_dialog)
+        self.button_about_content = Adw.ButtonContent.new()
+        self.button_about_content.set_icon_name(icon_name="help-about-symbolic")
+        self.button_about_content.set_label(label="About")
+        self.button_about_content.set_use_underline(use_underline=True)
+        self.button_about.set_child(self.button_about_content)
+        self.second_top_bar_box.append(self.button_about)
 
     def setup_headerbar(self):
         self.header_bar = Adw.HeaderBar()
-        self.header_title_widget = Gtk.Label(label=f"<big><b>Compute {self.algo.upper()} Hashes</b></big>", use_markup=True)
+        self.header_title_widget = Gtk.Label(label=f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>", use_markup=True)
         self.header_bar.set_title_widget(self.header_title_widget)
         self.first_top_bar_box.append(self.header_bar)
 
@@ -503,7 +504,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_open.set_sensitive(False)
         self.drop_down_algo_button.set_sensitive(False)
         self.toolbar_view.set_content(self.main_content_overlay)
-        self.processing_thread = threading.Thread(target=self.compute_hash, args=(paths, algo or self.algo), daemon=True)
+        self.processing_thread = threading.Thread(target=self.calculate_hash, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.hide_progress, priority=GLib.PRIORITY_DEFAULT)
@@ -566,7 +567,7 @@ class MainWindow(Adw.ApplicationWindow):
             return False  # Stop monitoring
         return True  # Continue monitoring
 
-    def compute_hash(self, paths: list[Path], algo: str):
+    def calculate_hash(self, paths: list[Path], algo: str):
         total_bytes = 0
         jobs = []
         for path in paths:
@@ -678,13 +679,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_click_present_about_dialog(self, _):
         about_dialog = Adw.AboutDialog.new()
-        about_dialog.set_application_name("Compute Hash App")
+        about_dialog.set_application_name("Quick File Hasher")
         about_dialog.set_version("0.6.5")
         about_dialog.set_developer_name("Doğukan Doğru (dd-se)")
         about_dialog.set_license_type(Gtk.License(Gtk.License.MIT_X11))
-        about_dialog.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to compute hashes.")
-        about_dialog.set_website("https://github.com/dd-se/nautilus-extension-compute-hash-app")
-        about_dialog.set_issue_url("https://github.com/dd-se/nautilus-extension-compute-hash-app/issues")
+        about_dialog.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
+        about_dialog.set_website("https://github.com/dd-se/nautilus-extension-quick-file-hasher")
+        about_dialog.set_issue_url("https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues")
         about_dialog.set_copyright("© 2025 Doğukan Doğru (dd-se)")
         about_dialog.set_developers(["dd-se https://github.com/dd-se"])
         about_dialog.present(self)
@@ -729,7 +730,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_selected_item(self, drop_down: Gtk.DropDown, g_param_object):
         self.algo = drop_down.get_selected_item().get_string()
-        self.header_title_widget.set_label(f"<big><b>Compute {self.algo.upper()} Hashes</b></big>")
+        self.header_title_widget.set_label(f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>")
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
@@ -747,7 +748,7 @@ class MainWindow(Adw.ApplicationWindow):
 class Application(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="com.github.dd-se.hash-app",
+            application_id="com.github.dd-se.quick-file-hasher",
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
 
