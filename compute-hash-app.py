@@ -352,6 +352,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.button_cancel = Gtk.Button(label="Cancel Job")
         self.button_cancel.add_css_class("destructive-action")
+        self.button_cancel.set_valign(Gtk.Align.CENTER)
         self.button_cancel.set_visible(False)
         self.button_cancel.set_tooltip_text("Cancel the current operation")
         self.button_cancel.connect(
@@ -362,6 +363,15 @@ class MainWindow(Adw.ApplicationWindow):
             ),
         )
         self.first_top_bar_box.append(self.button_cancel)
+        self.button_about = Gtk.Button()
+        self.button_about.set_valign(Gtk.Align.CENTER)
+        self.button_about.connect("clicked", self.on_click_present_about_dialog)
+        self.button_about_content = Adw.ButtonContent.new()
+        self.button_about_content.set_icon_name(icon_name="help-about-symbolic")
+        self.button_about_content.set_label(label="About")
+        self.button_about_content.set_use_underline(use_underline=True)
+        self.button_about.set_child(self.button_about_content)
+        self.first_top_bar_box.append(self.button_about)
 
         self.spacer = Gtk.Box()
         self.spacer.set_hexpand(True)
@@ -439,7 +449,6 @@ class MainWindow(Adw.ApplicationWindow):
             title="Drop Files Here",
             icon_name="folder-open-symbolic",
         )
-
         self.drop = Gtk.DropTargetAsync.new(None, Gdk.DragAction.COPY)
         self.drop.connect(
             "drag-enter",
@@ -458,7 +467,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         def on_read_value(drop: Gdk.Drop, result):
             try:
-                files = drop.read_value_finish(result)
+                files: Gdk.FileList = drop.read_value_finish(result)
                 paths = [Path(f.get_path()) for f in files.get_files()]
                 action = Gdk.DragAction.COPY
             except Exception as e:
@@ -657,6 +666,29 @@ class MainWindow(Adw.ApplicationWindow):
             target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
         ).play()
 
+    def results_to_txt(self):
+        results_text = "\n".join(str(r) for r in self.ui_results)
+        errors_text = "\n".join(str(r) for r in self.ui_errors)
+        now = datetime.now().strftime("%B %d, %Y at %I:%H:%M %Z")
+        if results_text:
+            output = f"Results - Saved on {now}:\n{'-' * 40}\n{results_text} {'\n\n' if errors_text else '\n'}"
+        if errors_text:
+            output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}\n"
+        return output
+
+    def on_click_present_about_dialog(self, _):
+        about_dialog = Adw.AboutDialog.new()
+        about_dialog.set_application_name("Compute Hash App")
+        about_dialog.set_version("0.6.5")
+        about_dialog.set_developer_name("Doğukan Doğru (dd-se)")
+        about_dialog.set_license_type(Gtk.License(Gtk.License.MIT_X11))
+        about_dialog.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to compute hashes.")
+        about_dialog.set_website("https://github.com/dd-se/nautilus-extension-compute-hash-app")
+        about_dialog.set_issue_url("https://github.com/dd-se/nautilus-extension-compute-hash-app/issues")
+        about_dialog.set_copyright("© 2025 Doğukan Doğru (dd-se)")
+        about_dialog.set_developers(["dd-se https://github.com/dd-se"])
+        about_dialog.present(self)
+
     def on_select_files_clicked(self, _):
         file_dialog = Gtk.FileDialog()
         file_dialog.set_title(title="Select files")
@@ -671,19 +703,9 @@ class MainWindow(Adw.ApplicationWindow):
             callback=on_files_dialog_dismissed,
         )
 
-    def get_all_results(self):
-        results_text = "\n".join(str(r) for r in self.ui_results)
-        errors_text = "\n".join(str(r) for r in self.ui_errors)
-        now = datetime.now().strftime("%B %d, %Y at %I:%H:%M %Z")
-        if results_text:
-            output = f"Results - Saved on {now}:\n{'-' * 40}\n{results_text}\n\n"
-        if errors_text:
-            output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}".strip()
-        return output
-
     def on_copy_all_clicked(self, button: Gtk.Button):
         clipboard = button.get_clipboard()
-        output = self.get_all_results()
+        output = self.results_to_txt()
         clipboard.set(output)
         self.add_toast("<big>✅ Results copied to clipboard</big>")
 
@@ -698,7 +720,7 @@ class MainWindow(Adw.ApplicationWindow):
             path: str = local_file.get_path()
             try:
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write(self.get_all_results())
+                    f.write(self.results_to_txt())
                 self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
             except Exception as e:
                 self.add_toast(f"<big>❌ Failed to save: {e}</big>")
