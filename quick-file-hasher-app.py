@@ -2,11 +2,13 @@
 import hashlib
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from queue import Queue
 from typing import Literal
@@ -28,14 +30,12 @@ def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(loglevel)
     handler = logging.StreamHandler()
-    formatter = logging.Formatter("[%(asctime)s] %(levelname)s %(name)s.%(funcName)s(): %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    formatter = logging.Formatter("[%(asctime)s] %(levelname)-6s | %(funcName)-15s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False
     return logger
 
-
-logger = get_logger(__name__)
 
 css = b"""
 .view-switcher button {
@@ -65,6 +65,100 @@ css = b"""
 css_provider = Gtk.CssProvider()
 css_provider.load_from_data(css)
 Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+logger = get_logger(__name__)
+
+
+class IgnoreRule:
+    def __init__(self, pattern: str, base_path: Path):
+        self.negation = pattern.startswith("!")
+        if self.negation:
+            pattern = pattern[1:]
+
+        self.directory_only = pattern.endswith("/")
+        pattern = pattern.rstrip("/")
+
+        self.anchored = pattern.startswith("/")
+        if self.anchored:
+            pattern = pattern[1:]
+
+        if pattern.startswith("\\") and len(pattern) > 1 and pattern[1] in ("#", "!"):
+            pattern = pattern[1:]
+
+        pattern = self.clean_trailing_spaces(pattern)
+        pattern = pattern.replace("\\ ", " ")
+
+        self.regex = re.compile(self.to_regex(pattern))
+        self.base_path = base_path
+
+    def clean_trailing_spaces(self, pattern: str) -> str:
+        while pattern.endswith(" ") and not pattern.endswith("\\ "):
+            pattern = pattern[:-1]
+        return pattern
+
+    def to_regex(self, pattern: str) -> str:
+        def handle_char_class(p: str) -> str:
+            if p.startswith("[!"):
+                return "[^" + re.escape(p[2:-1]) + "]"
+            return p
+
+        parts = []
+        i = 0
+        while i < len(pattern):
+            if pattern[i] == "[" and i + 1 < len(pattern):
+                j = pattern.find("]", i)
+                if j == -1:
+                    parts.append(re.escape(pattern[i:]))
+                    break
+                parts.append(handle_char_class(pattern[i : j + 1]))
+                i = j + 1
+            else:
+                parts.append(re.escape(pattern[i]))
+                i += 1
+
+        pattern = "".join(parts)
+        pattern = pattern.replace(r"\*\*", ".*")
+        pattern = pattern.replace(r"\*", "[^/]*")
+        pattern = pattern.replace(r"\?", "[^/]")
+
+        prefix = r"^" if self.anchored else r"(^|/)"
+        suffix = r"(/|$)" if self.directory_only else r"($|/)"
+
+        return f"{prefix}{pattern}{suffix}"
+
+    @lru_cache(maxsize=None)
+    def get_rel_path(self, path: Path) -> str:
+        return path.relative_to(self.base_path).as_posix()
+
+    def match(self, path: Path) -> bool:
+        if self.directory_only and path.is_file():
+            return False
+
+        rel_path = self.get_rel_path(path)
+        return bool(self.regex.search(rel_path))
+
+    @staticmethod
+    def parse_gitignore(gitignore_path: Path, extend: list["IgnoreRule"] | None = None) -> list["IgnoreRule"]:
+        if extend:
+            rules = extend
+        else:
+            rules = [IgnoreRule(".git/", gitignore_path.parent)]
+
+        with gitignore_path.open() as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    rules.append(IgnoreRule(line, gitignore_path.parent))
+        return rules
+
+    @staticmethod
+    def is_ignored(path: Path, rules: list["IgnoreRule"]) -> bool:
+        for rule in reversed(rules):
+            if rule.match(path):
+                return not rule.negation
+            elif rule.directory_only:
+                if any(rule.match(parent) for parent in path.parents if parent.is_relative_to(rule.base_path)):
+                    return not rule.negation
+        return False
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -96,12 +190,12 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
 
 
 class HashResultRow(Adw.ActionRow):
-    def __init__(self, file_name: str, hash_value: str, hash_algorithm: str, **kwargs):
+    def __init__(self, path: Path, hash_value: str, hash_algorithm: str, **kwargs):
         super().__init__(**kwargs)
-        self.file_name = file_name
+        self.path = path
         self.hash_value = hash_value
         self.algo = hash_algorithm
-        self.set_title(self.file_name)
+        self.set_title(GLib.markup_escape_text(self.path.as_posix()))
         self.set_subtitle(self.hash_value)
         self.set_subtitle_lines(1)
         self.set_title_lines(1)
@@ -140,13 +234,13 @@ class HashResultRow(Adw.ActionRow):
         self.add_suffix(self.button_delete)
 
     def __str__(self):
-        return f"{self.file_name}:{self.hash_value}:{self.algo}"
+        return f"{self.path}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
         main_window: MainWindow = button.get_root()
         for algo in main_window.available_algorithms:
             if algo != self.algo:
-                main_window.start_job([Path(self.get_title())], algo)
+                main_window.start_job([self.path], algo)
 
     def on_copy_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -228,15 +322,48 @@ class HashResultRow(Adw.ActionRow):
         self.button_make_hashes.set_sensitive(False)
 
 
+class Preferences(Adw.PreferencesDialog):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.set_title(title="Preferences")
+
+        preference_page = Adw.PreferencesPage()
+        self.add(preference_page)
+
+        preference_group = Adw.PreferencesGroup()
+        preference_group.set_description(description="Configure how files and folders are processed")
+        preference_page.add(group=preference_group)
+
+        self.setting_recursive = Adw.SwitchRow()
+        self.setting_recursive.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="edit-find-symbolic"))
+        self.setting_recursive.set_title(title="Recursive Traversal")
+        self.setting_recursive.set_subtitle(subtitle="Enable to process all files in subdirectories")
+        preference_group.add(child=self.setting_recursive)
+
+        self.setting_gitignore = Adw.SwitchRow()
+        self.setting_gitignore.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="action-unavailable-symbolic"))
+        self.setting_gitignore.set_title(title="Respect .gitignore")
+        self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
+        preference_group.add(child=self.setting_gitignore)
+
+    def recursive_mode(self):
+        return self.setting_recursive.get_active()
+
+    def respect_gitignore(self):
+        return self.setting_gitignore.get_active()
+
+
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
+    VERSION = "0.9.0"
     algo: str = "sha256"
 
     def __init__(self, app, paths: list[Path] | None = None):
         super().__init__(application=app)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
+        self.pref = Preferences()
         self.update_queue = Queue()
         self.cancel_event = threading.Event()
         self.build_ui()
@@ -267,6 +394,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
         self.setup_buttons()
         self.setup_headerbar()
+        self.setup_menu()
         self.setup_main_content()
         self.setup_progress_bar()
         self.setup_drag_and_drop()
@@ -325,17 +453,28 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.connect("notify::visible-child", self.has_results)
 
     def setup_buttons(self):
-        self.button_open = Gtk.Button()
-        self.button_open.add_css_class("suggested-action")
-        self.button_open.set_valign(Gtk.Align.CENTER)
-        self.button_open.set_tooltip_text("Select files to add")
-        self.button_open.connect("clicked", self.on_select_files_clicked)
-        self.button_open_content = Adw.ButtonContent.new()
-        self.button_open_content.set_icon_name(icon_name="document-open-symbolic")
-        self.button_open_content.set_label(label="_Open")
-        self.button_open_content.set_use_underline(use_underline=True)
-        self.button_open.set_child(self.button_open_content)
-        self.first_top_bar_box.append(self.button_open)
+        self.button_select_files = Gtk.Button()
+        self.button_select_files.add_css_class("suggested-action")
+        self.button_select_files.set_valign(Gtk.Align.CENTER)
+        self.button_select_files.set_tooltip_text("Select files to add")
+        self.button_select_files.connect("clicked", self.on_select_files_clicked)
+        self.button_select_files_content = Adw.ButtonContent.new()
+        self.button_select_files_content.set_icon_name(icon_name="document-open-symbolic")
+        self.button_select_files_content.set_label(label="_Select Files")
+        self.button_select_files_content.set_use_underline(use_underline=True)
+        self.button_select_files.set_child(self.button_select_files_content)
+        self.first_top_bar_box.append(self.button_select_files)
+        self.button_select_folders = Gtk.Button()
+        self.button_select_folders.add_css_class("suggested-action")
+        self.button_select_folders.set_valign(Gtk.Align.CENTER)
+        self.button_select_folders.set_tooltip_text("Select folders to add")
+        self.button_select_folders.connect("clicked", self.on_select_folders_clicked)
+        self.button_select_folders_content = Adw.ButtonContent.new()
+        self.button_select_folders_content.set_icon_name(icon_name="document-open-symbolic")
+        self.button_select_folders_content.set_label(label="_Select Folders")
+        self.button_select_folders_content.set_use_underline(use_underline=True)
+        self.button_select_folders.set_child(self.button_select_folders_content)
+        self.first_top_bar_box.append(self.button_select_folders)
 
         self.button_save = Gtk.Button()
         self.button_save.set_sensitive(False)
@@ -398,10 +537,37 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_sensitive(False)
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
+
+        def sort_by_hierarchy(row1: HashResultRow, row2: HashResultRow):
+            """
+            /folder/file_1\n
+            /folder/file_2\n
+            /folder/folder/file_1 ...
+            """
+            parts1 = row1.path.parts
+            parts2 = row2.path.parts
+
+            min_len = min(len(parts1), len(parts2))
+            for i in range(min_len):
+                if parts1[i] != parts2[i]:
+                    path1_at_level = Path(*parts1[: i + 1])
+                    path2_at_level = Path(*parts2[: i + 1])
+                    is_dir1 = path1_at_level.is_dir()
+                    is_dir2 = path2_at_level.is_dir()
+                    # Files come first at same level
+                    if is_dir1 and not is_dir2:
+                        return 1
+                    if not is_dir1 and is_dir2:
+                        return -1
+                    # Same type, compare lexicographically
+                    return -1 if parts1[i] < parts2[i] else 1
+            # Identical
+            return 0
+
         self.button_sort.connect(
             "clicked",
             lambda _: (
-                self.ui_results.set_sort_func(lambda r1, r2: (r1.get_title() > r2.get_title()) - (r1.get_title() < r2.get_title())),
+                self.ui_results.set_sort_func(sort_by_hierarchy),
                 self.ui_results.set_sort_func(None),
                 self.add_toast("<big>✅ Results sorted by file path</big>"),
             ),
@@ -424,7 +590,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.second_top_bar_box.append(self.button_clear)
 
-        self.button_about = Gtk.Button()
+        self.button_about = Gtk.Button(visible=False)
         self.button_about.set_valign(Gtk.Align.CENTER)
         self.button_about.connect("clicked", self.on_click_present_about_dialog)
         self.button_about_content = Adw.ButtonContent.new()
@@ -439,6 +605,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.header_title_widget = Gtk.Label(label=f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>", use_markup=True)
         self.header_bar.set_title_widget(self.header_title_widget)
         self.first_top_bar_box.append(self.header_bar)
+
+    def setup_menu(self):
+        self.menu = Gio.Menu()
+        self.menu.append("Preferences", "win.preferences")
+        self.menu.append("About", "win.about")
+        self.menu.append("Quit", "app.quit")
+        self.create_win_action("about", self.on_click_present_about_dialog)
+        self.create_win_action("preferences", self.on_click_open_preferences)
+        self.button_menu = Gtk.MenuButton()
+        self.button_menu.set_icon_name("open-menu-symbolic")
+        self.button_menu.set_menu_model(self.menu)
+        self.header_bar.pack_end(self.button_menu)
+
+    def on_click_open_preferences(self, *_):
+        self.pref.present(self)
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
@@ -501,7 +682,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.spinner.set_opacity(1.0)
         self.spinner.set_visible(True)
         self.button_cancel.set_visible(True)
-        self.button_open.set_sensitive(False)
+        self.button_select_files.set_sensitive(False)
+        self.button_select_folders.set_sensitive(False)
         self.drop_down_algo_button.set_sensitive(False)
         self.toolbar_view.set_content(self.main_content_overlay)
         self.processing_thread = threading.Thread(target=self.calculate_hash, args=(paths, algo or self.algo), daemon=True)
@@ -560,7 +742,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def check_processing_complete(self):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
-            self.button_open.set_sensitive(True)
+            self.button_select_files.set_sensitive(True)
+            self.button_select_folders.set_sensitive(True)
             self.button_cancel.set_visible(False)
             self.drop_down_algo_button.set_sensitive(True)
             self.has_results()
@@ -568,26 +751,69 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def calculate_hash(self, paths: list[Path], algo: str):
-        total_bytes = 0
+        for i, path in enumerate(paths):
+            if path.is_dir() and self.pref.respect_gitignore():
+                gitignore_file = path / ".gitignore"
+                rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
+                paths[i] = (path, rules)
+                logger.debug(f"Rule count early: {len(paths[i][1])}")
+            else:
+                paths[i] = (path, [])
+
         jobs = []
-        for path in paths:
+        total_bytes = 0
+
+        def process_path(current_path: Path, current_rules: list[IgnoreRule]):
+            nonlocal total_bytes
+            if self.cancel_event.is_set():
+                return
+
+            if IgnoreRule.is_ignored(current_path, current_rules):
+                logger.debug(f"Skipped late: {current_path}")
+                return
+
+            if current_path.is_file():
+                total_bytes += current_path.stat().st_size
+                jobs.append(current_path)
+
+            elif current_path.is_dir() and self.pref.recursive_mode():
+                local_rules = []
+                if self.pref.respect_gitignore():
+                    local_rules = current_rules.copy()
+                    gitignore_file = current_path / ".gitignore"
+
+                    if gitignore_file.exists():
+                        IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
+                        logger.debug(f"Added rule late: {gitignore_file}")
+                        logger.debug(f"Rule count late: {len(local_rules)}")
+
+                for subpath in current_path.iterdir():
+                    process_path(subpath, local_rules)
+            else:
+                # Raise error for invalid paths
+                current_path.stat()
+
+        for root_path, ignore_rules in paths:
             try:
-                if path.is_dir():
-                    for f in path.iterdir():
-                        if f.is_file():
-                            total_bytes += f.stat().st_size
-                            jobs.append(f)
+                if root_path.is_dir():
+                    for path in root_path.iterdir():
+                        if IgnoreRule.is_ignored(path, ignore_rules):
+                            logger.debug(f"Skipped early: {path}")
+                            continue
+                        process_path(path, ignore_rules)
                 else:
-                    total_bytes += path.stat().st_size
-                    jobs.append(path)
+                    process_path(root_path, ignore_rules)
             except Exception as e:
                 logger.exception(f"Error processing file: {e}")
-                self.update_queue.put(("error", str(path), str(e), algo))
+                self.update_queue.put(("error", root_path, str(e), algo))
 
         if total_bytes == 0:
             self.progress_bar.set_fraction(1.0)
 
+        bytes_read = 0
+
         def hash_task(file: Path, shake_length: int = 32):
+            nonlocal bytes_read
             if self.cancel_event.is_set():
                 return
             if file.stat().st_size > 1024 * 1024 * 100:
@@ -601,12 +827,12 @@ class MainWindow(Adw.ApplicationWindow):
                         if self.cancel_event.is_set():
                             return
                         hash_obj.update(chunk)
-                        hash_task.bytes_read += len(chunk)
-                        self.update_queue.put(("progress", min(hash_task.bytes_read / total_bytes, 1.0)))
+                        bytes_read += len(chunk)
+                        self.update_queue.put(("progress", min(bytes_read / total_bytes, 1.0)))
                     self.update_queue.put(
                         (
                             "result",
-                            file.as_posix(),
+                            file,
                             hash_obj.hexdigest(shake_length) if "shake" in algo else hash_obj.hexdigest(),
                             algo,
                         )
@@ -615,7 +841,6 @@ class MainWindow(Adw.ApplicationWindow):
                 logger.exception(f"Error computing hash for file: {file.as_posix()}")
                 self.update_queue.put(("error", str(file), str(e), algo))
 
-        hash_task.bytes_read = 0
         with ThreadPoolExecutor(max_workers=max(1, os.cpu_count() - 1)) as executor:
             list(executor.map(hash_task, jobs))
 
@@ -631,8 +856,8 @@ class MainWindow(Adw.ApplicationWindow):
             target=Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value)),
         ).play()
 
-    def add_result(self, file_name: str, hash_value: str, algo: str, is_error: bool = False):
-        row = HashResultRow(file_name, hash_value, algo)
+    def add_result(self, file: Path, hash_value: str, algo: str, is_error: bool = False):
+        row = HashResultRow(file, hash_value, algo)
         if is_error:
             self.ui_errors.append(row)
             row.error()
@@ -677,10 +902,10 @@ class MainWindow(Adw.ApplicationWindow):
             output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}\n"
         return output
 
-    def on_click_present_about_dialog(self, _):
-        about_dialog = Adw.AboutDialog.new()
+    def on_click_present_about_dialog(self, *_):
+        about_dialog = Adw.AboutDialog()
         about_dialog.set_application_name("Quick File Hasher")
-        about_dialog.set_version("0.6.5")
+        about_dialog.set_version(self.VERSION)
         about_dialog.set_developer_name("Doğukan Doğru (dd-se)")
         about_dialog.set_license_type(Gtk.License(Gtk.License.MIT_X11))
         about_dialog.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
@@ -700,6 +925,20 @@ class MainWindow(Adw.ApplicationWindow):
             self.start_job(paths)
 
         file_dialog.open_multiple(
+            parent=self,
+            callback=on_files_dialog_dismissed,
+        )
+
+    def on_select_folders_clicked(self, _):
+        file_dialog = Gtk.FileDialog()
+        file_dialog.set_title(title="Select Folders")
+
+        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
+            files = file_dialog.select_multiple_folders_finish(gio_task)
+            paths = [Path(f.get_path()) for f in files]
+            self.start_job(paths)
+
+        file_dialog.select_multiple_folders(
             parent=self,
             callback=on_files_dialog_dismissed,
         )
@@ -744,6 +983,11 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.toast_overlay.add_toast(toast)
 
+    def create_win_action(self, name, callback):
+        action = Gio.SimpleAction.new(name=name, parameter_type=None)
+        action.connect("activate", callback)
+        self.add_action(action=action)
+
 
 class Application(Adw.Application):
     def __init__(self):
@@ -751,6 +995,10 @@ class Application(Adw.Application):
             application_id="com.github.dd-se.quick-file-hasher",
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
+        self.create_action("quit", self.on_click_quit)
+
+    def on_click_quit(self, *_):
+        self.quit()
 
     def do_activate(self):
         logger.info(f"App {self.get_application_id()} activated")
@@ -762,6 +1010,8 @@ class Application(Adw.Application):
     def do_open(self, files, n_files, hint):
         logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
         paths = [Path(f.get_path()) for f in files if f.get_path()]
+        logger.debug(paths)
+
         win = self.props.active_window
         if not win:
             win = MainWindow(self, paths)
@@ -773,7 +1023,18 @@ class Application(Adw.Application):
         Adw.Application.do_startup(self)
 
     def do_shutdown(self):
+        logger.info("Shutting down...")
         Adw.Application.do_shutdown(self)
+
+    def create_action(self, name, callback, shortcuts=None):
+        action = Gio.SimpleAction.new(name=name, parameter_type=None)
+        action.connect("activate", callback)
+        self.add_action(action=action)
+        if shortcuts:
+            self.set_accels_for_action(
+                detailed_action_name=f"app.{name}",
+                accels=shortcuts,
+            )
 
 
 if __name__ == "__main__":
