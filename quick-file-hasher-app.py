@@ -205,7 +205,6 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
         subprocess.Popen(cmd, env=env)
         logger.info(f"App {APP_ID} launched by file manager")
-        logger.info(f"Recursive mode: {recursive_mode}")
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
         if not current_folder.is_directory():
@@ -825,13 +824,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     def calculate_hash(self, paths: list[Path], algo: str):
         for i, path in enumerate(paths):
-            if path.is_dir() and self.pref.respect_gitignore():
-                gitignore_file = path / ".gitignore"
-                rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
-                paths[i] = (path, rules)
-                logger.debug(f"Rule count early: {len(paths[i][1])}")
-            else:
+            try:
+                if path.is_dir() and self.pref.respect_gitignore():
+                    gitignore_file = path / ".gitignore"
+                    rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
+                    paths[i] = (path, rules)
+                    logger.debug(f"Rule count early: {len(paths[i][1])}")
+                else:
+                    paths[i] = (path, [])
+            except Exception as e:
                 paths[i] = (path, [])
+                logger.exception(f"Error processing file: {e}")
 
         jobs = []
         total_bytes = 0

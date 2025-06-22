@@ -1,12 +1,10 @@
 APPNAME = "Quick File Hasher"
-VERSION = "0.7.0"
 EXTENSION = quick-file-hasher-app.py
-SHORTCUT_NAME = com.github.dd-se.quick-file-hasher.desktop
+VERSION = $(shell grep -Po '^APP_VERSION\s*=\s*\K[^\s#]+' $(EXTENSION))
+SHORTCUT_NAME = $(shell grep -Po '^APP_ID\s*=\s*\K[^\s#]+' $(EXTENSION)).desktop
 INSTALL_DIR = $(HOME)/.local/share/nautilus-python/extensions
 DESKTOP_DIR = $(HOME)/.local/share/applications
 
-
-# Create .desktop file
 shortcut:
 	@echo "Creating .desktop file: $(SHORTCUT_NAME)"
 	@echo "[Desktop Entry]" > $(SHORTCUT_NAME)
@@ -25,6 +23,8 @@ install: shortcut
 	@install -m 755 $(EXTENSION) $(INSTALL_DIR)
 	@install -m 644 $(SHORTCUT_NAME) $(DESKTOP_DIR)
 	@rm -f $(SHORTCUT_NAME)
+	@echo "Installed $(EXTENSION) to $(INSTALL_DIR)"
+	@echo "Installed desktop entry $(SHORTCUT_NAME) to $(DESKTOP_DIR)"
 	@echo "Installation completed successfully"
 
 uninstall:
@@ -35,8 +35,11 @@ uninstall:
 symlink: shortcut
 	@mkdir -p $(INSTALL_DIR)
 	@mkdir -p $(DESKTOP_DIR)
-	@ln -s $(PWD)/$(EXTENSION) $(INSTALL_DIR)/
+	@ln -sf $(PWD)/$(EXTENSION) $(INSTALL_DIR)/
 	@install -m 644 $(SHORTCUT_NAME) $(DESKTOP_DIR)
 	@rm -f $(SHORTCUT_NAME)
-	@echo "Symlink installed successfully"
+	@echo "Symlink for $(EXTENSION) created in $(INSTALL_DIR)"
+	@echo "Installed desktop entry $(SHORTCUT_NAME) to $(DESKTOP_DIR)"
+	@echo "Installation completed successfully"
+
 .PHONY: shortcut install uninstall symlink
