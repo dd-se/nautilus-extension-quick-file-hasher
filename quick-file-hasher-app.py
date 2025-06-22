@@ -165,18 +165,40 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def __init__(self):
         pass
 
-    def launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo]):
+    def launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
         cmd = ["python3", Path(__file__).as_posix()] + file_paths
-        subprocess.Popen(cmd)
+        env = None
+        if recursive_mode:
+            env = os.environ.copy()
+            env["CH_RECURSIVE_MODE"] = "YES"
+        subprocess.Popen(cmd, env=env)
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
-        item = Nautilus.MenuItem(
-            name="AdwNautilusExtension::OpenFolderInApp",
-            label="Calculate Hashes",
+        if not current_folder.is_directory():
+            return []
+        menu = Nautilus.MenuItem(
+            name="AdwNautilusExtension::OpenFolderInAppMenu",
+            label="Calculate Hashes Menu",
         )
-        item.connect("activate", self.launch_app, [current_folder])
-        return [item]
+        # Context Submenu
+        submenu = Nautilus.Menu()
+        menu.set_submenu(submenu)
+        # Normal mode
+        item_normal = Nautilus.MenuItem(
+            name="AdwNautilusExtension::OpenFolderInAppNormal",
+            label="Calculate Hashes (Normal)",
+        )
+        item_normal.connect("activate", self.launch_app, [current_folder])
+        submenu.append_item(item_normal)
+        # Recursive mode
+        item_recursive = Nautilus.MenuItem(
+            name="AdwNautilusExtension::OpenFolderInAppRecursive",
+            label="Calculate Hashes (Recursive + Gitignore)",
+        )
+        item_recursive.connect("activate", self.launch_app, [current_folder], True)
+        submenu.append_item(item_recursive)
+        return [menu]
 
     def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
         if not files:
@@ -345,6 +367,9 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_gitignore.set_title(title="Respect .gitignore")
         self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
         preference_group.add(child=self.setting_gitignore)
+
+        self.setting_recursive.set_active(os.getenv("CH_RECURSIVE_MODE"))
+        self.setting_gitignore.set_active(os.getenv("CH_RECURSIVE_MODE"))
 
     def recursive_mode(self):
         return self.setting_recursive.get_active()
