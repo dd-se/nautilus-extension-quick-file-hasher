@@ -1,4 +1,30 @@
 #!/usr/bin/env python3
+# MIT License
+
+# Copyright (c) 2025 Doğukan Doğru
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+APP_ID = "com.github.dd-se.quick-file-hasher"
+APP_VERSION = "0.9.5"
+APP_DEFAULT_HASHING_ALGORITHM = "sha256"
+
 import hashlib
 import logging
 import os
@@ -22,19 +48,6 @@ gi.require_version(namespace="Nautilus", version="4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 Adw.init()
-
-
-def get_logger(name: str) -> logging.Logger:
-    loglevel_str = os.getenv("LOGLEVEL", "INFO").upper()
-    loglevel = getattr(logging, loglevel_str, logging.INFO)
-    logger = logging.getLogger(name)
-    logger.setLevel(loglevel)
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("[%(asctime)s] %(levelname)-6s | %(funcName)-15s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
 
 
 css = b"""
@@ -65,6 +78,21 @@ css = b"""
 css_provider = Gtk.CssProvider()
 css_provider.load_from_data(css)
 Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+def get_logger(name: str) -> logging.Logger:
+    loglevel_str = os.getenv("LOGLEVEL", "INFO").upper()
+    loglevel = getattr(logging, loglevel_str, logging.INFO)
+    logger = logging.getLogger(name)
+    logger.setLevel(loglevel)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("[%(asctime)s] %(levelname)-6s | %(funcName)-15s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
 logger = get_logger(__name__)
 
 
@@ -165,14 +193,19 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def __init__(self):
         pass
 
-    def launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
+    def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
         cmd = ["python3", Path(__file__).as_posix()] + file_paths
         env = None
         if recursive_mode:
             env = os.environ.copy()
-            env["CH_RECURSIVE_MODE"] = "YES"
+            env["CH_RECURSIVE_MODE"] = "yes"
+            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'yes'\"")
+        else:
+            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
         subprocess.Popen(cmd, env=env)
+        logger.info(f"App {APP_ID} launched by file manager")
+        logger.info(f"Recursive mode: {recursive_mode}")
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
         if not current_folder.is_directory():
@@ -189,14 +222,14 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             name="AdwNautilusExtension::OpenFolderInAppNormal",
             label="Calculate Hashes (Normal)",
         )
-        item_normal.connect("activate", self.launch_app, [current_folder])
+        item_normal.connect("activate", self.nautilus_launch_app, [current_folder])
         submenu.append_item(item_normal)
         # Recursive mode
         item_recursive = Nautilus.MenuItem(
             name="AdwNautilusExtension::OpenFolderInAppRecursive",
             label="Calculate Hashes (Recursive + Gitignore)",
         )
-        item_recursive.connect("activate", self.launch_app, [current_folder], True)
+        item_recursive.connect("activate", self.nautilus_launch_app, [current_folder], True)
         submenu.append_item(item_recursive)
         return [menu]
 
@@ -207,7 +240,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             name="AdwNautilusExtension::OpenFilesInApp",
             label="Calculate Hashes",
         )
-        item.connect("activate", self.launch_app, files)
+        item.connect("activate", self.nautilus_launch_app, files)
         return [item]
 
 
@@ -368,8 +401,13 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
         preference_group.add(child=self.setting_gitignore)
 
-        self.setting_recursive.set_active(os.getenv("CH_RECURSIVE_MODE"))
-        self.setting_gitignore.set_active(os.getenv("CH_RECURSIVE_MODE"))
+        if recursive_mode := bool(os.getenv("CH_RECURSIVE_MODE")):
+            self.set_recursive_mode(recursive_mode)
+            logger.info(f"Recursive mode set to {recursive_mode} via env variable")
+
+    def set_recursive_mode(self, state: bool):
+        self.setting_recursive.set_active(state)
+        self.setting_gitignore.set_active(state)
 
     def recursive_mode(self):
         return self.setting_recursive.get_active()
@@ -381,8 +419,8 @@ class Preferences(Adw.PreferencesDialog):
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
-    VERSION = "0.9.0"
-    algo: str = "sha256"
+    VERSION = APP_VERSION
+    algo: str = APP_DEFAULT_HASHING_ALGORITHM
 
     def __init__(self, app, paths: list[Path] | None = None):
         super().__init__(application=app)
@@ -417,9 +455,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
         self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
-        self.setup_buttons()
-        self.setup_headerbar()
-        self.setup_menu()
+        self.header_bar = Adw.HeaderBar()
+        self.setup_buttons(self.first_top_bar_box, self.second_top_bar_box)
+        self.setup_headerbar(self.first_top_bar_box, self.header_bar)
+        self.setup_menu(self.header_bar)
         self.setup_main_content()
         self.setup_progress_bar()
         self.setup_drag_and_drop()
@@ -436,48 +475,55 @@ class MainWindow(Adw.ApplicationWindow):
         self.spinner.set_size_request(100, 100)
         self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.start()
+
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
         self.main_content_overlay.add_overlay(self.spinner)
         self.main_content_overlay.add_overlay(self.main_box)
 
         self.view_stack = Adw.ViewStack()
+
         self.view_stack.set_vexpand(True)
         self.view_stack.set_hexpand(True)
         self.view_switcher.set_stack(self.view_stack)
         self.view_switcher.add_css_class("view-switcher")
+
         self.results_group = Adw.PreferencesGroup()
         self.results_group.set_hexpand(True)
         self.results_group.set_vexpand(True)
+
         self.ui_results = Gtk.ListBox()
         self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_results.add_css_class("boxed-list")
         self.results_group.add(self.ui_results)
+
         self.results_scrolled_window = Gtk.ScrolledWindow()
         self.results_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.results_scrolled_window.set_child(self.results_group)
-        self.results_stack_page = self.view_stack.add_titled(self.results_scrolled_window, "results", "Results")
-        self.results_stack_page.set_icon_name("view-list-symbolic")
+
+        self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
         self.results_stack_page.set_use_underline(True)
 
         self.errors_group = Adw.PreferencesGroup()
         self.errors_group.set_hexpand(True)
         self.errors_group.set_vexpand(True)
+
         self.ui_errors = Gtk.ListBox()
         self.ui_errors.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_errors.add_css_class("boxed-list")
         self.errors_group.add(self.ui_errors)
+
         self.errors_scrolled_window = Gtk.ScrolledWindow()
         self.errors_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.errors_scrolled_window.set_child(self.errors_group)
-        self.errors_stack_page = self.view_stack.add_titled(self.errors_scrolled_window, "errors", "Errors")
-        self.errors_stack_page.set_icon_name("dialog-error-symbolic")
+        self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
+
         self.view_stack.set_visible_child_name("results")
         self.main_box.append(self.view_stack)
 
         self.view_stack.connect("notify::visible-child", self.has_results)
 
-    def setup_buttons(self):
+    def setup_buttons(self, FIRST_TOP_BOX: Gtk.Box, SECOND_TOP_BOX: Gtk.Box):
         self.button_select_files = Gtk.Button()
         self.button_select_files.add_css_class("suggested-action")
         self.button_select_files.set_valign(Gtk.Align.CENTER)
@@ -488,7 +534,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_select_files_content.set_label(label="_Select Files")
         self.button_select_files_content.set_use_underline(use_underline=True)
         self.button_select_files.set_child(self.button_select_files_content)
-        self.first_top_bar_box.append(self.button_select_files)
+        FIRST_TOP_BOX.append(self.button_select_files)
+
         self.button_select_folders = Gtk.Button()
         self.button_select_folders.add_css_class("suggested-action")
         self.button_select_folders.set_valign(Gtk.Align.CENTER)
@@ -499,7 +546,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_select_folders_content.set_label(label="_Select Folders")
         self.button_select_folders_content.set_use_underline(use_underline=True)
         self.button_select_folders.set_child(self.button_select_folders_content)
-        self.first_top_bar_box.append(self.button_select_folders)
+        FIRST_TOP_BOX.append(self.button_select_folders)
 
         self.button_save = Gtk.Button()
         self.button_save.set_sensitive(False)
@@ -512,7 +559,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save_content.set_label(label="_Save")
         self.button_save_content.set_use_underline(use_underline=True)
         self.button_save.set_child(self.button_save_content)
-        self.first_top_bar_box.append(self.button_save)
+        FIRST_TOP_BOX.append(self.button_save)
 
         self.button_cancel = Gtk.Button(label="Cancel Job")
         self.button_cancel.add_css_class("destructive-action")
@@ -526,7 +573,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.add_toast("<big>❌ Job cancelled</big>"),
             ),
         )
-        self.first_top_bar_box.append(self.button_cancel)
+        FIRST_TOP_BOX.append(self.button_cancel)
 
         self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
         self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
@@ -534,21 +581,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
         self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        self.first_top_bar_box.append(self.drop_down_algo_button)
+        FIRST_TOP_BOX.append(self.drop_down_algo_button)
 
         self.spacer = Gtk.Box()
         self.spacer.set_hexpand(True)
-        self.first_top_bar_box.append(self.spacer)
+        FIRST_TOP_BOX.append(self.spacer)
 
         self.view_switcher = Adw.ViewSwitcher()
         self.view_switcher.set_sensitive(False)
         self.view_switcher.set_hexpand(True)
         self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        self.second_top_bar_box.append(self.view_switcher)
+        SECOND_TOP_BOX.append(self.view_switcher)
 
         self.spacer = Gtk.Box()
         self.spacer.set_hexpand(True)
-        self.second_top_bar_box.append(self.spacer)
+        SECOND_TOP_BOX.append(self.spacer)
 
         self.button_copy_all = Gtk.Button(label="Copy")
         self.button_copy_all.set_sensitive(False)
@@ -556,7 +603,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_copy_all.set_valign(Gtk.Align.CENTER)
         self.button_copy_all.set_tooltip_text("Copy results to clipboard")
         self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
-        self.second_top_bar_box.append(self.button_copy_all)
+        SECOND_TOP_BOX.append(self.button_copy_all)
 
         self.button_sort = Gtk.Button(label="Sort")
         self.button_sort.set_sensitive(False)
@@ -597,7 +644,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.add_toast("<big>✅ Results sorted by file path</big>"),
             ),
         )
-        self.second_top_bar_box.append(self.button_sort)
+        SECOND_TOP_BOX.append(self.button_sort)
 
         self.button_clear = Gtk.Button(label="Clear")
         self.button_clear.set_sensitive(False)
@@ -613,7 +660,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.add_toast("<big>✅ Results cleared</big>"),
             ),
         )
-        self.second_top_bar_box.append(self.button_clear)
+        SECOND_TOP_BOX.append(self.button_clear)
 
         self.button_about = Gtk.Button(visible=False)
         self.button_about.set_valign(Gtk.Align.CENTER)
@@ -623,15 +670,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_about_content.set_label(label="About")
         self.button_about_content.set_use_underline(use_underline=True)
         self.button_about.set_child(self.button_about_content)
-        self.second_top_bar_box.append(self.button_about)
+        SECOND_TOP_BOX.append(self.button_about)
 
-    def setup_headerbar(self):
-        self.header_bar = Adw.HeaderBar()
+    def setup_headerbar(self, FIRST_TOP_BOX: Gtk.Box, HEADER_BAR: Adw.HeaderBar):
         self.header_title_widget = Gtk.Label(label=f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>", use_markup=True)
-        self.header_bar.set_title_widget(self.header_title_widget)
-        self.first_top_bar_box.append(self.header_bar)
+        HEADER_BAR.set_title_widget(self.header_title_widget)
+        FIRST_TOP_BOX.append(HEADER_BAR)
 
-    def setup_menu(self):
+    def setup_menu(self, HEADER_BAR: Adw.HeaderBar):
         self.menu = Gio.Menu()
         self.menu.append("Preferences", "win.preferences")
         self.menu.append("About", "win.about")
@@ -641,7 +687,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_menu = Gtk.MenuButton()
         self.button_menu.set_icon_name("open-menu-symbolic")
         self.button_menu.set_menu_model(self.menu)
-        self.header_bar.pack_end(self.button_menu)
+        HEADER_BAR.pack_end(self.button_menu)
 
     def on_click_open_preferences(self, *_):
         self.pref.present(self)
@@ -676,6 +722,7 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 files: Gdk.FileList = drop.read_value_finish(result)
                 paths = [Path(f.get_path()) for f in files.get_files()]
+                logger.debug(paths)
                 action = Gdk.DragAction.COPY
             except Exception as e:
                 action = 0
@@ -701,25 +748,28 @@ class MainWindow(Adw.ApplicationWindow):
 
     def start_job(self, paths: list[Path], algo: str | None = None):
         self.cancel_event.clear()
+
         self.progress_bar.set_fraction(0.0)
         self.progress_bar.set_opacity(1.0)
         self.progress_bar.set_visible(True)
+
         self.spinner.set_opacity(1.0)
         self.spinner.set_visible(True)
+
         self.button_cancel.set_visible(True)
         self.button_select_files.set_sensitive(False)
         self.button_select_folders.set_sensitive(False)
         self.drop_down_algo_button.set_sensitive(False)
+
         self.toolbar_view.set_content(self.main_content_overlay)
+
         self.processing_thread = threading.Thread(target=self.calculate_hash, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
-        GLib.timeout_add(100, self.hide_progress, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
 
     def process_queue(self):
         if self.cancel_event.is_set():
-            self.update_queue = Queue()
             return False  # Stop monitoring
         iterations = 0
         while not self.update_queue.empty() and iterations < 8:
@@ -741,35 +791,33 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def hide_progress(self):
-        if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
-            Adw.TimedAnimation(
-                widget=self.progress_bar,
-                value_from=1.0,
-                value_to=0,
-                duration=2000,
-                target=Adw.CallbackAnimationTarget.new(
-                    lambda opacity: self.progress_bar.set_opacity(opacity),
-                ),
-            ).play()
-            Adw.TimedAnimation(
-                widget=self.spinner,
-                value_from=1.0,
-                value_to=0,
-                duration=2000,
-                target=Adw.CallbackAnimationTarget.new(
-                    lambda opacity: self.spinner.set_opacity(opacity),
-                ),
-            ).play()
-            GLib.timeout_add(2000, self.spinner.set_visible, False)
-            GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
-            return False  # Stop monitoring
-        return True  # Continue monitoring
+        Adw.TimedAnimation(
+            widget=self.progress_bar,
+            value_from=1.0,
+            value_to=0,
+            duration=2000,
+            target=Adw.CallbackAnimationTarget.new(
+                lambda opacity: self.progress_bar.set_opacity(opacity),
+            ),
+        ).play()
+        Adw.TimedAnimation(
+            widget=self.spinner,
+            value_from=1.0,
+            value_to=0,
+            duration=2000,
+            target=Adw.CallbackAnimationTarget.new(
+                lambda opacity: self.spinner.set_opacity(opacity),
+            ),
+        ).play()
+        GLib.timeout_add(2000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
     def check_processing_complete(self):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
+            self.button_cancel.set_visible(False)
+            self.hide_progress()
             self.button_select_files.set_sensitive(True)
             self.button_select_folders.set_sensitive(True)
-            self.button_cancel.set_visible(False)
             self.drop_down_algo_button.set_sensitive(True)
             self.has_results()
             return False  # Stop monitoring
@@ -866,7 +914,7 @@ class MainWindow(Adw.ApplicationWindow):
                 logger.exception(f"Error computing hash for file: {file.as_posix()}")
                 self.update_queue.put(("error", str(file), str(e), algo))
 
-        with ThreadPoolExecutor(max_workers=max(1, os.cpu_count() - 1)) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             list(executor.map(hash_task, jobs))
 
     def scroll_to_bottom(self):
@@ -947,6 +995,7 @@ class MainWindow(Adw.ApplicationWindow):
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
             files = file_dialog.open_multiple_finish(gio_task)
             paths = [Path(f.get_path()) for f in files]
+            logger.debug(paths)
             self.start_job(paths)
 
         file_dialog.open_multiple(
@@ -1017,13 +1066,21 @@ class MainWindow(Adw.ApplicationWindow):
 class Application(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="com.github.dd-se.quick-file-hasher",
+            application_id=APP_ID,
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
         self.create_action("quit", self.on_click_quit)
+        self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
 
     def on_click_quit(self, *_):
         self.quit()
+
+    def on_set_recursive_mode(self, action, param):
+        value: str = param.get_string()
+        win: MainWindow = self.props.active_window
+        if win and value.lower() in ("yes", "no"):
+            win.pref.set_recursive_mode(value == "yes")
+            logger.info(f"Recursive mode set to {value} via action")
 
     def do_activate(self):
         logger.info(f"App {self.get_application_id()} activated")
@@ -1035,9 +1092,7 @@ class Application(Adw.Application):
     def do_open(self, files, n_files, hint):
         logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
         paths = [Path(f.get_path()) for f in files if f.get_path()]
-        logger.debug(paths)
-
-        win = self.props.active_window
+        win: MainWindow = self.props.active_window
         if not win:
             win = MainWindow(self, paths)
         else:
@@ -1051,8 +1106,8 @@ class Application(Adw.Application):
         logger.info("Shutting down...")
         Adw.Application.do_shutdown(self)
 
-    def create_action(self, name, callback, shortcuts=None):
-        action = Gio.SimpleAction.new(name=name, parameter_type=None)
+    def create_action(self, name, callback, parameter_type=None, shortcuts=None):
+        action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
         action.connect("activate", callback)
         self.add_action(action=action)
         if shortcuts:
@@ -1063,8 +1118,8 @@ class Application(Adw.Application):
 
 
 if __name__ == "__main__":
-    app = Application()
     try:
+        app = Application()
         app.run(sys.argv)
     except KeyboardInterrupt:
         logger.info("App interrupted by user.")
