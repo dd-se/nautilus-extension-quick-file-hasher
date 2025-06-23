@@ -314,7 +314,7 @@ class HashResultRow(Adw.ActionRow):
                 self.button_compare.set_sensitive(False)
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
                 if clipboard_text == self.hash_value:
-                    self.set_icon_("emblem-ok-symbolic")
+                    self.set_icon_("object-select-symbolic")
                     self.set_css_("success")
                     main_window.add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
                 else:
@@ -361,7 +361,7 @@ class HashResultRow(Adw.ActionRow):
         self,
         icon_name: Literal[
             "text-x-generic-symbolic",
-            "emblem-ok-symbolic",
+            "object-select-symbolic",
             "dialog-error-symbolic",
         ],
     ):
@@ -444,7 +444,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.empty_error_placeholder = Adw.StatusPage(
             title="No Errors",
-            icon_name="emblem-ok-symbolic",
+            icon_name="object-select-symbolic",
         )
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
