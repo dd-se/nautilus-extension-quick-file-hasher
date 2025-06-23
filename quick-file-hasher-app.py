@@ -206,11 +206,9 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         subprocess.Popen(cmd, env=env)
         logger.info(f"App {APP_ID} launched by file manager")
 
-    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
-        if not current_folder.is_directory():
-            return []
+    def create_menu(self, files, id):
         menu = Nautilus.MenuItem(
-            name="AdwNautilusExtension::OpenFolderInAppMenu",
+            name=f"AdwNautilusExtension::OpenInAppMenu_{id}",
             label="Calculate Hashes Menu",
         )
         # Context Submenu
@@ -218,29 +216,29 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         menu.set_submenu(submenu)
         # Normal mode
         item_normal = Nautilus.MenuItem(
-            name="AdwNautilusExtension::OpenFolderInAppNormal",
+            name=f"AdwNautilusExtension::OpenInAppNormal_{id}",
             label="Calculate Hashes (Normal)",
         )
-        item_normal.connect("activate", self.nautilus_launch_app, [current_folder])
+        item_normal.connect("activate", self.nautilus_launch_app, files)
         submenu.append_item(item_normal)
         # Recursive mode
         item_recursive = Nautilus.MenuItem(
-            name="AdwNautilusExtension::OpenFolderInAppRecursive",
+            name=f"AdwNautilusExtension::OpenInAppRecursive_{id}",
             label="Calculate Hashes (Recursive + Gitignore)",
         )
-        item_recursive.connect("activate", self.nautilus_launch_app, [current_folder], True)
+        item_recursive.connect("activate", self.nautilus_launch_app, files, True)
         submenu.append_item(item_recursive)
         return [menu]
+
+    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
+        if not current_folder.is_directory():
+            return []
+        return self.create_menu([current_folder], 1)
 
     def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
         if not files:
             return []
-        item = Nautilus.MenuItem(
-            name="AdwNautilusExtension::OpenFilesInApp",
-            label="Calculate Hashes",
-        )
-        item.connect("activate", self.nautilus_launch_app, files)
-        return [item]
+        return self.create_menu(files, 2)
 
 
 class HashResultRow(Adw.ActionRow):
@@ -1125,6 +1123,6 @@ if __name__ == "__main__":
         app = Application()
         app.run(sys.argv)
     except KeyboardInterrupt:
-        logger.info("App interrupted by user.")
+        logger.info("App interrupted by user")
     finally:
         app.quit()
