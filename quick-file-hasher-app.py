@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.6"
+APP_VERSION = "0.9.7"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
