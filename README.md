@@ -11,18 +11,21 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 - **Progress bar & cancel**: See progress and cancel long jobs.
 - **Drag & Drop**: Drop files/folders into the app.
 
-
 ## Installation
 
-1. **Copy the extension:**
-   ```bash
-   mkdir -p ~/.local/share/nautilus-python/extensions
-   cp quick-file-hasher-app.py ~/.local/share/nautilus-python/extensions/
-   ```
-2. **Restart Nautilus:**
-   ```bash
-   nautilus -q
-   ```
+1. **Install dependencies for Ubuntu:**
+  ```bash
+  sudo apt-get install python3-nautilus
+  ```
+2. **Copy the extension:**
+  ```bash
+  mkdir -p ~/.local/share/nautilus-python/extensions
+  cp quick-file-hasher-app.py ~/.local/share/nautilus-python/extensions/
+  ```
+3. **Restart Nautilus:**
+  ```bash
+  nautilus -q
+  ```
 
 ## Usage
 
@@ -44,7 +47,13 @@ Remove the extension:
 rm ~/.local/share/nautilus-python/extensions/quick-file-hasher-app.py
 nautilus -q
 ```
+## Tested Platforms
+
+This extension has been tested on:
+
+- Ubuntu 24.04 LTS
+- Ubuntu 25.04
+- Fedora 42
 
 ## License
 MIT
-
