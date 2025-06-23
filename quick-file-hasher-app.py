@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.9.6"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
@@ -206,28 +206,34 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         subprocess.Popen(cmd, env=env)
         logger.info(f"App {APP_ID} launched by file manager")
 
-    def create_menu(self, files, id):
-        menu = Nautilus.MenuItem(
-            name=f"AdwNautilusExtension::OpenInAppMenu_{id}",
-            label="Calculate Hashes Menu",
-        )
-        # Context Submenu
-        submenu = Nautilus.Menu()
-        menu.set_submenu(submenu)
-        # Normal mode
-        item_normal = Nautilus.MenuItem(
-            name=f"AdwNautilusExtension::OpenInAppNormal_{id}",
-            label="Calculate Hashes (Normal)",
-        )
-        item_normal.connect("activate", self.nautilus_launch_app, files)
-        submenu.append_item(item_normal)
-        # Recursive mode
-        item_recursive = Nautilus.MenuItem(
-            name=f"AdwNautilusExtension::OpenInAppRecursive_{id}",
-            label="Calculate Hashes (Recursive + Gitignore)",
-        )
-        item_recursive.connect("activate", self.nautilus_launch_app, files, True)
-        submenu.append_item(item_recursive)
+    def create_menu(self, files, caller):
+        if (caller == 1) or (caller == 2 and any(f.is_directory() for f in files)):
+            menu = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",
+                label="Calculate Hashes Menu",
+            )
+            submenu = Nautilus.Menu()
+            menu.set_submenu(submenu)
+
+            item_normal = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
+                label="Calculate Hashes",
+            )
+            item_normal.connect("activate", self.nautilus_launch_app, files)
+            submenu.append_item(item_normal)
+
+            item_recursive = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppRecursive_{caller}",
+                label="Calculate Hashes (Recursive)",
+            )
+            item_recursive.connect("activate", self.nautilus_launch_app, files, True)
+            submenu.append_item(item_recursive)
+        else:
+            menu = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
+                label="Calculate Hashes",
+            )
+            menu.connect("activate", self.nautilus_launch_app, files)
         return [menu]
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
@@ -539,7 +545,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_select_folders.set_tooltip_text("Select folders to add")
         self.button_select_folders.connect("clicked", self.on_select_folders_clicked)
         self.button_select_folders_content = Adw.ButtonContent.new()
-        self.button_select_folders_content.set_icon_name(icon_name="document-open-symbolic")
+        self.button_select_folders_content.set_icon_name(icon_name="folder-open-symbolic")
         self.button_select_folders_content.set_label(label="_Select Folders")
         self.button_select_folders_content.set_use_underline(use_underline=True)
         self.button_select_folders.set_child(self.button_select_folders_content)
@@ -955,7 +961,7 @@ class MainWindow(Adw.ApplicationWindow):
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
         target = relevant_placeholder if show_empty else self.main_content_overlay
-        if self.toolbar_view.get_content() == target and not signal_from_view_stack:
+        if self.toolbar_view.get_content() is target and not signal_from_view_stack:
             return
         self.toolbar_view.set_content(target)
         Adw.TimedAnimation(
