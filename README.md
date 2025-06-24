@@ -17,12 +17,16 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
   ```bash
   sudo apt-get install python3-nautilus
   ```
-2. **Copy the extension:**
+2. **Copy the extension manually:**
   ```bash
   mkdir -p ~/.local/share/nautilus-python/extensions
   cp quick-file-hasher-app.py ~/.local/share/nautilus-python/extensions/
   ```
-3. **Restart Nautilus:**
+3. **Or use the Makefile for easy install:**
+  ```bash
+  make install
+  ```
+4. **Restart Nautilus:**
   ```bash
   nautilus -q
   ```
@@ -35,6 +39,8 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
   - Run directly: `python3 quick-file-hasher-app.py [file1] [file2] [folder1] ...`
 - **Drag-and-drop:**
   - Drag files/folders into the app window to compute their hashes.
+- **Filter results:**
+  - Just start typing to filter the results instantly. Press `ESC` to clear the search.
 
 ## Screenshot
 
@@ -42,11 +48,17 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 
 ## Uninstall
 
-Remove the extension:
+Remove the extension manually:
 ```bash
 rm ~/.local/share/nautilus-python/extensions/quick-file-hasher-app.py
 nautilus -q
 ```
+
+Or use the Makefile for easy uninstall:
+```bash
+make uninstall
+```
+
 ## Tested Platforms
 
 This extension has been tested on:
