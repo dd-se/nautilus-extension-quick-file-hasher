@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.7"
+APP_VERSION = "0.9.9"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
@@ -433,6 +433,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.update_queue = Queue()
         self.cancel_event = threading.Event()
         self.build_ui()
+        window_key_controller = Gtk.EventControllerKey()
+        window_key_controller.connect("key-pressed", self.on_window_key_pressed)
+        self.add_controller(window_key_controller)
         if paths:
             self.start_job(paths)
 
@@ -498,6 +501,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.ui_results = Gtk.ListBox()
         self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_results.add_css_class("boxed-list")
+        self.ui_results.set_filter_func(self.filter_func)
         self.results_group.add(self.ui_results)
 
         self.results_scrolled_window = Gtk.ScrolledWindow()
@@ -505,7 +509,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_scrolled_window.set_child(self.results_group)
 
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
-        self.results_stack_page.set_use_underline(True)
 
         self.errors_group = Adw.PreferencesGroup()
         self.errors_group.set_hexpand(True)
@@ -514,17 +517,34 @@ class MainWindow(Adw.ApplicationWindow):
         self.ui_errors = Gtk.ListBox()
         self.ui_errors.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_errors.add_css_class("boxed-list")
+        self.ui_errors.set_filter_func(self.filter_func)
         self.errors_group.add(self.ui_errors)
 
         self.errors_scrolled_window = Gtk.ScrolledWindow()
         self.errors_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.errors_scrolled_window.set_child(self.errors_group)
+
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
         self.view_stack.set_visible_child_name("results")
+        self.view_stack.connect("notify::visible-child", self.has_results)
         self.main_box.append(self.view_stack)
 
-        self.view_stack.connect("notify::visible-child", self.has_results)
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Type to filter & ESC to clear")
+        self.search_entry.set_margin_bottom(2)
+        self.search_entry.set_visible(False)
+
+        def on_search_key_pressed(controller, keyval, keycode, state):
+            if keyval == Gdk.KEY_Escape:
+                self.search_entry.set_text("")
+                self.search_entry.set_visible(False)
+
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", on_search_key_pressed)
+        self.search_entry.add_controller(key_controller)
+        self.search_query = ""
+        self.main_box.append(self.search_entry)
 
     def setup_buttons(self, FIRST_TOP_BOX: Gtk.Box, SECOND_TOP_BOX: Gtk.Box):
         self.button_select_files = Gtk.Button()
@@ -534,8 +554,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_select_files.connect("clicked", self.on_select_files_clicked)
         self.button_select_files_content = Adw.ButtonContent.new()
         self.button_select_files_content.set_icon_name(icon_name="document-open-symbolic")
-        self.button_select_files_content.set_label(label="_Select Files")
-        self.button_select_files_content.set_use_underline(use_underline=True)
+        self.button_select_files_content.set_label(label="Select Files")
         self.button_select_files.set_child(self.button_select_files_content)
         FIRST_TOP_BOX.append(self.button_select_files)
 
@@ -546,8 +565,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_select_folders.connect("clicked", self.on_select_folders_clicked)
         self.button_select_folders_content = Adw.ButtonContent.new()
         self.button_select_folders_content.set_icon_name(icon_name="folder-open-symbolic")
-        self.button_select_folders_content.set_label(label="_Select Folders")
-        self.button_select_folders_content.set_use_underline(use_underline=True)
+        self.button_select_folders_content.set_label(label="Select Folders")
         self.button_select_folders.set_child(self.button_select_folders_content)
         FIRST_TOP_BOX.append(self.button_select_folders)
 
@@ -559,8 +577,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save.connect("clicked", self.on_save_clicked)
         self.button_save_content = Adw.ButtonContent.new()
         self.button_save_content.set_icon_name(icon_name="document-save-symbolic")
-        self.button_save_content.set_label(label="_Save")
-        self.button_save_content.set_use_underline(use_underline=True)
+        self.button_save_content.set_label(label="Save")
         self.button_save.set_child(self.button_save_content)
         FIRST_TOP_BOX.append(self.button_save)
 
@@ -686,14 +703,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.menu.append("About", "win.about")
         self.menu.append("Quit", "app.quit")
         self.create_win_action("about", self.on_click_present_about_dialog)
-        self.create_win_action("preferences", self.on_click_open_preferences)
+        self.create_win_action("preferences", lambda *_: self.pref.present(self))
         self.button_menu = Gtk.MenuButton()
         self.button_menu.set_icon_name("open-menu-symbolic")
         self.button_menu.set_menu_model(self.menu)
         HEADER_BAR.pack_end(self.button_menu)
-
-    def on_click_open_preferences(self, *_):
-        self.pref.present(self)
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
@@ -958,6 +972,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_stack_page.set_badge_number(sum(1 for _ in self.ui_errors) if has_errors else 0)
 
         current_page_name = self.view_stack.get_visible_child_name()
+        self.search_entry.connect("search-changed", self.on_search_changed, self.ui_results if current_page_name == "results" else self.ui_errors)
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
         target = relevant_placeholder if show_empty else self.main_content_overlay
@@ -981,6 +996,20 @@ class MainWindow(Adw.ApplicationWindow):
         if errors_text:
             output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}\n"
         return output
+
+    def on_window_key_pressed(self, controller, keyval, keycode, state):
+        ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
+        if not self.search_entry.has_focus() and not ctrl_pressed:
+            logger.info("window_key")
+            self.search_entry.set_visible(True)
+            self.search_entry.grab_focus()
+            if keyval == Gdk.KEY_Escape:
+                self.search_entry.set_text("")
+                self.search_entry.set_visible(False)
+            elif keyval_to_unicode := Gdk.keyval_to_unicode(keyval):
+                char = chr(keyval_to_unicode)
+                self.search_entry.set_text(f"{self.search_entry.get_text()}{char if char.isprintable() else ''}")
+                self.search_entry.set_position(-1)
 
     def on_click_present_about_dialog(self, *_):
         about_dialog = Adw.AboutDialog()
@@ -1051,6 +1080,14 @@ class MainWindow(Adw.ApplicationWindow):
     def on_selected_item(self, drop_down: Gtk.DropDown, g_param_object):
         self.algo = drop_down.get_selected_item().get_string()
         self.header_title_widget.set_label(f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>")
+
+    def on_search_changed(self, entry: Gtk.SearchEntry, ui_list: Gtk.ListBox):
+        self.search_query = entry.get_text().lower()
+        ui_list.invalidate_filter()
+
+    def filter_func(self, row: HashResultRow):
+        terms = self.search_query.lower().split()
+        return all(any(term in field for field in (row.path.as_posix().lower(), row.hash_value, row.algo.lower())) for term in terms)
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
