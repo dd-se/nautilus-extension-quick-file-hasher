@@ -962,7 +962,9 @@ class MainWindow(Adw.ApplicationWindow):
     def has_results(self, *signal_from_view_stack):
         has_results = self.ui_results.get_first_child() is not None
         has_errors = self.ui_errors.get_first_child() is not None
+        current_page_name = self.view_stack.get_visible_child_name()
 
+        self.search_entry.connect("search-changed", self.on_search_changed, self.ui_results if current_page_name == "results" else self.ui_errors)
         self.view_switcher.set_sensitive(has_results or has_errors)
         self.button_save.set_sensitive(has_results or has_errors)
         self.button_copy_all.set_sensitive(has_results or has_errors)
@@ -971,8 +973,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_stack_page.set_badge_number(sum(1 for _ in self.ui_results) if has_results else 0)
         self.errors_stack_page.set_badge_number(sum(1 for _ in self.ui_errors) if has_errors else 0)
 
-        current_page_name = self.view_stack.get_visible_child_name()
-        self.search_entry.connect("search-changed", self.on_search_changed, self.ui_results if current_page_name == "results" else self.ui_errors)
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
         target = relevant_placeholder if show_empty else self.main_content_overlay
@@ -998,14 +998,18 @@ class MainWindow(Adw.ApplicationWindow):
         return output
 
     def on_window_key_pressed(self, controller, keyval, keycode, state):
+        if self.toolbar_view.get_content() is not self.main_content_overlay:
+            return
+
         ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
         if not self.search_entry.has_focus() and not ctrl_pressed:
-            logger.info("window_key")
             self.search_entry.set_visible(True)
             self.search_entry.grab_focus()
+
             if keyval == Gdk.KEY_Escape:
                 self.search_entry.set_text("")
                 self.search_entry.set_visible(False)
+
             elif keyval_to_unicode := Gdk.keyval_to_unicode(keyval):
                 char = chr(keyval_to_unicode)
                 self.search_entry.set_text(f"{self.search_entry.get_text()}{char if char.isprintable() else ''}")
