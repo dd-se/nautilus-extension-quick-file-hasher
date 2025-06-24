@@ -988,13 +988,17 @@ class MainWindow(Adw.ApplicationWindow):
         ).play()
 
     def results_to_txt(self):
-        results_text = "\n".join(str(r) for r in self.ui_results)
-        errors_text = "\n".join(str(r) for r in self.ui_errors)
+        results_text = "\n".join(str(r) for r in self.ui_results if self.filter_func(r))
+        errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func(r))
+        output = ""
         now = datetime.now().strftime("%B %d, %Y at %I:%H:%M %Z")
+
         if results_text:
             output = f"Results - Saved on {now}:\n{'-' * 40}\n{results_text} {'\n\n' if errors_text else '\n'}"
+
         if errors_text:
             output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}\n"
+
         return output
 
     def on_window_key_pressed(self, controller, keyval, keycode, state):
@@ -1032,11 +1036,12 @@ class MainWindow(Adw.ApplicationWindow):
         file_dialog = Gtk.FileDialog()
         file_dialog.set_title(title="Select files")
 
-        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
-            files = file_dialog.open_multiple_finish(gio_task)
-            paths = [Path(f.get_path()) for f in files]
-            logger.debug(paths)
-            self.start_job(paths)
+        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
+            if not gio_task.had_error():
+                files = file_dialog.open_multiple_finish(gio_task)
+                paths = [Path(f.get_path()) for f in files]
+                logger.debug(paths)
+                self.start_job(paths)
 
         file_dialog.open_multiple(
             parent=self,
@@ -1047,10 +1052,11 @@ class MainWindow(Adw.ApplicationWindow):
         file_dialog = Gtk.FileDialog()
         file_dialog.set_title(title="Select Folders")
 
-        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
-            files = file_dialog.select_multiple_folders_finish(gio_task)
-            paths = [Path(f.get_path()) for f in files]
-            self.start_job(paths)
+        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
+            if not gio_task.had_error():
+                files = file_dialog.select_multiple_folders_finish(gio_task)
+                paths = [Path(f.get_path()) for f in files]
+                self.start_job(paths)
 
         file_dialog.select_multiple_folders(
             parent=self,
