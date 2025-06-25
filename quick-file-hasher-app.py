@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.9"
+APP_VERSION = "0.9.12"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
@@ -253,12 +253,12 @@ class CalculateHashes:
         preferences: "Preferences",
         queue: Queue,
         event: threading.Event,
-        no_files_callback: Callable[[str], None],
+        zero_bytes_callback: Callable[[str], None],
     ):
         self.pref = preferences
         self.update_queue = queue
         self.cancel_event = event
-        self.no_files = no_files_callback
+        self.zero_bytes = zero_bytes_callback
 
     def __call__(self, paths: list[Path], algo: str):
         for i, path in enumerate(paths):
@@ -322,7 +322,7 @@ class CalculateHashes:
                 self.update_queue.put(("error", root_path, str(e), algo))
 
         if total_bytes == 0:
-            self.no_files("<big>❌ No files found to process in the selected location.</big>")
+            self.zero_bytes("<big>❌ No files found to process in the selected location.</big>")
 
         bytes_read = 0
 
@@ -365,6 +365,7 @@ class HashResultRow(Adw.ActionRow):
         self.path = path
         self.hash_value = hash_value
         self.algo = hash_algorithm
+
         self.set_title(GLib.markup_escape_text(self.path.as_posix()))
         self.set_subtitle(self.hash_value)
         self.set_subtitle_lines(1)
@@ -451,22 +452,13 @@ class HashResultRow(Adw.ActionRow):
 
     def on_delete_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
-        anim = Adw.TimedAnimation(
-            widget=self,
-            value_from=1.0,
-            value_to=0.0,
-            duration=200,
-            target=Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity)),
-        )
-
-        def on_fade_done(_):
-            parent: Gtk.ListBox = self.get_parent()
-            main_window: MainWindow = parent.get_root()
-            parent.remove(self)
+        parent: Gtk.ListBox = self.get_parent()
+        main_window: MainWindow = self.get_root()
+        parent.remove(self)
+        if parent.get_first_child():
+            main_window.update_badge_numbers()
+        else:
             main_window.has_results()
-
-        anim.connect("done", on_fade_done)
-        anim.play()
 
     def set_icon_(
         self,
@@ -533,7 +525,6 @@ class Preferences(Adw.PreferencesDialog):
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
-    VERSION = APP_VERSION
     algo: str = APP_DEFAULT_HASHING_ALGORITHM
 
     def __init__(self, app, paths: list[Path] | None = None):
@@ -550,16 +541,40 @@ class MainWindow(Adw.ApplicationWindow):
             self.cancel_event,
             lambda message: (self.add_toast(message), self.progress_bar.set_fraction(1.0)),
         )
+
         self.build_ui()
 
+        self.setup_window_key_controller()
+        if paths:
+            self.start_job(paths)
+
+    def setup_window_key_controller(self):
         window_key_controller = Gtk.EventControllerKey()
         window_key_controller.connect("key-pressed", self.on_window_key_pressed)
         self.add_controller(window_key_controller)
 
-        if paths:
-            self.start_job(paths)
-
     def build_ui(self):
+        self.toast_overlay = Adw.ToastOverlay()
+        self.set_content(self.toast_overlay)
+
+        self.setup_toolbar_view()
+        self.toast_overlay.set_child(self.toolbar_view)
+
+        self.setup_first_top_bar()
+        self.toolbar_view.add_top_bar(self.first_top_bar_box)
+
+        self.setup_second_top_bar()
+        self.toolbar_view.add_top_bar(self.second_top_bar_box)
+
+        self.setup_main_content()
+        self.toolbar_view.set_content(self.empty_placeholder)
+
+        self.setup_progress_bar()
+        self.toolbar_view.add_bottom_bar(self.progress_bar)
+
+        self.setup_drag_and_drop()
+
+    def setup_toolbar_view(self):
         self.empty_placeholder = Adw.StatusPage(
             title="No Results",
             description="Select files or folders to calculate their hashes.",
@@ -569,30 +584,171 @@ class MainWindow(Adw.ApplicationWindow):
             title="No Errors",
             icon_name="object-select-symbolic",
         )
-        self.toast_overlay = Adw.ToastOverlay()
-        self.set_content(self.toast_overlay)
-
         self.toolbar_view = Adw.ToolbarView()
         self.toolbar_view.set_margin_top(6)
         self.toolbar_view.set_margin_bottom(6)
         self.toolbar_view.set_margin_start(12)
         self.toolbar_view.set_margin_end(12)
-        self.toast_overlay.set_child(self.toolbar_view)
 
+    def setup_first_top_bar(self):
         self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
-        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
-        self.header_bar = Adw.HeaderBar()
-        self.setup_buttons(self.first_top_bar_box, self.second_top_bar_box)
-        self.setup_headerbar(self.first_top_bar_box, self.header_bar)
-        self.setup_menu(self.header_bar)
-        self.setup_main_content()
-        self.setup_progress_bar()
-        self.setup_drag_and_drop()
 
-        self.toolbar_view.add_top_bar(self.first_top_bar_box)
-        self.toolbar_view.add_top_bar(self.second_top_bar_box)
-        self.toolbar_view.set_content(self.empty_placeholder)
-        self.toolbar_view.add_bottom_bar(self.progress_bar)
+        self.button_select_files = Gtk.Button()
+        self.button_select_files.add_css_class("suggested-action")
+        self.button_select_files.set_valign(Gtk.Align.CENTER)
+        self.button_select_files.set_tooltip_text("Select files to add")
+        self.button_select_files.connect("clicked", self.on_select_files_clicked)
+        self.button_select_files_content = Adw.ButtonContent.new()
+        self.button_select_files_content.set_icon_name(icon_name="document-open-symbolic")
+        self.button_select_files_content.set_label(label="Select Files")
+        self.button_select_files.set_child(self.button_select_files_content)
+        self.first_top_bar_box.append(self.button_select_files)
+
+        self.button_select_folders = Gtk.Button()
+        self.button_select_folders.add_css_class("suggested-action")
+        self.button_select_folders.set_valign(Gtk.Align.CENTER)
+        self.button_select_folders.set_tooltip_text("Select folders to add")
+        self.button_select_folders.connect("clicked", self.on_select_folders_clicked)
+        self.button_select_folders_content = Adw.ButtonContent.new()
+        self.button_select_folders_content.set_icon_name(icon_name="folder-open-symbolic")
+        self.button_select_folders_content.set_label(label="Select Folders")
+        self.button_select_folders.set_child(self.button_select_folders_content)
+        self.first_top_bar_box.append(self.button_select_folders)
+
+        self.button_save = Gtk.Button()
+        self.button_save.set_sensitive(False)
+        self.button_save.add_css_class("suggested-action")
+        self.button_save.set_valign(Gtk.Align.CENTER)
+        self.button_save.set_tooltip_text("Save results to file")
+        self.button_save.connect("clicked", self.on_save_clicked)
+        self.button_save_content = Adw.ButtonContent.new()
+        self.button_save_content.set_icon_name(icon_name="document-save-symbolic")
+        self.button_save_content.set_label(label="Save")
+        self.button_save.set_child(self.button_save_content)
+        self.first_top_bar_box.append(self.button_save)
+
+        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(self.available_algorithms)
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.algo))
+        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
+        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
+        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
+        self.first_top_bar_box.append(self.drop_down_algo_button)
+
+        self.button_cancel = Gtk.Button(label="Cancel Job")
+        self.button_cancel.add_css_class("destructive-action")
+        self.button_cancel.set_valign(Gtk.Align.CENTER)
+        self.button_cancel.set_visible(False)
+        self.button_cancel.set_tooltip_text("Cancel the current operation")
+        self.button_cancel.connect(
+            "clicked",
+            lambda _: (
+                self.cancel_event.set(),
+                self.add_toast("<big>❌ Job cancelled</big>"),
+            ),
+        )
+        self.first_top_bar_box.append(self.button_cancel)
+
+        self.spacer = Gtk.Box()
+        self.spacer.set_hexpand(True)
+        self.first_top_bar_box.append(self.spacer)
+
+        self.setup_header_bar()
+        self.first_top_bar_box.append(self.header_bar)
+
+    def setup_second_top_bar(self):
+        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
+
+        self.view_switcher = Adw.ViewSwitcher()
+        self.view_switcher.set_sensitive(False)
+        self.view_switcher.set_hexpand(True)
+        self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        self.second_top_bar_box.append(self.view_switcher)
+
+        self.spacer = Gtk.Box()
+        self.spacer.set_hexpand(True)
+        self.second_top_bar_box.append(self.spacer)
+
+        self.button_copy_all = Gtk.Button(label="Copy")
+        self.button_copy_all.set_sensitive(False)
+        self.button_copy_all.add_css_class("suggested-action")
+        self.button_copy_all.set_valign(Gtk.Align.CENTER)
+        self.button_copy_all.set_tooltip_text("Copy results to clipboard")
+        self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
+        self.second_top_bar_box.append(self.button_copy_all)
+
+        self.button_sort = Gtk.Button(label="Sort")
+        self.button_sort.set_sensitive(False)
+        self.button_sort.set_valign(Gtk.Align.CENTER)
+        self.button_sort.set_tooltip_text("Sort results by path")
+
+        def sort_by_hierarchy(row1: HashResultRow, row2: HashResultRow):
+            """
+            /folder/file_1\n
+            /folder/file_2\n
+            /folder/folder/file_1 ...
+            """
+            parts1 = row1.path.parts
+            parts2 = row2.path.parts
+
+            min_len = min(len(parts1), len(parts2))
+            for i in range(min_len):
+                if parts1[i] != parts2[i]:
+                    path1_at_level = Path(*parts1[: i + 1])
+                    path2_at_level = Path(*parts2[: i + 1])
+                    is_dir1 = path1_at_level.is_dir()
+                    is_dir2 = path2_at_level.is_dir()
+                    # Files comes first at same level
+                    if is_dir1 and not is_dir2:
+                        return 1
+                    if not is_dir1 and is_dir2:
+                        return -1
+                    # Same type, compare lexicographically
+                    return -1 if parts1[i] < parts2[i] else 1
+            # Identical
+            return 0
+
+        self.button_sort.connect(
+            "clicked",
+            lambda _: (
+                self.ui_results.set_sort_func(sort_by_hierarchy),
+                self.ui_results.set_sort_func(None),
+                self.add_toast("<big>✅ Results sorted by file path</big>"),
+            ),
+        )
+        self.second_top_bar_box.append(self.button_sort)
+
+        self.button_clear = Gtk.Button(label="Clear")
+        self.button_clear.set_sensitive(False)
+        self.button_clear.add_css_class("destructive-action")
+        self.button_clear.set_valign(Gtk.Align.CENTER)
+        self.button_clear.set_tooltip_text("Clear all results")
+        self.button_clear.connect(
+            "clicked",
+            lambda _: (
+                self.ui_results.remove_all(),
+                self.ui_errors.remove_all(),
+                self.has_results(),
+                self.add_toast("<big>✅ Results cleared</big>"),
+            ),
+        )
+        self.second_top_bar_box.append(self.button_clear)
+
+        self.button_about = Gtk.Button(visible=False)
+        self.button_about.set_valign(Gtk.Align.CENTER)
+        self.button_about.connect("clicked", self.on_click_present_about_dialog)
+        self.button_about_content = Adw.ButtonContent.new()
+        self.button_about_content.set_icon_name(icon_name="help-about-symbolic")
+        self.button_about_content.set_label(label="About")
+        self.button_about_content.set_use_underline(use_underline=True)
+        self.button_about.set_child(self.button_about_content)
+        self.second_top_bar_box.append(self.button_about)
+
+    def setup_header_bar(self):
+        self.header_bar = Adw.HeaderBar()
+        self.header_title_widget = Gtk.Label(label=f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>", use_markup=True)
+        self.header_bar.set_title_widget(self.header_title_widget)
+        self.setup_menu()
 
     def setup_main_content(self):
         self.main_content_overlay = Gtk.Overlay()
@@ -608,7 +764,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_content_overlay.add_overlay(self.main_box)
 
         self.view_stack = Adw.ViewStack()
-
         self.view_stack.set_vexpand(True)
         self.view_stack.set_hexpand(True)
         self.view_switcher.set_stack(self.view_stack)
@@ -654,6 +809,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.search_entry.set_placeholder_text("Type to filter & ESC to clear")
         self.search_entry.set_margin_bottom(2)
         self.search_entry.set_visible(False)
+        for ui_list in (self.ui_results, self.ui_errors):
+            self.search_entry.connect("search-changed", self.on_search_changed, ui_list)
 
         def on_search_key_pressed(controller, keyval, keycode, state):
             if keyval == Gdk.KEY_Escape:
@@ -666,158 +823,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.search_query = ""
         self.main_box.append(self.search_entry)
 
-    def setup_buttons(self, FIRST_TOP_BOX: Gtk.Box, SECOND_TOP_BOX: Gtk.Box):
-        self.button_select_files = Gtk.Button()
-        self.button_select_files.add_css_class("suggested-action")
-        self.button_select_files.set_valign(Gtk.Align.CENTER)
-        self.button_select_files.set_tooltip_text("Select files to add")
-        self.button_select_files.connect("clicked", self.on_select_files_clicked)
-        self.button_select_files_content = Adw.ButtonContent.new()
-        self.button_select_files_content.set_icon_name(icon_name="document-open-symbolic")
-        self.button_select_files_content.set_label(label="Select Files")
-        self.button_select_files.set_child(self.button_select_files_content)
-        FIRST_TOP_BOX.append(self.button_select_files)
-
-        self.button_select_folders = Gtk.Button()
-        self.button_select_folders.add_css_class("suggested-action")
-        self.button_select_folders.set_valign(Gtk.Align.CENTER)
-        self.button_select_folders.set_tooltip_text("Select folders to add")
-        self.button_select_folders.connect("clicked", self.on_select_folders_clicked)
-        self.button_select_folders_content = Adw.ButtonContent.new()
-        self.button_select_folders_content.set_icon_name(icon_name="folder-open-symbolic")
-        self.button_select_folders_content.set_label(label="Select Folders")
-        self.button_select_folders.set_child(self.button_select_folders_content)
-        FIRST_TOP_BOX.append(self.button_select_folders)
-
-        self.button_save = Gtk.Button()
-        self.button_save.set_sensitive(False)
-        self.button_save.add_css_class("suggested-action")
-        self.button_save.set_valign(Gtk.Align.CENTER)
-        self.button_save.set_tooltip_text("Save results to file")
-        self.button_save.connect("clicked", self.on_save_clicked)
-        self.button_save_content = Adw.ButtonContent.new()
-        self.button_save_content.set_icon_name(icon_name="document-save-symbolic")
-        self.button_save_content.set_label(label="Save")
-        self.button_save.set_child(self.button_save_content)
-        FIRST_TOP_BOX.append(self.button_save)
-
-        self.button_cancel = Gtk.Button(label="Cancel Job")
-        self.button_cancel.add_css_class("destructive-action")
-        self.button_cancel.set_valign(Gtk.Align.CENTER)
-        self.button_cancel.set_visible(False)
-        self.button_cancel.set_tooltip_text("Cancel the current operation")
-        self.button_cancel.connect(
-            "clicked",
-            lambda _: (
-                self.cancel_event.set(),
-                self.add_toast("<big>❌ Job cancelled</big>"),
-            ),
-        )
-        FIRST_TOP_BOX.append(self.button_cancel)
-
-        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(strings=self.available_algorithms)
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index("sha256"))
-        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
-        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
-        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        FIRST_TOP_BOX.append(self.drop_down_algo_button)
-
-        self.spacer = Gtk.Box()
-        self.spacer.set_hexpand(True)
-        FIRST_TOP_BOX.append(self.spacer)
-
-        self.view_switcher = Adw.ViewSwitcher()
-        self.view_switcher.set_sensitive(False)
-        self.view_switcher.set_hexpand(True)
-        self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        SECOND_TOP_BOX.append(self.view_switcher)
-
-        self.spacer = Gtk.Box()
-        self.spacer.set_hexpand(True)
-        SECOND_TOP_BOX.append(self.spacer)
-
-        self.button_copy_all = Gtk.Button(label="Copy")
-        self.button_copy_all.set_sensitive(False)
-        self.button_copy_all.add_css_class("suggested-action")
-        self.button_copy_all.set_valign(Gtk.Align.CENTER)
-        self.button_copy_all.set_tooltip_text("Copy results to clipboard")
-        self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
-        SECOND_TOP_BOX.append(self.button_copy_all)
-
-        self.button_sort = Gtk.Button(label="Sort")
-        self.button_sort.set_sensitive(False)
-        self.button_sort.set_valign(Gtk.Align.CENTER)
-        self.button_sort.set_tooltip_text("Sort results by path")
-
-        def sort_by_hierarchy(row1: HashResultRow, row2: HashResultRow):
-            """
-            /folder/file_1\n
-            /folder/file_2\n
-            /folder/folder/file_1 ...
-            """
-            parts1 = row1.path.parts
-            parts2 = row2.path.parts
-
-            min_len = min(len(parts1), len(parts2))
-            for i in range(min_len):
-                if parts1[i] != parts2[i]:
-                    path1_at_level = Path(*parts1[: i + 1])
-                    path2_at_level = Path(*parts2[: i + 1])
-                    is_dir1 = path1_at_level.is_dir()
-                    is_dir2 = path2_at_level.is_dir()
-                    # Files come first at same level
-                    if is_dir1 and not is_dir2:
-                        return 1
-                    if not is_dir1 and is_dir2:
-                        return -1
-                    # Same type, compare lexicographically
-                    return -1 if parts1[i] < parts2[i] else 1
-            # Identical
-            return 0
-
-        self.button_sort.connect(
-            "clicked",
-            lambda _: (
-                self.ui_results.set_sort_func(sort_by_hierarchy),
-                self.ui_results.set_sort_func(None),
-                self.add_toast("<big>✅ Results sorted by file path</big>"),
-            ),
-        )
-        SECOND_TOP_BOX.append(self.button_sort)
-
-        self.button_clear = Gtk.Button(label="Clear")
-        self.button_clear.set_sensitive(False)
-        self.button_clear.add_css_class("destructive-action")
-        self.button_clear.set_valign(Gtk.Align.CENTER)
-        self.button_clear.set_tooltip_text("Clear all results")
-        self.button_clear.connect(
-            "clicked",
-            lambda _: (
-                self.ui_results.remove_all(),
-                self.ui_errors.remove_all(),
-                self.has_results(),
-                self.add_toast("<big>✅ Results cleared</big>"),
-            ),
-        )
-        SECOND_TOP_BOX.append(self.button_clear)
-
-        self.button_about = Gtk.Button(visible=False)
-        self.button_about.set_valign(Gtk.Align.CENTER)
-        self.button_about.connect("clicked", self.on_click_present_about_dialog)
-        self.button_about_content = Adw.ButtonContent.new()
-        self.button_about_content.set_icon_name(icon_name="help-about-symbolic")
-        self.button_about_content.set_label(label="About")
-        self.button_about_content.set_use_underline(use_underline=True)
-        self.button_about.set_child(self.button_about_content)
-        SECOND_TOP_BOX.append(self.button_about)
-
-    def setup_headerbar(self, FIRST_TOP_BOX: Gtk.Box, HEADER_BAR: Adw.HeaderBar):
-        self.header_title_widget = Gtk.Label(label=f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>", use_markup=True)
-        HEADER_BAR.set_title_widget(self.header_title_widget)
-        FIRST_TOP_BOX.append(HEADER_BAR)
-
-    def setup_menu(self, HEADER_BAR: Adw.HeaderBar):
+    def setup_menu(self):
         self.menu = Gio.Menu()
         self.menu.append("Preferences", "win.preferences")
         self.menu.append("About", "win.about")
@@ -827,7 +833,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_menu = Gtk.MenuButton()
         self.button_menu.set_icon_name("open-menu-symbolic")
         self.button_menu.set_menu_model(self.menu)
-        HEADER_BAR.pack_end(self.button_menu)
+        self.header_bar.pack_end(self.button_menu)
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
@@ -928,24 +934,8 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def hide_progress(self):
-        Adw.TimedAnimation(
-            widget=self.progress_bar,
-            value_from=1.0,
-            value_to=0,
-            duration=2000,
-            target=Adw.CallbackAnimationTarget.new(
-                lambda opacity: self.progress_bar.set_opacity(opacity),
-            ),
-        ).play()
-        Adw.TimedAnimation(
-            widget=self.spinner,
-            value_from=1.0,
-            value_to=0,
-            duration=2000,
-            target=Adw.CallbackAnimationTarget.new(
-                lambda opacity: self.spinner.set_opacity(opacity),
-            ),
-        ).play()
+        self.animate_opacity(self.progress_bar, 1.0, 0, 2000)
+        self.animate_opacity(self.spinner, 1.0, 0, 2000)
         GLib.timeout_add(2000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
@@ -981,19 +971,31 @@ class MainWindow(Adw.ApplicationWindow):
             self.ui_results.append(row)
         return row
 
+    def animate_opacity(self, widget: Gtk.Widget, from_value: float, to_value: float, duration: int):
+        animation = Adw.TimedAnimation.new(
+            widget.get_parent(),
+            from_value,
+            to_value,
+            duration,
+            Adw.CallbackAnimationTarget.new(lambda opacity: widget.set_opacity(opacity)),
+        )
+        animation.play()
+
+    def update_badge_numbers(self):
+        self.results_stack_page.set_badge_number(sum(1 for _ in self.ui_results))
+        self.errors_stack_page.set_badge_number(sum(1 for _ in self.ui_errors))
+
     def has_results(self, *signal_from_view_stack):
         has_results = self.ui_results.get_first_child() is not None
         has_errors = self.ui_errors.get_first_child() is not None
         current_page_name = self.view_stack.get_visible_child_name()
 
-        self.search_entry.connect("search-changed", self.on_search_changed, self.ui_results if current_page_name == "results" else self.ui_errors)
-        self.view_switcher.set_sensitive(has_results or has_errors)
         self.button_save.set_sensitive(has_results or has_errors)
         self.button_copy_all.set_sensitive(has_results or has_errors)
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results or has_errors)
-        self.results_stack_page.set_badge_number(sum(1 for _ in self.ui_results) if has_results else 0)
-        self.errors_stack_page.set_badge_number(sum(1 for _ in self.ui_errors) if has_errors else 0)
+        self.update_badge_numbers()
+        self.view_switcher.set_sensitive(has_results or has_errors)
 
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
@@ -1044,7 +1046,7 @@ class MainWindow(Adw.ApplicationWindow):
     def on_click_present_about_dialog(self, *_):
         about_dialog = Adw.AboutDialog()
         about_dialog.set_application_name("Quick File Hasher")
-        about_dialog.set_version(self.VERSION)
+        about_dialog.set_version(APP_VERSION)
         about_dialog.set_developer_name("Doğukan Doğru (dd-se)")
         about_dialog.set_license_type(Gtk.License(Gtk.License.MIT_X11))
         about_dialog.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
@@ -1160,26 +1162,27 @@ class Application(Adw.Application):
 
     def do_activate(self):
         logger.info(f"App {self.get_application_id()} activated")
-        win = self.props.active_window
-        if not win:
-            win = MainWindow(self)
-        win.present()
+        self.main_window: MainWindow = self.props.active_window
+        if not self.main_window:
+            self.main_window = MainWindow(self)
+        self.main_window.present()
 
     def do_open(self, files, n_files, hint):
         logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
         paths = [Path(f.get_path()) for f in files if f.get_path()]
-        win: MainWindow = self.props.active_window
-        if not win:
-            win = MainWindow(self, paths)
+        self.main_window: MainWindow = self.props.active_window
+        if not self.main_window:
+            self.main_window = MainWindow(self, paths)
         else:
-            win.start_job(paths)
-        win.present()
+            self.main_window.start_job(paths)
+        self.main_window.present()
 
     def do_startup(self):
         Adw.Application.do_startup(self)
 
     def do_shutdown(self):
         logger.info("Shutting down...")
+        self.main_window.cancel_event.set()
         Adw.Application.do_shutdown(self)
 
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
