@@ -349,10 +349,9 @@ class HashResultRow(Adw.ActionRow):
 
         def on_fade_done(_):
             parent: Gtk.ListBox = self.get_parent()
+            main_window: MainWindow = parent.get_root()
             parent.remove(self)
-            if parent.get_first_child() is None:
-                main_window: MainWindow = parent.get_root()
-                main_window.has_results()
+            main_window.has_results()
 
         anim.connect("done", on_fade_done)
         anim.play()
