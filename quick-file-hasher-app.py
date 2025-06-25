@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.12"
+APP_VERSION = "0.9.13"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
@@ -86,21 +86,20 @@ def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(loglevel)
     handler = logging.StreamHandler()
-    formatter = logging.Formatter("[%(asctime)s] %(levelname)-6s | %(funcName)-15s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    formatter = logging.Formatter("[%(asctime)s] %(levelname)-6s | %(name)-15s | %(funcName)-21s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False
     return logger
 
 
-logger = get_logger(__name__)
-
-
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def __init__(self):
+        self.logger = get_logger(self.__class__.__name__)
         pass
 
     def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
+        self.logger.info(f"App {APP_ID} launched by file manager")
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
         cmd = ["python3", Path(__file__).as_posix()] + file_paths
         env = None
@@ -111,7 +110,6 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         else:
             os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
         subprocess.Popen(cmd, env=env)
-        logger.info(f"App {APP_ID} launched by file manager")
 
     def create_menu(self, files, caller):
         if (caller == 1) or (caller == 2 and any(f.is_directory() for f in files)):
@@ -135,13 +133,14 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             )
             item_recursive.connect("activate", self.nautilus_launch_app, files, True)
             submenu.append_item(item_recursive)
+            return [menu]
         else:
-            menu = Nautilus.MenuItem(
+            item = Nautilus.MenuItem(
                 name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
                 label="Calculate Hashes",
             )
-            menu.connect("activate", self.nautilus_launch_app, files)
-        return [menu]
+            item.connect("activate", self.nautilus_launch_app, files)
+            return [item]
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
         if not current_folder.is_directory():
@@ -255,113 +254,114 @@ class CalculateHashes:
         event: threading.Event,
         zero_bytes_callback: Callable[[str], None],
     ):
+        self.logger = get_logger(self.__class__.__name__)
         self.pref = preferences
         self.update_queue = queue
         self.cancel_event = event
         self.zero_bytes = zero_bytes_callback
 
     def __call__(self, paths: list[Path], algo: str):
+        paths_n_rules = self.process_gitignore(paths)
+
+        self.JOBS = []
+        self.ALGO = algo
+        self.TOTAL_BYTES = 0
+        self.BYTES_READ = 0
+
+        for root_path, ignore_rules in paths_n_rules:
+            try:
+                if root_path.is_dir():
+                    for path in root_path.iterdir():
+                        if IgnoreRule.is_ignored(path, ignore_rules):
+                            self.logger.debug(f"Skipped early: {path}")
+                            continue
+                        self.process_path_n_rules(path, ignore_rules)
+                else:
+                    self.process_path_n_rules(root_path, ignore_rules)
+            except Exception as e:
+                self.logger.debug(f"Error processing file: {e}")
+                self.update_queue.put(("error", root_path, str(e), self.ALGO))
+
+        if self.TOTAL_BYTES == 0:
+            self.zero_bytes("<big>❌ No files found to process in the selected location.</big>")
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(self.hash_task, self.JOBS))
+
+    def process_gitignore(self, paths: list[Path]) -> list[tuple[Path, list[IgnoreRule]]]:
         for i, path in enumerate(paths):
             try:
                 if path.is_dir() and self.pref.respect_gitignore():
                     gitignore_file = path / ".gitignore"
                     rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
                     paths[i] = (path, rules)
-                    logger.debug(f"Rule count early: {len(paths[i][1])}")
+                    self.logger.debug(f"Rule count early: {len(paths[i][1])}")
                 else:
                     paths[i] = (path, [])
             except Exception as e:
                 paths[i] = (path, [])
-                logger.exception(f"Error processing file: {e}")
+                self.logger.debug(f"Error processing file: {e}")
+        return paths
 
-        jobs = []
-        total_bytes = 0
+    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule]):
+        if self.cancel_event.is_set():
+            return
 
-        def process_path(current_path: Path, current_rules: list[IgnoreRule]):
-            nonlocal total_bytes
-            if self.cancel_event.is_set():
-                return
+        if IgnoreRule.is_ignored(current_path, current_rules):
+            self.logger.debug(f"Skipped late: {current_path}")
+            return
 
-            if IgnoreRule.is_ignored(current_path, current_rules):
-                logger.debug(f"Skipped late: {current_path}")
-                return
+        if current_path.is_file():
+            self.TOTAL_BYTES += current_path.stat().st_size
+            self.JOBS.append(current_path)
 
-            if current_path.is_file():
-                total_bytes += current_path.stat().st_size
-                jobs.append(current_path)
+        elif current_path.is_dir() and self.pref.recursive_mode():
+            local_rules = []
+            if self.pref.respect_gitignore():
+                local_rules = current_rules.copy()
+                gitignore_file = current_path / ".gitignore"
 
-            elif current_path.is_dir() and self.pref.recursive_mode():
-                local_rules = []
-                if self.pref.respect_gitignore():
-                    local_rules = current_rules.copy()
-                    gitignore_file = current_path / ".gitignore"
+                if gitignore_file.exists():
+                    IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
+                    self.logger.debug(f"Added rule late: {gitignore_file}")
+                    self.logger.debug(f"Rule count late: {len(local_rules)}")
 
-                    if gitignore_file.exists():
-                        IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
-                        logger.debug(f"Added rule late: {gitignore_file}")
-                        logger.debug(f"Rule count late: {len(local_rules)}")
+            for subpath in current_path.iterdir():
+                self.process_path_n_rules(subpath, local_rules)
+        else:
+            # Raise error for invalid paths
+            current_path.stat()
 
-                for subpath in current_path.iterdir():
-                    process_path(subpath, local_rules)
-            else:
-                # Raise error for invalid paths
-                current_path.stat()
+    def hash_task(self, file: Path, shake_length: int = 32):
+        if self.cancel_event.is_set():
+            return
 
-        for root_path, ignore_rules in paths:
-            try:
-                if root_path.is_dir():
-                    for path in root_path.iterdir():
-                        if IgnoreRule.is_ignored(path, ignore_rules):
-                            logger.debug(f"Skipped early: {path}")
-                            continue
-                        process_path(path, ignore_rules)
+        if file.stat().st_size > 1024 * 1024 * 100:
+            chunk_size = 1024 * 1024 * 4
+
+        else:
+            chunk_size = 1024 * 1024
+
+        hash_obj = hashlib.new(self.ALGO)
+        try:
+            with open(file, "rb") as f:
+                while chunk := f.read(chunk_size):
+                    if self.cancel_event.is_set():
+                        return
+                    hash_obj.update(chunk)
+                    self.BYTES_READ += len(chunk)
+                    self.update_queue.put(("progress", min(self.BYTES_READ / self.TOTAL_BYTES, 1.0)))
                 else:
-                    process_path(root_path, ignore_rules)
-            except Exception as e:
-                logger.exception(f"Error processing file: {e}")
-                self.update_queue.put(("error", root_path, str(e), algo))
-
-        if total_bytes == 0:
-            self.zero_bytes("<big>❌ No files found to process in the selected location.</big>")
-
-        bytes_read = 0
-
-        def hash_task(file: Path, shake_length: int = 32):
-            nonlocal bytes_read
-            if self.cancel_event.is_set():
-                return
-            if file.stat().st_size > 1024 * 1024 * 100:
-                chunk_size = 1024 * 1024 * 4
-            else:
-                chunk_size = 1024 * 1024
-            hash_obj = hashlib.new(algo)
-            try:
-                with open(file, "rb") as f:
-                    while chunk := f.read(chunk_size):
-                        if self.cancel_event.is_set():
-                            return
-                        hash_obj.update(chunk)
-                        bytes_read += len(chunk)
-                        self.update_queue.put(("progress", min(bytes_read / total_bytes, 1.0)))
-                    self.update_queue.put(
-                        (
-                            "result",
-                            file,
-                            hash_obj.hexdigest(shake_length) if "shake" in algo else hash_obj.hexdigest(),
-                            algo,
-                        )
-                    )
-            except Exception as e:
-                logger.exception(f"Error computing hash for file: {file.as_posix()}")
-                self.update_queue.put(("error", str(file), str(e), algo))
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            list(executor.map(hash_task, jobs))
+                    self.update_queue.put(("result", file, hash_obj.hexdigest() if "shake" not in self.ALGO else hash_obj.hexdigest(shake_length), self.ALGO))
+        except Exception as e:
+            self.logger.exception(f"Error computing hash for file: {file.as_posix()}")
+            self.update_queue.put(("error", file, str(e), self.ALGO))
 
 
 class HashResultRow(Adw.ActionRow):
     def __init__(self, path: Path, hash_value: str, hash_algorithm: str, **kwargs):
         super().__init__(**kwargs)
+        self.logger = get_logger(self.__class__.__name__)
         self.path = path
         self.hash_value = hash_value
         self.algo = hash_algorithm
@@ -444,7 +444,7 @@ class HashResultRow(Adw.ActionRow):
                     ),
                 )
             except Exception as e:
-                logger.exception(f"Error reading clipboard: {e}")
+                self.logger.exception(f"Error reading clipboard: {e}")
                 main_window.add_toast(f"<big>❌ Clipboard read error: {e}</big>")
 
         clipboard = button.get_clipboard()
@@ -486,6 +486,7 @@ class HashResultRow(Adw.ActionRow):
 class Preferences(Adw.PreferencesDialog):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.logger = get_logger(self.__class__.__name__)
         self.set_title(title="Preferences")
 
         preference_page = Adw.PreferencesPage()
@@ -509,7 +510,7 @@ class Preferences(Adw.PreferencesDialog):
 
         if recursive_mode := bool(os.getenv("CH_RECURSIVE_MODE")):
             self.set_recursive_mode(recursive_mode)
-            logger.info(f"Recursive mode set to {recursive_mode} via env variable")
+            self.logger.info(f"Recursive mode set to {recursive_mode} via env variable")
 
     def set_recursive_mode(self, state: bool):
         self.setting_recursive.set_active(state)
@@ -529,6 +530,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def __init__(self, app, paths: list[Path] | None = None):
         super().__init__(application=app)
+        self.logger = get_logger(self.__class__.__name__)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
 
@@ -543,7 +545,6 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         self.build_ui()
-
         self.setup_window_key_controller()
         if paths:
             self.start_job(paths)
@@ -582,6 +583,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.empty_error_placeholder = Adw.StatusPage(
             title="No Errors",
+            description="   ",
             icon_name="object-select-symbolic",
         )
         self.toolbar_view = Adw.ToolbarView()
@@ -660,7 +662,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
 
         self.view_switcher = Adw.ViewSwitcher()
-        self.view_switcher.set_sensitive(False)
         self.view_switcher.set_hexpand(True)
         self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
         self.second_top_bar_box.append(self.view_switcher)
@@ -865,7 +866,7 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 files: Gdk.FileList = drop.read_value_finish(result)
                 paths = [Path(f.get_path()) for f in files.get_files()]
-                logger.debug(paths)
+                self.logger.debug(paths)
                 action = Gdk.DragAction.COPY
             except Exception as e:
                 action = 0
@@ -913,6 +914,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def process_queue(self):
         if self.cancel_event.is_set():
+            self.update_queue = Queue()
             return False  # Stop monitoring
         iterations = 0
         while not self.update_queue.empty() and iterations < 8:
@@ -995,7 +997,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results or has_errors)
         self.update_badge_numbers()
-        self.view_switcher.set_sensitive(has_results or has_errors)
 
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
@@ -1005,7 +1006,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.set_content(target)
         Adw.TimedAnimation(
             widget=self,
-            value_from=0.1,
+            value_from=0.3,
             value_to=1.0,
             duration=500,
             target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
@@ -1064,7 +1065,7 @@ class MainWindow(Adw.ApplicationWindow):
             if not gio_task.had_error():
                 files = file_dialog.open_multiple_finish(gio_task)
                 paths = [Path(f.get_path()) for f in files]
-                logger.debug(paths)
+                self.logger.debug(paths)
                 self.start_job(paths)
 
         file_dialog.open_multiple(
@@ -1147,6 +1148,7 @@ class Application(Adw.Application):
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
+        self.logger = get_logger(self.__class__.__name__)
         self.create_action("quit", self.on_click_quit)
         self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
 
@@ -1158,17 +1160,17 @@ class Application(Adw.Application):
         win: MainWindow = self.props.active_window
         if win and value.lower() in ("yes", "no"):
             win.pref.set_recursive_mode(value == "yes")
-            logger.info(f"Recursive mode set to {value} via action")
+            self.logger.info(f"Recursive mode set to {value} via action")
 
     def do_activate(self):
-        logger.info(f"App {self.get_application_id()} activated")
+        self.logger.info(f"App {self.get_application_id()} activated")
         self.main_window: MainWindow = self.props.active_window
         if not self.main_window:
             self.main_window = MainWindow(self)
         self.main_window.present()
 
     def do_open(self, files, n_files, hint):
-        logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
+        self.logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
         paths = [Path(f.get_path()) for f in files if f.get_path()]
         self.main_window: MainWindow = self.props.active_window
         if not self.main_window:
@@ -1181,7 +1183,7 @@ class Application(Adw.Application):
         Adw.Application.do_startup(self)
 
     def do_shutdown(self):
-        logger.info("Shutting down...")
+        self.logger.info("Shutting down...")
         self.main_window.cancel_event.set()
         Adw.Application.do_shutdown(self)
 
@@ -1201,6 +1203,6 @@ if __name__ == "__main__":
         app = Application()
         app.run(sys.argv)
     except KeyboardInterrupt:
-        logger.info("App interrupted by user")
+        app.logger.info("App interrupted by user")
     finally:
         app.quit()
