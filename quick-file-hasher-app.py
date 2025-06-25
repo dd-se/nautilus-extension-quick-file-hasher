@@ -37,7 +37,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from queue import Queue
-from typing import Literal
+from typing import Callable, Literal
 
 import gi  # type: ignore
 
@@ -94,6 +94,64 @@ def get_logger(name: str) -> logging.Logger:
 
 
 logger = get_logger(__name__)
+
+
+class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
+    def __init__(self):
+        pass
+
+    def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
+        file_paths = [f.get_location().get_path() for f in files if f.get_location()]
+        cmd = ["python3", Path(__file__).as_posix()] + file_paths
+        env = None
+        if recursive_mode:
+            env = os.environ.copy()
+            env["CH_RECURSIVE_MODE"] = "yes"
+            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'yes'\"")
+        else:
+            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
+        subprocess.Popen(cmd, env=env)
+        logger.info(f"App {APP_ID} launched by file manager")
+
+    def create_menu(self, files, caller):
+        if (caller == 1) or (caller == 2 and any(f.is_directory() for f in files)):
+            menu = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",
+                label="Calculate Hashes Menu",
+            )
+            submenu = Nautilus.Menu()
+            menu.set_submenu(submenu)
+
+            item_normal = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
+                label="Calculate Hashes",
+            )
+            item_normal.connect("activate", self.nautilus_launch_app, files)
+            submenu.append_item(item_normal)
+
+            item_recursive = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppRecursive_{caller}",
+                label="Calculate Hashes (Recursive)",
+            )
+            item_recursive.connect("activate", self.nautilus_launch_app, files, True)
+            submenu.append_item(item_recursive)
+        else:
+            menu = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
+                label="Calculate Hashes",
+            )
+            menu.connect("activate", self.nautilus_launch_app, files)
+        return [menu]
+
+    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
+        if not current_folder.is_directory():
+            return []
+        return self.create_menu([current_folder], 1)
+
+    def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
+        if not files:
+            return []
+        return self.create_menu(files, 2)
 
 
 class IgnoreRule:
@@ -189,62 +247,116 @@ class IgnoreRule:
         return False
 
 
-class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
-    def __init__(self):
-        pass
+class CalculateHashes:
+    def __init__(
+        self,
+        preferences: "Preferences",
+        queue: Queue,
+        event: threading.Event,
+        no_files_callback: Callable[[str], None],
+    ):
+        self.pref = preferences
+        self.update_queue = queue
+        self.cancel_event = event
+        self.no_files = no_files_callback
 
-    def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
-        file_paths = [f.get_location().get_path() for f in files if f.get_location()]
-        cmd = ["python3", Path(__file__).as_posix()] + file_paths
-        env = None
-        if recursive_mode:
-            env = os.environ.copy()
-            env["CH_RECURSIVE_MODE"] = "yes"
-            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'yes'\"")
-        else:
-            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
-        subprocess.Popen(cmd, env=env)
-        logger.info(f"App {APP_ID} launched by file manager")
+    def __call__(self, paths: list[Path], algo: str):
+        for i, path in enumerate(paths):
+            try:
+                if path.is_dir() and self.pref.respect_gitignore():
+                    gitignore_file = path / ".gitignore"
+                    rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
+                    paths[i] = (path, rules)
+                    logger.debug(f"Rule count early: {len(paths[i][1])}")
+                else:
+                    paths[i] = (path, [])
+            except Exception as e:
+                paths[i] = (path, [])
+                logger.exception(f"Error processing file: {e}")
 
-    def create_menu(self, files, caller):
-        if (caller == 1) or (caller == 2 and any(f.is_directory() for f in files)):
-            menu = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",
-                label="Calculate Hashes Menu",
-            )
-            submenu = Nautilus.Menu()
-            menu.set_submenu(submenu)
+        jobs = []
+        total_bytes = 0
 
-            item_normal = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
-                label="Calculate Hashes",
-            )
-            item_normal.connect("activate", self.nautilus_launch_app, files)
-            submenu.append_item(item_normal)
+        def process_path(current_path: Path, current_rules: list[IgnoreRule]):
+            nonlocal total_bytes
+            if self.cancel_event.is_set():
+                return
 
-            item_recursive = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppRecursive_{caller}",
-                label="Calculate Hashes (Recursive)",
-            )
-            item_recursive.connect("activate", self.nautilus_launch_app, files, True)
-            submenu.append_item(item_recursive)
-        else:
-            menu = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
-                label="Calculate Hashes",
-            )
-            menu.connect("activate", self.nautilus_launch_app, files)
-        return [menu]
+            if IgnoreRule.is_ignored(current_path, current_rules):
+                logger.debug(f"Skipped late: {current_path}")
+                return
 
-    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
-        if not current_folder.is_directory():
-            return []
-        return self.create_menu([current_folder], 1)
+            if current_path.is_file():
+                total_bytes += current_path.stat().st_size
+                jobs.append(current_path)
 
-    def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
-        if not files:
-            return []
-        return self.create_menu(files, 2)
+            elif current_path.is_dir() and self.pref.recursive_mode():
+                local_rules = []
+                if self.pref.respect_gitignore():
+                    local_rules = current_rules.copy()
+                    gitignore_file = current_path / ".gitignore"
+
+                    if gitignore_file.exists():
+                        IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
+                        logger.debug(f"Added rule late: {gitignore_file}")
+                        logger.debug(f"Rule count late: {len(local_rules)}")
+
+                for subpath in current_path.iterdir():
+                    process_path(subpath, local_rules)
+            else:
+                # Raise error for invalid paths
+                current_path.stat()
+
+        for root_path, ignore_rules in paths:
+            try:
+                if root_path.is_dir():
+                    for path in root_path.iterdir():
+                        if IgnoreRule.is_ignored(path, ignore_rules):
+                            logger.debug(f"Skipped early: {path}")
+                            continue
+                        process_path(path, ignore_rules)
+                else:
+                    process_path(root_path, ignore_rules)
+            except Exception as e:
+                logger.exception(f"Error processing file: {e}")
+                self.update_queue.put(("error", root_path, str(e), algo))
+
+        if total_bytes == 0:
+            self.no_files("<big>❌ No files found to process in the selected location.</big>")
+
+        bytes_read = 0
+
+        def hash_task(file: Path, shake_length: int = 32):
+            nonlocal bytes_read
+            if self.cancel_event.is_set():
+                return
+            if file.stat().st_size > 1024 * 1024 * 100:
+                chunk_size = 1024 * 1024 * 4
+            else:
+                chunk_size = 1024 * 1024
+            hash_obj = hashlib.new(algo)
+            try:
+                with open(file, "rb") as f:
+                    while chunk := f.read(chunk_size):
+                        if self.cancel_event.is_set():
+                            return
+                        hash_obj.update(chunk)
+                        bytes_read += len(chunk)
+                        self.update_queue.put(("progress", min(bytes_read / total_bytes, 1.0)))
+                    self.update_queue.put(
+                        (
+                            "result",
+                            file,
+                            hash_obj.hexdigest(shake_length) if "shake" in algo else hash_obj.hexdigest(),
+                            algo,
+                        )
+                    )
+            except Exception as e:
+                logger.exception(f"Error computing hash for file: {file.as_posix()}")
+                self.update_queue.put(("error", str(file), str(e), algo))
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(hash_task, jobs))
 
 
 class HashResultRow(Adw.ActionRow):
@@ -428,13 +540,22 @@ class MainWindow(Adw.ApplicationWindow):
         super().__init__(application=app)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
+
         self.pref = Preferences()
         self.update_queue = Queue()
         self.cancel_event = threading.Event()
+        self.calculate_hashes = CalculateHashes(
+            self.pref,
+            self.update_queue,
+            self.cancel_event,
+            lambda message: (self.add_toast(message), self.progress_bar.set_fraction(1.0)),
+        )
         self.build_ui()
+
         window_key_controller = Gtk.EventControllerKey()
         window_key_controller.connect("key-pressed", self.on_window_key_pressed)
         self.add_controller(window_key_controller)
+
         if paths:
             self.start_job(paths)
 
@@ -779,7 +900,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.toolbar_view.set_content(self.main_content_overlay)
 
-        self.processing_thread = threading.Thread(target=self.calculate_hash, args=(paths, algo or self.algo), daemon=True)
+        self.processing_thread = threading.Thread(target=self.calculate_hashes, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
@@ -838,104 +959,6 @@ class MainWindow(Adw.ApplicationWindow):
             self.has_results()
             return False  # Stop monitoring
         return True  # Continue monitoring
-
-    def calculate_hash(self, paths: list[Path], algo: str):
-        for i, path in enumerate(paths):
-            try:
-                if path.is_dir() and self.pref.respect_gitignore():
-                    gitignore_file = path / ".gitignore"
-                    rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
-                    paths[i] = (path, rules)
-                    logger.debug(f"Rule count early: {len(paths[i][1])}")
-                else:
-                    paths[i] = (path, [])
-            except Exception as e:
-                paths[i] = (path, [])
-                logger.exception(f"Error processing file: {e}")
-
-        jobs = []
-        total_bytes = 0
-
-        def process_path(current_path: Path, current_rules: list[IgnoreRule]):
-            nonlocal total_bytes
-            if self.cancel_event.is_set():
-                return
-
-            if IgnoreRule.is_ignored(current_path, current_rules):
-                logger.debug(f"Skipped late: {current_path}")
-                return
-
-            if current_path.is_file():
-                total_bytes += current_path.stat().st_size
-                jobs.append(current_path)
-
-            elif current_path.is_dir() and self.pref.recursive_mode():
-                local_rules = []
-                if self.pref.respect_gitignore():
-                    local_rules = current_rules.copy()
-                    gitignore_file = current_path / ".gitignore"
-
-                    if gitignore_file.exists():
-                        IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
-                        logger.debug(f"Added rule late: {gitignore_file}")
-                        logger.debug(f"Rule count late: {len(local_rules)}")
-
-                for subpath in current_path.iterdir():
-                    process_path(subpath, local_rules)
-            else:
-                # Raise error for invalid paths
-                current_path.stat()
-
-        for root_path, ignore_rules in paths:
-            try:
-                if root_path.is_dir():
-                    for path in root_path.iterdir():
-                        if IgnoreRule.is_ignored(path, ignore_rules):
-                            logger.debug(f"Skipped early: {path}")
-                            continue
-                        process_path(path, ignore_rules)
-                else:
-                    process_path(root_path, ignore_rules)
-            except Exception as e:
-                logger.exception(f"Error processing file: {e}")
-                self.update_queue.put(("error", root_path, str(e), algo))
-
-        if total_bytes == 0:
-            self.progress_bar.set_fraction(1.0)
-
-        bytes_read = 0
-
-        def hash_task(file: Path, shake_length: int = 32):
-            nonlocal bytes_read
-            if self.cancel_event.is_set():
-                return
-            if file.stat().st_size > 1024 * 1024 * 100:
-                chunk_size = 1024 * 1024 * 4
-            else:
-                chunk_size = 1024 * 1024
-            hash_obj = hashlib.new(algo)
-            try:
-                with open(file, "rb") as f:
-                    while chunk := f.read(chunk_size):
-                        if self.cancel_event.is_set():
-                            return
-                        hash_obj.update(chunk)
-                        bytes_read += len(chunk)
-                        self.update_queue.put(("progress", min(bytes_read / total_bytes, 1.0)))
-                    self.update_queue.put(
-                        (
-                            "result",
-                            file,
-                            hash_obj.hexdigest(shake_length) if "shake" in algo else hash_obj.hexdigest(),
-                            algo,
-                        )
-                    )
-            except Exception as e:
-                logger.exception(f"Error computing hash for file: {file.as_posix()}")
-                self.update_queue.put(("error", str(file), str(e), algo))
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            list(executor.map(hash_task, jobs))
 
     def scroll_to_bottom(self):
         vadjustment = self.results_scrolled_window.get_vadjustment()
