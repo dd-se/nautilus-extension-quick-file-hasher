@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.13"
+APP_VERSION = "0.9.16"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
@@ -37,7 +37,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from queue import Queue
-from typing import Callable, Literal
+from typing import Literal
 
 import gi  # type: ignore
 
@@ -48,7 +48,6 @@ gi.require_version(namespace="Nautilus", version="4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 Adw.init()
-
 
 css = b"""
 .view-switcher button {
@@ -223,10 +222,7 @@ class IgnoreRule:
 
     @staticmethod
     def parse_gitignore(gitignore_path: Path, extend: list["IgnoreRule"] | None = None) -> list["IgnoreRule"]:
-        if extend:
-            rules = extend
-        else:
-            rules = [IgnoreRule(".git/", gitignore_path.parent)]
+        rules = extend or [IgnoreRule(".git/", gitignore_path.parent)]
 
         with gitignore_path.open() as f:
             for line in f:
@@ -246,116 +242,157 @@ class IgnoreRule:
         return False
 
 
+class QueueUpdateHandler(Queue):
+    def __init__(self, maxsize=0):
+        super().__init__(maxsize)
+        self.logger = get_logger(self.__class__.__name__)
+
+    def __iter__(self):
+        while not self.empty():
+            yield self.get_nowait()
+
+    def update_progress(self, bytes_read: int, total_bytes: int):
+        progress = min(bytes_read / total_bytes, 1.0)
+        # self.logger.debug(progress)
+        self.put(("progress", progress))
+
+    def update_result(self, file: Path, hash_value: str, algo: str):
+        self.put(("result", file, hash_value, algo))
+
+    def update_error(self, file: Path, error: str):
+        self.put(("error", file, error, "ERROR"))
+
+    def reset(self):
+        while not self.empty():
+            try:
+                self.get_nowait()
+            except Exception:
+                break
+
+
 class CalculateHashes:
     def __init__(
         self,
         preferences: "Preferences",
-        queue: Queue,
+        queue: QueueUpdateHandler,
         event: threading.Event,
-        zero_bytes_callback: Callable[[str], None],
     ):
         self.logger = get_logger(self.__class__.__name__)
         self.pref = preferences
-        self.update_queue = queue
+        self.queue_handler = queue
         self.cancel_event = event
-        self.zero_bytes = zero_bytes_callback
 
-    def __call__(self, paths: list[Path], algo: str):
-        paths_n_rules = self.process_gitignore(paths)
-
-        self.JOBS = []
-        self.ALGO = algo
-        self.TOTAL_BYTES = 0
-        self.BYTES_READ = 0
-
-        for root_path, ignore_rules in paths_n_rules:
-            try:
-                if root_path.is_dir():
-                    for path in root_path.iterdir():
-                        if IgnoreRule.is_ignored(path, ignore_rules):
-                            self.logger.debug(f"Skipped early: {path}")
-                            continue
-                        self.process_path_n_rules(path, ignore_rules)
-                else:
-                    self.process_path_n_rules(root_path, ignore_rules)
-            except Exception as e:
-                self.logger.debug(f"Error processing file: {e}")
-                self.update_queue.put(("error", root_path, str(e), self.ALGO))
-
-        if self.TOTAL_BYTES == 0:
-            self.zero_bytes("<big>❌ No files found to process in the selected location.</big>")
-
+    def execute_jobs(self, paths, hash_algorithms: str | list):
+        hash_algorithms: list = [hash_algorithms] * len(paths) if isinstance(hash_algorithms, str) else hash_algorithms
+        assert len(paths) == len(hash_algorithms)
         with ThreadPoolExecutor(max_workers=4) as executor:
-            list(executor.map(self.hash_task, self.JOBS))
+            list(executor.map(self.hash_task, paths, hash_algorithms))
+        self.queue_handler.update_progress(1, 1)
 
-    def process_gitignore(self, paths: list[Path]) -> list[tuple[Path, list[IgnoreRule]]]:
-        for i, path in enumerate(paths):
+    def __call__(self, paths: list[Path], hash_algorithm: list | str):
+        self.BYTES_READ = 0
+        self.TOTAL_BYTES = 0
+        paths = self.create_jobs(paths)
+        self.execute_jobs(paths, hash_algorithm)
+
+    def create_jobs(self, paths: list[Path]) -> tuple[list[Path], list[str]]:
+        # Process root .gitignore file early to skip ignored files/folders efficiently
+        jobs = []
+        for root_path in paths:
             try:
-                if path.is_dir() and self.pref.respect_gitignore():
-                    gitignore_file = path / ".gitignore"
-                    rules = IgnoreRule.parse_gitignore(gitignore_file) if gitignore_file.exists() else []
-                    paths[i] = (path, rules)
-                    self.logger.debug(f"Rule count early: {len(paths[i][1])}")
+                ignore_rules = []
+
+                if root_path.is_dir():
+                    if self.pref.respect_gitignore():
+                        gitignore_file = root_path / ".gitignore"
+
+                        if gitignore_file.exists():
+                            ignore_rules = IgnoreRule.parse_gitignore(gitignore_file)
+                            self.logger.debug(f"Added rule early: {gitignore_file} ({len(ignore_rules)})")
+
+                    for sub_path in root_path.iterdir():
+                        if IgnoreRule.is_ignored(sub_path, ignore_rules):
+                            self.logger.debug(f"Skipped early: {sub_path}")
+                            continue
+                        self.process_path_n_rules(sub_path, ignore_rules, jobs)
                 else:
-                    paths[i] = (path, [])
+                    self.process_path_n_rules(root_path, ignore_rules, jobs)
+
             except Exception as e:
-                paths[i] = (path, [])
-                self.logger.debug(f"Error processing file: {e}")
-        return paths
+                self.logger.debug(f"Error processing {root_path.name}: {e}")
+                self.queue_handler.update_error(root_path, str(e))
 
-    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule]):
+        return jobs
+
+    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: list):
+        # self.logger.debug(f"Job started for: {hash_algorithm}:{current_path.name} with rules: {len(current_rules)}")
         if self.cancel_event.is_set():
             return
-
-        if IgnoreRule.is_ignored(current_path, current_rules):
-            self.logger.debug(f"Skipped late: {current_path}")
-            return
-
-        if current_path.is_file():
-            self.TOTAL_BYTES += current_path.stat().st_size
-            self.JOBS.append(current_path)
-
-        elif current_path.is_dir() and self.pref.recursive_mode():
-            local_rules = []
-            if self.pref.respect_gitignore():
-                local_rules = current_rules.copy()
-                gitignore_file = current_path / ".gitignore"
-
-                if gitignore_file.exists():
-                    IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
-                    self.logger.debug(f"Added rule late: {gitignore_file}")
-                    self.logger.debug(f"Rule count late: {len(local_rules)}")
-
-            for subpath in current_path.iterdir():
-                self.process_path_n_rules(subpath, local_rules)
-        else:
-            # Raise error for invalid paths
-            current_path.stat()
-
-    def hash_task(self, file: Path, shake_length: int = 32):
-        if self.cancel_event.is_set():
-            return
-
-        if file.stat().st_size > 1024 * 1024 * 100:
-            chunk_size = 1024 * 1024 * 4
-
-        else:
-            chunk_size = 1024 * 1024
-
-        hash_obj = hashlib.new(self.ALGO)
         try:
+            if IgnoreRule.is_ignored(current_path, current_rules):
+                self.logger.debug(f"Skipped late: {current_path}")
+                return
+            if current_path.is_symlink():
+                raise Exception("Skipped following symlink.")
+
+            if current_path.is_file():
+                if (file_size := current_path.stat().st_size) == 0:
+                    raise Exception("File is empty! There is nothing to process.")
+
+                self.add_bytes(file_size)
+                jobs.append(current_path)
+
+            elif current_path.is_dir() and self.pref.recursive_mode():
+                local_rules = []
+
+                if self.pref.respect_gitignore():
+                    local_rules = current_rules.copy()
+                    gitignore_file = current_path / ".gitignore"
+
+                    if gitignore_file.exists():
+                        IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
+                        self.logger.debug(f"Added rule late: {gitignore_file} ({len(local_rules)})")
+
+                for subpath in current_path.iterdir():
+                    self.process_path_n_rules(subpath, local_rules, jobs)
+        except Exception as e:
+            self.logger.debug(f"Error processing {current_path.name}: {e}")
+            self.queue_handler.update_error(current_path, str(e))
+
+    def hash_task(self, file: Path, algorithm: str, shake_length: int = 32):
+        if self.cancel_event.is_set():
+            return
+        try:
+            if file.stat().st_size > 1024 * 1024 * 100:
+                chunk_size = 1024 * 1024 * 4
+
+            else:
+                chunk_size = 1024 * 1024
+
+            hash_obj = hashlib.new(algorithm)
             with open(file, "rb") as f:
                 while chunk := f.read(chunk_size):
                     if self.cancel_event.is_set():
                         return
+
                     hash_obj.update(chunk)
                     self.BYTES_READ += len(chunk)
-                    self.update_queue.put(("progress", min(self.BYTES_READ / self.TOTAL_BYTES, 1.0)))
-                else:
-                    self.update_queue.put(("result", file, hash_obj.hexdigest() if "shake" not in self.ALGO else hash_obj.hexdigest(shake_length), self.ALGO))
+
+                    if (self.BYTES_READ // chunk_size) % 4 == 0:
+                        self.queue_handler.update_progress(self.BYTES_READ, self.TOTAL_BYTES)
+
+            self.queue_handler.update_result(
+                file,
+                hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest(),
+                algorithm,
+            )
         except Exception as e:
-            self.logger.exception(f"Error computing hash for file: {file.as_posix()}")
-            self.update_queue.put(("error", file, str(e), self.ALGO))
+            self.logger.debug(f"Error processing {file.name}: {e}")
+            self.queue_handler.update_error(file, str(e))
+
+    def add_bytes(self, bytes_: int):
+        # self.logger.debug(f"Adding {bytes_} bytes to total (was {self.TOTAL_BYTES})")
+        self.TOTAL_BYTES += bytes_
 
 
 class HashResultRow(Adw.ActionRow):
@@ -409,9 +446,9 @@ class HashResultRow(Adw.ActionRow):
 
     def on_click_make_hashes(self, button: Gtk.Button):
         main_window: MainWindow = button.get_root()
-        for algo in main_window.available_algorithms:
-            if algo != self.algo:
-                main_window.start_job([self.path], algo)
+        paths = [self.path] * (len(main_window.available_algorithms) - 1)
+        hashes = [a for a in main_window.available_algorithms if a != self.algo]
+        main_window.start_job(paths, hashes)
 
     def on_copy_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -535,15 +572,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
 
         self.pref = Preferences()
-        self.update_queue = Queue()
+        self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self.calculate_hashes = CalculateHashes(
             self.pref,
-            self.update_queue,
+            self.queue_handler,
             self.cancel_event,
-            lambda message: (self.add_toast(message), self.progress_bar.set_fraction(1.0)),
         )
-
         self.build_ui()
         self.setup_window_key_controller()
         if paths:
@@ -683,30 +718,22 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
 
-        def sort_by_hierarchy(row1: HashResultRow, row2: HashResultRow):
+        def sort_by_hierarchy(row1: HashResultRow, row2: HashResultRow) -> int:
             """
-            /folder/file_1\n
-            /folder/file_2\n
-            /folder/folder/file_1 ...
+            Example sorting:
+            - /folder/a.txt
+            - /folder/z.txt
+            - /folder/subfolder_b/
+            - /folder/subfolder_b/file.txt
+            - /folder/subfolder_y/
             """
-            parts1 = row1.path.parts
-            parts2 = row2.path.parts
+            p1, p2 = row1.path, row2.path
 
-            min_len = min(len(parts1), len(parts2))
-            for i in range(min_len):
-                if parts1[i] != parts2[i]:
-                    path1_at_level = Path(*parts1[: i + 1])
-                    path2_at_level = Path(*parts2[: i + 1])
-                    is_dir1 = path1_at_level.is_dir()
-                    is_dir2 = path2_at_level.is_dir()
-                    # Files comes first at same level
-                    if is_dir1 and not is_dir2:
-                        return 1
-                    if not is_dir1 and is_dir2:
-                        return -1
-                    # Same type, compare lexicographically
-                    return -1 if parts1[i] < parts2[i] else 1
-            # Identical
+            if p1.parent.parts != p2.parent.parts:
+                return -1 if p1.parent.parts < p2.parent.parts else 1
+
+            if p1.name != p2.name:
+                return -1 if p1.name < p2.name else 1
             return 0
 
         self.button_sort.connect(
@@ -890,7 +917,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_controller(self.drop)
 
-    def start_job(self, paths: list[Path], algo: str | None = None):
+    def start_job(self, paths: list[Path], algo: str | list | None = None):
         self.cancel_event.clear()
 
         self.progress_bar.set_fraction(0.0)
@@ -914,11 +941,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def process_queue(self):
         if self.cancel_event.is_set():
-            self.update_queue = Queue()
+            self.queue_handler.reset()
             return False  # Stop monitoring
         iterations = 0
-        while not self.update_queue.empty() and iterations < 8:
-            update = self.update_queue.get_nowait()
+        while not self.queue_handler.empty() and iterations < 8:
+            update = self.queue_handler.get_nowait()
             if update[0] == "progress":
                 _, progress = update
                 self.progress_bar.set_fraction(progress)
@@ -929,10 +956,7 @@ class MainWindow(Adw.ApplicationWindow):
             elif update[0] == "error":
                 _, fname, err, algo = update
                 self.add_result(fname, err, algo, is_error=True)
-                # self.add_toast(f"<big>❌ <b>{err}</b></big>")
                 iterations += 1
-            else:
-                return False
         return True  # Continue monitoring
 
     def hide_progress(self):
@@ -948,7 +972,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.button_select_files.set_sensitive(True)
             self.button_select_folders.set_sensitive(True)
             self.drop_down_algo_button.set_sensitive(True)
-            self.has_results()
+            GLib.timeout_add(500, self.has_results, priority=GLib.PRIORITY_DEFAULT)
             return False  # Stop monitoring
         return True  # Continue monitoring
 
@@ -1089,8 +1113,11 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def on_copy_all_clicked(self, button: Gtk.Button):
-        clipboard = button.get_clipboard()
         output = self.results_to_txt()
+        if output.count("\n") > 102:
+            self.add_toast("<big>❌ Too many results to copy. Please use the Save button instead.</big>")
+            return
+        clipboard = button.get_clipboard()
         clipboard.set(output)
         self.add_toast("<big>✅ Results copied to clipboard</big>")
 
