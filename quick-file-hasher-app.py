@@ -556,7 +556,7 @@ class Preferences(Adw.PreferencesDialog):
         preference_group.add(child=self.setting_gitignore)
 
         preference_group_2 = Adw.PreferencesGroup()
-        preference_group_2.set_description(description="Configure error handling")
+        preference_group_2.set_description(description="Configure how results are saved")
         preference_page.add(group=preference_group_2)
 
         self.setting_save_errors = Adw.SwitchRow()
@@ -565,13 +565,17 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors.set_subtitle(subtitle="Save errors to results file")
         preference_group_2.add(child=self.setting_save_errors)
 
+        preference_group_3 = Adw.PreferencesGroup()
+        preference_group_3.set_description(description="Configure performance settings")
+        preference_page.add(group=preference_group_3)
+
         self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
         self.setting_max_workers.set_editable(True)
         self.setting_max_workers.set_numeric(True)
-        self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-stop-symbolic"))
+        self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-working-symbolic"))
         self.setting_max_workers.set_title(title="Max Concurrent Workers")
         self.setting_max_workers.set_subtitle(subtitle="Set the maximum number of concurrent hashing operations")
-        preference_group_2.add(child=self.setting_max_workers)
+        preference_group_3.add(child=self.setting_max_workers)
 
         if recursive_mode := bool(os.getenv("CH_RECURSIVE_MODE")):
             self.set_recursive_mode(recursive_mode)
