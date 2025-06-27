@@ -336,7 +336,7 @@ class CalculateHashes:
                 self.logger.debug(f"Skipped late: {current_path}")
                 return
             if current_path.is_symlink():
-                self.queue_handler.update_error(current_path, "Symlinks are not supported")
+                self.queue_handler.update_error(current_path, "Symbolic links are not supported")
 
             elif current_path.is_file():
                 if (file_size := current_path.stat().st_size) == 0:
@@ -360,9 +360,6 @@ class CalculateHashes:
 
                 for subpath in current_path.iterdir():
                     self.process_path_n_rules(subpath, local_rules, jobs)
-
-            else:
-                self.queue_handler.update_error(current_path, "Not a file or directory")
 
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
