@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.16"
+APP_VERSION = "0.9.17"
 APP_DEFAULT_HASHING_ALGORITHM = "sha256"
 
 import hashlib
@@ -32,9 +32,11 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
+from itertools import repeat
 from pathlib import Path
 from queue import Queue
 from typing import Literal
@@ -282,22 +284,23 @@ class CalculateHashes:
         self.queue_handler = queue
         self.cancel_event = event
 
-    def execute_jobs(self, paths, hash_algorithms: str | list):
-        hash_algorithms: list = [hash_algorithms] * len(paths) if isinstance(hash_algorithms, str) else hash_algorithms
-        assert len(paths) == len(hash_algorithms)
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            list(executor.map(self.hash_task, paths, hash_algorithms))
+    def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list):
+        hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
+        with ThreadPoolExecutor(max_workers=self.pref.max_workers()) as executor:
+            self.logger.debug(f"Starting hashing with {self.pref.max_workers()} workers")
+            list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
         self.queue_handler.update_progress(1, 1)
 
     def __call__(self, paths: list[Path], hash_algorithm: list | str):
         self.BYTES_READ = 0
         self.TOTAL_BYTES = 0
-        paths = self.create_jobs(paths)
-        self.execute_jobs(paths, hash_algorithm)
+        jobs = self.create_jobs(paths)
+        self.execute_jobs(jobs, hash_algorithm)
 
-    def create_jobs(self, paths: list[Path]) -> tuple[list[Path], list[str]]:
+    def create_jobs(self, paths: list[Path]):
         # Process root .gitignore file early to skip ignored files/folders efficiently
-        jobs = []
+        jobs = {"paths": [], "sizes": []}
+
         for root_path in paths:
             try:
                 ignore_rules = []
@@ -324,7 +327,7 @@ class CalculateHashes:
 
         return jobs
 
-    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: list):
+    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list]):
         # self.logger.debug(f"Job started for: {hash_algorithm}:{current_path.name} with rules: {len(current_rules)}")
         if self.cancel_event.is_set():
             return
@@ -333,14 +336,16 @@ class CalculateHashes:
                 self.logger.debug(f"Skipped late: {current_path}")
                 return
             if current_path.is_symlink():
-                raise Exception("Skipped following symlink.")
+                self.queue_handler.update_error(current_path, "Symlinks are not supported")
 
-            if current_path.is_file():
+            elif current_path.is_file():
                 if (file_size := current_path.stat().st_size) == 0:
-                    raise Exception("File is empty! There is nothing to process.")
+                    self.queue_handler.update_error(current_path, "File is empty")
 
-                self.add_bytes(file_size)
-                jobs.append(current_path)
+                else:
+                    self.add_bytes(file_size)
+                    jobs["paths"].append(current_path)
+                    jobs["sizes"].append(file_size)
 
             elif current_path.is_dir() and self.pref.recursive_mode():
                 local_rules = []
@@ -355,15 +360,20 @@ class CalculateHashes:
 
                 for subpath in current_path.iterdir():
                     self.process_path_n_rules(subpath, local_rules, jobs)
+
+            else:
+                self.queue_handler.update_error(current_path, "Not a file or directory")
+
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
             self.queue_handler.update_error(current_path, str(e))
 
-    def hash_task(self, file: Path, algorithm: str, shake_length: int = 32):
+    def hash_task(self, file: Path, algorithm: str, file_size: int | None = None, shake_length: int = 32):
         if self.cancel_event.is_set():
             return
         try:
-            if file.stat().st_size > 1024 * 1024 * 100:
+            file_size = file_size or file.stat().st_size
+            if file_size > 1024 * 1024 * 100:
                 chunk_size = 1024 * 1024 * 4
 
             else:
@@ -381,11 +391,8 @@ class CalculateHashes:
                     if (self.BYTES_READ // chunk_size) % 4 == 0:
                         self.queue_handler.update_progress(self.BYTES_READ, self.TOTAL_BYTES)
 
-            self.queue_handler.update_result(
-                file,
-                hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest(),
-                algorithm,
-            )
+            hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
+            self.queue_handler.update_result(file, hash_value, algorithm)
         except Exception as e:
             self.logger.debug(f"Error processing {file.name}: {e}")
             self.queue_handler.update_error(file, str(e))
@@ -402,6 +409,7 @@ class HashResultRow(Adw.ActionRow):
         self.path = path
         self.hash_value = hash_value
         self.algo = hash_algorithm
+        self.is_error = False
 
         self.set_title(GLib.markup_escape_text(self.path.as_posix()))
         self.set_subtitle(self.hash_value)
@@ -513,6 +521,7 @@ class HashResultRow(Adw.ActionRow):
         self.add_css_class(css_class)
 
     def error(self):
+        self.is_error = True
         self.add_css_class("error")
         self.set_icon_("dialog-error-symbolic")
         self.button_copy_hash.set_tooltip_text("Copy error message to clipboard")
@@ -525,6 +534,7 @@ class Preferences(Adw.PreferencesDialog):
         super().__init__(**kwargs)
         self.logger = get_logger(self.__class__.__name__)
         self.set_title(title="Preferences")
+        self._hide_results = False
 
         preference_page = Adw.PreferencesPage()
         self.add(preference_page)
@@ -545,6 +555,24 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
         preference_group.add(child=self.setting_gitignore)
 
+        preference_group_2 = Adw.PreferencesGroup()
+        preference_group_2.set_description(description="Configure error handling")
+        preference_page.add(group=preference_group_2)
+
+        self.setting_save_errors = Adw.SwitchRow()
+        self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
+        self.setting_save_errors.set_title(title="Save errors")
+        self.setting_save_errors.set_subtitle(subtitle="Save errors to results file")
+        preference_group_2.add(child=self.setting_save_errors)
+
+        self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
+        self.setting_max_workers.set_editable(True)
+        self.setting_max_workers.set_numeric(True)
+        self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-stop-symbolic"))
+        self.setting_max_workers.set_title(title="Max Concurrent Workers")
+        self.setting_max_workers.set_subtitle(subtitle="Set the maximum number of concurrent hashing operations")
+        preference_group_2.add(child=self.setting_max_workers)
+
         if recursive_mode := bool(os.getenv("CH_RECURSIVE_MODE")):
             self.set_recursive_mode(recursive_mode)
             self.logger.info(f"Recursive mode set to {recursive_mode} via env variable")
@@ -559,10 +587,24 @@ class Preferences(Adw.PreferencesDialog):
     def respect_gitignore(self):
         return self.setting_gitignore.get_active()
 
+    def save_errors(self):
+        return self.setting_save_errors.get_active()
+
+    def max_workers(self):
+        return self.setting_max_workers.get_value()
+
+    def hide_results(self) -> bool:
+        return self._hide_results
+
+    def set_hide_results(self, value: bool):
+        self._hide_results = value
+        return self._hide_results
+
 
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
+    MAX_ROWS = 100
     algo: str = APP_DEFAULT_HASHING_ALGORITHM
 
     def __init__(self, app, paths: list[Path] | None = None):
@@ -718,28 +760,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
 
-        def sort_by_hierarchy(row1: HashResultRow, row2: HashResultRow) -> int:
-            """
-            Example sorting:
-            - /folder/a.txt
-            - /folder/z.txt
-            - /folder/subfolder_b/
-            - /folder/subfolder_b/file.txt
-            - /folder/subfolder_y/
-            """
-            p1, p2 = row1.path, row2.path
-
-            if p1.parent.parts != p2.parent.parts:
-                return -1 if p1.parent.parts < p2.parent.parts else 1
-
-            if p1.name != p2.name:
-                return -1 if p1.name < p2.name else 1
-            return 0
-
         self.button_sort.connect(
             "clicked",
             lambda _: (
-                self.ui_results.set_sort_func(sort_by_hierarchy),
+                self.ui_results.set_sort_func(self.sort_by_hierarchy),
                 self.ui_results.set_sort_func(None),
                 self.add_toast("<big>✅ Results sorted by file path</big>"),
             ),
@@ -756,7 +780,9 @@ class MainWindow(Adw.ApplicationWindow):
             lambda _: (
                 self.ui_results.remove_all(),
                 self.ui_errors.remove_all(),
+                self.pref.set_hide_results(False),
                 self.has_results(),
+                self.view_stack.set_visible_child_name("results"),
                 self.add_toast("<big>✅ Results cleared</big>"),
             ),
         )
@@ -917,6 +943,23 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_controller(self.drop)
 
+    def sort_by_hierarchy(self, row1: HashResultRow, row2: HashResultRow) -> int:
+        """
+        - /folder/a.txt
+        - /folder/z.txt
+        - /folder/subfolder_b/
+        - /folder/subfolder_b/file.txt
+        - /folder/subfolder_y/
+        """
+        p1, p2 = row1.path, row2.path
+
+        if p1.parent.parts != p2.parent.parts:
+            return -1 if p1.parent.parts < p2.parent.parts else 1
+
+        if p1.name != p2.name:
+            return -1 if p1.name < p2.name else 1
+        return 0
+
     def start_job(self, paths: list[Path], algo: str | list | None = None):
         self.cancel_event.clear()
 
@@ -936,27 +979,36 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.processing_thread = threading.Thread(target=self.calculate_hashes, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
+        GLib.timeout_add(50, self.update_badge_numbers_job, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
-        GLib.timeout_add(100, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(500, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
 
     def process_queue(self):
         if self.cancel_event.is_set():
-            self.queue_handler.reset()
             return False  # Stop monitoring
+
         iterations = 0
-        while not self.queue_handler.empty() and iterations < 8:
+        while not self.queue_handler.empty() and iterations < 100:
             update = self.queue_handler.get_nowait()
+
             if update[0] == "progress":
                 _, progress = update
                 self.progress_bar.set_fraction(progress)
+
             elif update[0] == "result":
+                iterations += 1
                 _, fname, hash_value, algo = update
-                self.add_result(fname, hash_value, algo)
-                iterations += 1
+                row = HashResultRow(fname, hash_value, algo)
+                row.set_visible(not self.pref.hide_results())
+                self.ui_results.append(row)
+
             elif update[0] == "error":
-                _, fname, err, algo = update
-                self.add_result(fname, err, algo, is_error=True)
                 iterations += 1
+                _, fname, err, algo = update
+                row = HashResultRow(fname, err, algo)
+                row.error()
+                self.ui_errors.append(row)
+
         return True  # Continue monitoring
 
     def hide_progress(self):
@@ -976,6 +1028,33 @@ class MainWindow(Adw.ApplicationWindow):
             return False  # Stop monitoring
         return True  # Continue monitoring
 
+    def update_badge_numbers_job(self):
+        if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
+            return False
+        self.update_badge_numbers()
+        return True
+
+    def update_badge_numbers(self):
+        results_count = sum(1 for _ in self.ui_results)
+        errors_count = sum(1 for _ in self.ui_errors)
+
+        if results_count > self.MAX_ROWS and self.pref.hide_results() is False:
+            self.pref.set_hide_results(True)
+            self.add_toast(
+                "<big>⚠️ Too many results! New results are now hidden from display for performance reasons.</big>",
+                timeout=5,
+                priority=Adw.ToastPriority.HIGH,
+            )
+            self.logger.debug(f"{results_count} > {self.MAX_ROWS}, hiding new results")
+
+        elif results_count < self.MAX_ROWS and self.pref.hide_results() is True:
+            self.pref.set_hide_results(False)
+            self.logger.debug(f"{results_count} < {self.MAX_ROWS}, showing new results.")
+
+        self.results_stack_page.set_badge_number(results_count)
+        self.errors_stack_page.set_badge_number(errors_count)
+        return results_count, errors_count
+
     def scroll_to_bottom(self):
         vadjustment = self.results_scrolled_window.get_vadjustment()
         current_value = vadjustment.get_value()
@@ -988,15 +1067,6 @@ class MainWindow(Adw.ApplicationWindow):
             target=Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value)),
         ).play()
 
-    def add_result(self, file: Path, hash_value: str, algo: str, is_error: bool = False):
-        row = HashResultRow(file, hash_value, algo)
-        if is_error:
-            self.ui_errors.append(row)
-            row.error()
-        else:
-            self.ui_results.append(row)
-        return row
-
     def animate_opacity(self, widget: Gtk.Widget, from_value: float, to_value: float, duration: int):
         animation = Adw.TimedAnimation.new(
             widget.get_parent(),
@@ -1006,10 +1076,6 @@ class MainWindow(Adw.ApplicationWindow):
             Adw.CallbackAnimationTarget.new(lambda opacity: widget.set_opacity(opacity)),
         )
         animation.play()
-
-    def update_badge_numbers(self):
-        self.results_stack_page.set_badge_number(sum(1 for _ in self.ui_results))
-        self.errors_stack_page.set_badge_number(sum(1 for _ in self.ui_errors))
 
     def has_results(self, *signal_from_view_stack):
         has_results = self.ui_results.get_first_child() is not None
@@ -1037,16 +1103,18 @@ class MainWindow(Adw.ApplicationWindow):
         ).play()
 
     def results_to_txt(self):
-        results_text = "\n".join(str(r) for r in self.ui_results if self.filter_func(r))
-        errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func(r))
         output = ""
+        results_text = "\n".join(str(r) for r in self.ui_results if self.filter_func(r))
         now = datetime.now().strftime("%B %d, %Y at %I:%H:%M %Z")
 
         if results_text:
-            output = f"Results - Saved on {now}:\n{'-' * 40}\n{results_text} {'\n\n' if errors_text else '\n'}"
+            output = f"Results - Saved on {now}\n{'-' * 40}\n{results_text} {'\n\n' if self.pref.save_errors() else '\n'}"
 
-        if errors_text:
-            output = f"{output}Errors - Saved on {now}:\n{'-' * 40}\n{errors_text}\n"
+        if self.pref.save_errors():
+            errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func(r))
+
+            if errors_text:
+                output = f"{output}Errors - Saved on {now}\n{'-' * 40}\n{errors_text}\n"
 
         return output
 
