@@ -13,9 +13,18 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 
 ## Installation
 
-1. **Install dependencies for Ubuntu:**
+1. **Install dependencies:**
   ```bash
+  #Ubuntu
   sudo apt-get install python3-nautilus
+  ```
+   ```bash
+  #Arch Linux
+  sudo pacman -S nautilus-python
+  ```
+  ```bash
+  #Fedora
+  sudo dnf install nautilus-python
   ```
 2. **Copy the extension manually:**
   ```bash
@@ -66,6 +75,7 @@ This extension has been tested on:
 - Ubuntu 24.04 LTS
 - Ubuntu 25.04
 - Fedora 42
+- CachyOS
 
 ## License
 MIT
