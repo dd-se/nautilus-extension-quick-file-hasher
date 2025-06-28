@@ -39,7 +39,7 @@ from functools import lru_cache
 from itertools import repeat
 from pathlib import Path
 from queue import Queue
-from typing import Literal
+from typing import Callable, Literal
 
 import gi  # type: ignore
 
@@ -262,7 +262,7 @@ class QueueUpdateHandler(Queue):
         self.put(("result", file, hash_value, algo))
 
     def update_error(self, file: Path, error: str):
-        self.put(("error", file, error, "ERROR"))
+        self.put(("error", file, error))
 
     def reset(self):
         while not self.empty():
@@ -360,6 +360,8 @@ class CalculateHashes:
 
                 for subpath in current_path.iterdir():
                     self.process_path_n_rules(subpath, local_rules, jobs)
+            else:
+                current_path.stat()
 
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
@@ -399,26 +401,112 @@ class CalculateHashes:
         self.TOTAL_BYTES += bytes_
 
 
-class HashResultRow(Adw.ActionRow):
-    def __init__(self, path: Path, hash_value: str, hash_algorithm: str, **kwargs):
+class HashRow(Adw.ActionRow):
+    MAX_ROWS = 10
+    MAX_WIDTH_LABEL = max(len(algo) for algo in hashlib.algorithms_guaranteed)
+    _counter = 0
+    _counter_hidden = 0
+
+    def __init__(self, path: Path, **kwargs):
         super().__init__(**kwargs)
-        self.logger = get_logger(self.__class__.__name__)
+
         self.path = path
+        self.logger = get_logger(self.__class__.__name__)
+
+        self.increment_counter()
+
+    @classmethod
+    def get_counter(cls):
+        return cls._counter
+
+    @classmethod
+    def increment_counter(cls):
+        cls._counter += 1
+        return cls._counter
+
+    @classmethod
+    def decrement_counter(cls):
+        if cls._counter > 0:
+            cls._counter -= 1
+        return cls._counter
+
+    @classmethod
+    def get_counter_hidden(cls):
+        return cls._counter_hidden
+
+    @classmethod
+    def reset_counter(cls):
+        cls._counter = 0
+        cls._counter_hidden = 0
+
+    @classmethod
+    def increment_counter_hidden(cls):
+        cls._counter_hidden += 1
+        return cls._counter_hidden
+
+    @classmethod
+    def decrement_counter_hidden(cls):
+        if cls._counter_hidden > 0:
+            cls._counter_hidden -= 1
+        return cls._counter_hidden
+
+    def on_delete_clicked(self, button: Gtk.Button):
+        button.set_sensitive(False)
+        parent: Gtk.ListBox = self.get_parent()
+        main_window: MainWindow = self.get_root()
+        anim = Adw.TimedAnimation(
+            widget=self,
+            value_from=1.0,
+            value_to=0.5,
+            duration=100,
+            target=Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity)),
+        )
+
+        def on_fade_done(_):
+            self.decrement_counter()
+            parent.remove(self)
+
+            if parent.get_first_child():
+                for row in parent:
+                    row: HashResultRow
+                    if row.get_visible() is False:
+                        row.set_visible(True)
+                        row.decrement_counter_hidden()
+                        break
+
+                main_window.update_badge_numbers()
+                main_window.has_exceeded_row_count()
+
+            else:
+                main_window.has_results()
+
+        anim.connect("done", on_fade_done)
+        anim.play()
+
+
+class HashResultRow(HashRow):
+    def __init__(self, path: Path, hash_value: str, hash_algorithm: str, **kwargs):
+        super().__init__(path, **kwargs)
         self.hash_value = hash_value
         self.algo = hash_algorithm
-        self.is_error = False
 
         self.set_title(GLib.markup_escape_text(self.path.as_posix()))
         self.set_subtitle(self.hash_value)
         self.set_subtitle_lines(1)
         self.set_title_lines(1)
 
-        self.prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.prefix_box.set_valign(Gtk.Align.CENTER)
-        self.file_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
-        self.prefix_box.append(self.file_icon)
-        self.prefix_box.append(Gtk.Label(label=self.algo.upper()))
-        self.add_prefix(self.prefix_box)
+        self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
+
+        self.hash_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        self.hash_icon_name = self.hash_icon.get_icon_name()
+        self.prefix_hash_box.append(self.hash_icon)
+
+        self.hash_name = Gtk.Label(label=self.algo.upper())
+        self.hash_name.set_width_chars(self.MAX_WIDTH_LABEL)
+        self.prefix_hash_box.append(self.hash_name)
+
+        self.add_prefix(self.prefix_hash_box)
 
         self.button_make_hashes = Gtk.Button()
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
@@ -445,6 +533,12 @@ class HashResultRow(Adw.ActionRow):
         self.add_suffix(self.button_copy_hash)
         self.add_suffix(self.button_compare)
         self.add_suffix(self.button_delete)
+
+        # Hide the row if the counter exceeds MAX_ROWS
+        is_visible = self.get_counter() <= self.MAX_ROWS
+        self.set_visible(is_visible)
+        if not is_visible:
+            self.increment_counter_hidden()
 
     def __str__(self):
         return f"{self.path}:{self.hash_value}:{self.algo}"
@@ -480,8 +574,8 @@ class HashResultRow(Adw.ActionRow):
                 GLib.timeout_add(
                     3000,
                     lambda: (
-                        self.set_css_classes(self.old_css),
-                        self.set_icon_(self.old_file_icon_name),
+                        self.reset_css(),
+                        self.reset_icon(),
                         self.button_compare.set_sensitive(True),
                     ),
                 )
@@ -492,38 +586,53 @@ class HashResultRow(Adw.ActionRow):
         clipboard = button.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
-    def on_delete_clicked(self, button: Gtk.Button):
-        button.set_sensitive(False)
-        parent: Gtk.ListBox = self.get_parent()
-        main_window: MainWindow = self.get_root()
-        parent.remove(self)
-        if parent.get_first_child():
-            main_window.update_badge_numbers()
-        else:
-            main_window.has_results()
+    def set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
+        self.hash_icon.set_from_icon_name(icon_name)
 
-    def set_icon_(
-        self,
-        icon_name: Literal[
-            "text-x-generic-symbolic",
-            "object-select-symbolic",
-            "dialog-error-symbolic",
-        ],
-    ):
-        self.old_file_icon_name = self.file_icon.get_icon_name()
-        self.file_icon.set_from_icon_name(icon_name)
+    def reset_icon(self):
+        self.set_icon_(self.hash_icon_name)
 
     def set_css_(self, css_class: Literal["success", "error"]):
-        self.old_css = self.get_css_classes()
         self.add_css_class(css_class)
 
-    def error(self):
-        self.is_error = True
+    def reset_css(self):
+        self.remove_css_class("success")
+        self.remove_css_class("error")
+
+
+class HashErrorRow(HashRow):
+    def __init__(self, path: Path, error_message: str, **kwargs):
+        super().__init__(path, **kwargs)
+        self.error_message = error_message
+
+        self.set_title(GLib.markup_escape_text(self.path.as_posix()))
+        self.set_subtitle(GLib.markup_escape_text(self.error_message))
+        self.set_title_lines(1)
+        self.set_subtitle_lines(1)
+
+        self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
+        self.hash_icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+        self.prefix_hash_box.append(self.hash_icon)
+        self.add_prefix(self.prefix_hash_box)
+
+        self.button_copy_error = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
+        self.button_copy_error.set_valign(Gtk.Align.CENTER)
+        self.button_copy_error.set_tooltip_text("Copy error message")
+        self.button_copy_error.connect("clicked", self.on_copy_error_clicked)
+        self.add_suffix(self.button_copy_error)
+
         self.add_css_class("error")
-        self.set_icon_("dialog-error-symbolic")
-        self.button_copy_hash.set_tooltip_text("Copy error message to clipboard")
-        self.button_compare.set_sensitive(False)
-        self.button_make_hashes.set_sensitive(False)
+
+    def __str__(self) -> str:
+        return f"{self.path}:ERROR:{self.error_message}"
+
+    def on_copy_error_clicked(self, button: Gtk.Button) -> None:
+        button.set_sensitive(False)
+        button.get_clipboard().set(self.error_message)
+        original_child = button.get_child()
+        button.set_child(Gtk.Label(label="Copied!"))
+        GLib.timeout_add(1500, lambda: (button.set_child(original_child), button.set_sensitive(True)))
 
 
 class Preferences(Adw.PreferencesDialog):
@@ -531,7 +640,7 @@ class Preferences(Adw.PreferencesDialog):
         super().__init__(**kwargs)
         self.logger = get_logger(self.__class__.__name__)
         self.set_title(title="Preferences")
-        self._hide_results = False
+        self._notified_of_limit_breach = False
 
         preference_page = Adw.PreferencesPage()
         self.add(preference_page)
@@ -560,6 +669,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
         self.setting_save_errors.set_title(title="Save errors")
         self.setting_save_errors.set_subtitle(subtitle="Save errors to results file")
+        self.setting_save_errors.connect("notify::active", self.on_save_errors_toggled)
         preference_group_2.add(child=self.setting_save_errors)
 
         preference_group_3 = Adw.PreferencesGroup()
@@ -594,18 +704,20 @@ class Preferences(Adw.PreferencesDialog):
     def max_workers(self):
         return self.setting_max_workers.get_value()
 
-    def hide_results(self) -> bool:
-        return self._hide_results
+    def notified_of_limit_breach(self) -> bool:
+        return self._notified_of_limit_breach
 
-    def set_hide_results(self, value: bool):
-        self._hide_results = value
-        return self._hide_results
+    def set_notified_of_limit_breach(self, value: bool):
+        self._notified_of_limit_breach = value
+        return self._notified_of_limit_breach
+
+    def on_save_errors_toggled(self, row: Adw.SwitchRow, param: GObject.ParamSpec):
+        self.get_root().has_results()
 
 
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HIGHT = 600
-    MAX_ROWS = 100
     algo: str = APP_DEFAULT_HASHING_ALGORITHM
 
     def __init__(self, app, paths: list[Path] | None = None):
@@ -729,9 +841,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.first_top_bar_box.append(self.button_cancel)
 
-        self.spacer = Gtk.Box()
-        self.spacer.set_hexpand(True)
-        self.first_top_bar_box.append(self.spacer)
+        spacer_0 = Gtk.Box()
+        spacer_0.set_hexpand(True)
+        self.first_top_bar_box.append(spacer_0)
 
         self.setup_header_bar()
         self.first_top_bar_box.append(self.header_bar)
@@ -744,9 +856,19 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
         self.second_top_bar_box.append(self.view_switcher)
 
-        self.spacer = Gtk.Box()
-        self.spacer.set_hexpand(True)
-        self.second_top_bar_box.append(self.spacer)
+        self.hidden_row_counter = Gtk.Button()
+        self.hidden_row_counter.set_valign(Gtk.Align.CENTER)
+        self.hidden_row_counter_content = Adw.ButtonContent.new()
+        self.hidden_row_counter_content.set_tooltip_text("Hidden rows counter")
+        self.hidden_row_counter_content.set_icon_name(icon_name="help-about-symbolic")
+        self.hidden_row_counter_content.set_label(label=f"Hidden: {HashRow.get_counter_hidden()}")
+        self.hidden_row_counter_content.set_use_underline(use_underline=True)
+        self.hidden_row_counter.set_child(self.hidden_row_counter_content)
+        self.second_top_bar_box.append(self.hidden_row_counter)
+
+        spacer_1 = Gtk.Box()
+        spacer_1.set_hexpand(True)
+        self.second_top_bar_box.append(spacer_1)
 
         self.button_copy_all = Gtk.Button(label="Copy")
         self.button_copy_all.set_sensitive(False)
@@ -779,25 +901,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_clear.connect(
             "clicked",
             lambda _: (
+                HashResultRow.reset_counter(),
+                HashErrorRow.reset_counter(),
                 self.ui_results.remove_all(),
                 self.ui_errors.remove_all(),
-                self.pref.set_hide_results(False),
+                self.pref.set_notified_of_limit_breach(False),
                 self.has_results(),
                 self.view_stack.set_visible_child_name("results"),
                 self.add_toast("<big>✅ Results cleared</big>"),
             ),
         )
         self.second_top_bar_box.append(self.button_clear)
-
-        self.button_about = Gtk.Button(visible=False)
-        self.button_about.set_valign(Gtk.Align.CENTER)
-        self.button_about.connect("clicked", self.on_click_present_about_dialog)
-        self.button_about_content = Adw.ButtonContent.new()
-        self.button_about_content.set_icon_name(icon_name="help-about-symbolic")
-        self.button_about_content.set_label(label="About")
-        self.button_about_content.set_use_underline(use_underline=True)
-        self.button_about.set_child(self.button_about_content)
-        self.second_top_bar_box.append(self.button_about)
 
     def setup_header_bar(self):
         self.header_bar = Adw.HeaderBar()
@@ -980,7 +1094,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.processing_thread = threading.Thread(target=self.calculate_hashes, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
-        GLib.timeout_add(50, self.update_badge_numbers_job, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(500, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
 
@@ -991,23 +1104,20 @@ class MainWindow(Adw.ApplicationWindow):
         iterations = 0
         while not self.queue_handler.empty() and iterations < 100:
             update = self.queue_handler.get_nowait()
-
             if update[0] == "progress":
                 _, progress = update
                 self.progress_bar.set_fraction(progress)
 
             elif update[0] == "result":
                 iterations += 1
-                _, fname, hash_value, algo = update
-                row = HashResultRow(fname, hash_value, algo)
-                row.set_visible(not self.pref.hide_results())
+                _, *args = update
+                row = HashResultRow(*args)
                 self.ui_results.append(row)
 
             elif update[0] == "error":
                 iterations += 1
-                _, fname, err, algo = update
-                row = HashResultRow(fname, err, algo)
-                row.error()
+                _, *args = update
+                row = HashErrorRow(*args)
                 self.ui_errors.append(row)
 
         return True  # Continue monitoring
@@ -1022,39 +1132,47 @@ class MainWindow(Adw.ApplicationWindow):
         if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
             self.button_cancel.set_visible(False)
             self.hide_progress()
+
             self.button_select_files.set_sensitive(True)
             self.button_select_folders.set_sensitive(True)
             self.drop_down_algo_button.set_sensitive(True)
+
             GLib.timeout_add(500, self.has_results, priority=GLib.PRIORITY_DEFAULT)
             return False  # Stop monitoring
         return True  # Continue monitoring
 
-    def update_badge_numbers_job(self):
-        if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
-            return False
-        self.update_badge_numbers()
-        return True
+    def has_exceeded_row_count(self):
+        hash_result_row_count = HashResultRow.get_counter()
 
-    def update_badge_numbers(self):
-        results_count = sum(1 for _ in self.ui_results)
-        errors_count = sum(1 for _ in self.ui_errors)
-
-        if results_count > self.MAX_ROWS and self.pref.hide_results() is False:
-            self.pref.set_hide_results(True)
+        if hash_result_row_count > HashResultRow.MAX_ROWS and self.pref.notified_of_limit_breach() is False:
             self.add_toast(
                 "<big>⚠️ Too many results! New results are now hidden from display for performance reasons.</big>",
                 timeout=5,
                 priority=Adw.ToastPriority.HIGH,
             )
-            self.logger.debug(f"{results_count} > {self.MAX_ROWS}, hiding new results")
 
-        elif results_count < self.MAX_ROWS and self.pref.hide_results() is True:
-            self.pref.set_hide_results(False)
-            self.logger.debug(f"{results_count} < {self.MAX_ROWS}, showing new results.")
+            self.pref.set_notified_of_limit_breach(True)
+            self.logger.debug(f"{hash_result_row_count} > {HashResultRow.MAX_ROWS}, hiding new results")
 
-        self.results_stack_page.set_badge_number(results_count)
-        self.errors_stack_page.set_badge_number(errors_count)
-        return results_count, errors_count
+        elif hash_result_row_count <= HashResultRow.MAX_ROWS and self.pref.notified_of_limit_breach():
+            self.add_toast(
+                "<big>✅ Results are now visible again. Displaying all results.</big>",
+                timeout=3,
+                priority=Adw.ToastPriority.NORMAL,
+            )
+
+            self.pref.set_notified_of_limit_breach(False)
+            self.logger.debug(f"{hash_result_row_count} < {HashResultRow.MAX_ROWS}, showing new results.")
+
+    def update_badge_numbers(self):
+        self.results_stack_page.set_badge_number(HashResultRow.get_counter())
+        self.errors_stack_page.set_badge_number(HashErrorRow.get_counter())
+        self.update_hidden_row_counter()
+
+    def update_hidden_row_counter(self):
+        hidden_count = HashResultRow.get_counter_hidden()
+        self.hidden_row_counter_content.set_label(label=f"Hidden: {hidden_count}")
+        self.hidden_row_counter.set_sensitive(hidden_count > 0)
 
     def scroll_to_bottom(self):
         vadjustment = self.results_scrolled_window.get_vadjustment()
@@ -1081,13 +1199,15 @@ class MainWindow(Adw.ApplicationWindow):
     def has_results(self, *signal_from_view_stack):
         has_results = self.ui_results.get_first_child() is not None
         has_errors = self.ui_errors.get_first_child() is not None
+        save_errors = self.pref.save_errors()
         current_page_name = self.view_stack.get_visible_child_name()
 
-        self.button_save.set_sensitive(has_results or has_errors)
-        self.button_copy_all.set_sensitive(has_results or has_errors)
+        self.button_save.set_sensitive(has_results or (has_errors and save_errors))
+        self.button_copy_all.set_sensitive(has_results or (has_errors and save_errors))
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results or has_errors)
         self.update_badge_numbers()
+        self.has_exceeded_row_count()
 
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
@@ -1182,10 +1302,10 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def on_copy_all_clicked(self, button: Gtk.Button):
-        output = self.results_to_txt()
-        if output.count("\n") > 102:
+        if self.pref.notified_of_limit_breach():
             self.add_toast("<big>❌ Too many results to copy. Please use the Save button instead.</big>")
             return
+        output = self.results_to_txt()
         clipboard = button.get_clipboard()
         clipboard.set(output)
         self.add_toast("<big>✅ Results copied to clipboard</big>")
@@ -1218,7 +1338,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def filter_func(self, row: HashResultRow):
         terms = self.search_query.lower().split()
-        return all(any(term in field for field in (row.path.as_posix().lower(), row.hash_value, row.algo.lower())) for term in terms)
+        has_term = all(any(term in field for field in (row.path.as_posix().lower(), row.hash_value, row.algo.lower())) for term in terms)
+        return has_term
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
