@@ -409,6 +409,7 @@ class HashRow(Adw.ActionRow):
 
     def __init__(self, path: Path, **kwargs):
         super().__init__(**kwargs)
+        self._hidden_result = False
 
         self.path = path
         self.logger = get_logger(self.__class__.__name__)
@@ -449,6 +450,9 @@ class HashRow(Adw.ActionRow):
         if cls._counter_hidden > 0:
             cls._counter_hidden -= 1
         return cls._counter_hidden
+
+    def is_hidden_result(self):
+        return self._hidden_result
 
     def on_delete_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -535,9 +539,10 @@ class HashResultRow(HashRow):
         self.add_suffix(self.button_delete)
 
         # Hide the row if the counter exceeds MAX_ROWS
-        is_visible = self.get_counter() <= self.MAX_ROWS
-        self.set_visible(is_visible)
-        if not is_visible:
+        exceeded_limit = self.get_counter() > self.MAX_ROWS
+        self.set_visible(not exceeded_limit)
+        self._hidden_result = exceeded_limit
+        if exceeded_limit:
             self.increment_counter_hidden()
 
     def __str__(self):
@@ -859,7 +864,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.hidden_row_counter = Gtk.Button()
         self.hidden_row_counter.set_valign(Gtk.Align.CENTER)
         self.hidden_row_counter_content = Adw.ButtonContent.new()
-        self.hidden_row_counter_content.set_tooltip_text("Hidden rows counter")
+        self.hidden_row_counter_content.set_tooltip_text("Number of hidden results. Use search to reveal them.")
         self.hidden_row_counter_content.set_icon_name(icon_name="help-about-symbolic")
         self.hidden_row_counter_content.set_label(label=f"Hidden: {HashRow.get_counter_hidden()}")
         self.hidden_row_counter_content.set_use_underline(use_underline=True)
@@ -1333,13 +1338,28 @@ class MainWindow(Adw.ApplicationWindow):
         self.header_title_widget.set_label(f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>")
 
     def on_search_changed(self, entry: Gtk.SearchEntry, ui_list: Gtk.ListBox):
-        self.search_query = entry.get_text().lower()
+        self.search_query = entry.get_text().lower().strip()
         ui_list.invalidate_filter()
 
     def filter_func(self, row: HashResultRow):
-        terms = self.search_query.lower().split()
-        has_term = all(any(term in field for field in (row.path.as_posix().lower(), row.hash_value, row.algo.lower())) for term in terms)
-        return has_term
+        if not self.search_query:
+            if row.is_hidden_result() and row.get_visible():
+                row.set_visible(False)
+
+            return True
+
+        has_term = all(any(term in field for field in (row.path.as_posix(), row.hash_value, row.algo)) for term in self.search_query.split())
+
+        if has_term:
+            if not row.get_visible():
+                row.set_visible(True)
+
+            return True
+
+        elif row.is_hidden_result() and row.get_visible() and not has_term:
+            row.set_visible(False)
+
+        return False
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
