@@ -254,7 +254,7 @@ class QueueUpdateHandler(Queue):
 
     def update_progress(self, bytes_read: int, total_bytes: int):
         progress = min(bytes_read / total_bytes, 1.0)
-        self.logger.debug(progress)
+        # self.logger.debug(progress)
         self.put(("progress", progress))
 
     def update_result(self, file: Path, hash_value: str, algo: str):
@@ -288,19 +288,21 @@ class CalculateHashes:
         with ThreadPoolExecutor(max_workers=self.pref.max_workers()) as executor:
             self.logger.debug(f"Starting hashing with {self.pref.max_workers()} workers")
             list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
-        self.queue_handler.update_progress(1, 1)
+        # self.queue_handler.update_progress(1, 1)
 
-    def __call__(self, paths: list[Path], hash_algorithm: list | str):
+    def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
         self.BYTES_READ = 0
         self.TOTAL_BYTES = 0
         jobs = self.create_jobs(paths)
         self.execute_jobs(jobs, hash_algorithm)
 
-    def create_jobs(self, paths: list[Path]):
+    def create_jobs(self, paths: list[Path] | list[Gio.File]):
         # Process root .gitignore file early to skip ignored files/folders efficiently
         jobs = {"paths": [], "sizes": []}
 
         for root_path in paths:
+            if issubclass(type(root_path), Gio.File):
+                root_path = Path(root_path.get_path())
             try:
                 ignore_rules = []
 
@@ -724,7 +726,7 @@ class MainWindow(Adw.ApplicationWindow):
     DEFAULT_HIGHT = 600
     algo: str = APP_DEFAULT_HASHING_ALGORITHM
 
-    def __init__(self, app, paths: list[Path] | None = None):
+    def __init__(self, app, paths: list[Path] | list[Gio.File] | None = None):
         super().__init__(application=app)
         self.logger = get_logger(self.__class__.__name__)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
@@ -1011,6 +1013,7 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.set_show_text(False)
+        self.progress_bar.set_visible(False)
 
     def setup_drag_and_drop(self):
         self.dnd = Adw.StatusPage(
@@ -1036,14 +1039,12 @@ class MainWindow(Adw.ApplicationWindow):
         def on_read_value(drop: Gdk.Drop, result):
             try:
                 files: Gdk.FileList = drop.read_value_finish(result)
-                paths = [Path(f.get_path()) for f in files.get_files()]
-                self.logger.debug(paths)
                 action = Gdk.DragAction.COPY
             except Exception as e:
                 action = 0
                 self.add_toast(f"Drag & Drop failed: {e}")
             else:
-                self.start_job(paths)
+                self.start_job(files)
             finally:
                 drop.finish(action)
 
@@ -1078,7 +1079,7 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
-    def start_job(self, paths: list[Path], algo: str | list | None = None):
+    def start_job(self, paths: list[Path] | list[Gio.File], algo: str | list | None = None):
         self.cancel_event.clear()
 
         self.progress_bar.set_fraction(0.0)
@@ -1280,9 +1281,7 @@ class MainWindow(Adw.ApplicationWindow):
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 files = file_dialog.open_multiple_finish(gio_task)
-                paths = [Path(f.get_path()) for f in files]
-                self.logger.debug(paths)
-                self.start_job(paths)
+                self.start_job(files)
 
         file_dialog.open_multiple(
             parent=self,
@@ -1296,8 +1295,7 @@ class MainWindow(Adw.ApplicationWindow):
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 files = file_dialog.select_multiple_folders_finish(gio_task)
-                paths = [Path(f.get_path()) for f in files]
-                self.start_job(paths)
+                self.start_job(files)
 
         file_dialog.select_multiple_folders(
             parent=self,
@@ -1413,12 +1411,11 @@ class Application(Adw.Application):
 
     def do_open(self, files, n_files, hint):
         self.logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
-        paths = [Path(f.get_path()) for f in files if f.get_path()]
         self.main_window: MainWindow = self.props.active_window
         if not self.main_window:
-            self.main_window = MainWindow(self, paths)
+            self.main_window = MainWindow(self, files)
         else:
-            self.main_window.start_job(paths)
+            self.main_window.start_job(files)
         self.main_window.present()
 
     def do_startup(self):
