@@ -387,9 +387,7 @@ class CalculateHashes:
 
                     hash_obj.update(chunk)
                     self.BYTES_READ += len(chunk)
-
-                    if (self.BYTES_READ // chunk_size) % 4 == 0:
-                        self.queue_handler.update_progress(self.BYTES_READ, self.TOTAL_BYTES)
+                    self.queue_handler.update_progress(self.BYTES_READ, self.TOTAL_BYTES)
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
             self.queue_handler.update_result(file, hash_value, algorithm)
