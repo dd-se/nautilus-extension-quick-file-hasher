@@ -97,7 +97,6 @@ def get_logger(name: str) -> logging.Logger:
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
-        pass
 
     def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
         self.logger.info(f"App {APP_ID} launched by file manager")
@@ -255,7 +254,7 @@ class QueueUpdateHandler(Queue):
 
     def update_progress(self, bytes_read: int, total_bytes: int):
         progress = min(bytes_read / total_bytes, 1.0)
-        # self.logger.debug(progress)
+        self.logger.debug(progress)
         self.put(("progress", progress))
 
     def update_result(self, file: Path, hash_value: str, algo: str):
@@ -402,7 +401,7 @@ class CalculateHashes:
 
 
 class HashRow(Adw.ActionRow):
-    MAX_ROWS = 10
+    MAX_ROWS = 100
     MAX_WIDTH_LABEL = max(len(algo) for algo in hashlib.algorithms_guaranteed)
     _counter = 0
     _counter_hidden = 0
@@ -966,7 +965,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.ui_errors = Gtk.ListBox()
         self.ui_errors.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_errors.add_css_class("boxed-list")
-        self.ui_errors.set_filter_func(self.filter_func)
+        self.ui_errors.set_filter_func(self.filter_func_err)
         self.errors_group.add(self.ui_errors)
 
         self.errors_scrolled_window = Gtk.ScrolledWindow()
@@ -1012,7 +1011,6 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.set_show_text(False)
-        self.progress_bar.set_visible(False)
 
     def setup_drag_and_drop(self):
         self.dnd = Adw.StatusPage(
@@ -1128,13 +1126,13 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def hide_progress(self):
-        self.animate_opacity(self.progress_bar, 1.0, 0, 2000)
-        self.animate_opacity(self.spinner, 1.0, 0, 2000)
-        GLib.timeout_add(2000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
+        self.animate_opacity(self.progress_bar, 1.0, 0.0, 500)
+        self.animate_opacity(self.spinner, 1.0, 0, 500)
+        GLib.timeout_add(1000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
     def check_processing_complete(self):
-        if self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set():
+        if (self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set()) and not self.processing_thread.is_alive():
             self.button_cancel.set_visible(False)
             self.hide_progress()
 
@@ -1237,7 +1235,7 @@ class MainWindow(Adw.ApplicationWindow):
             output = f"Results - Saved on {now}\n{'-' * 40}\n{results_text} {'\n\n' if self.pref.save_errors() else '\n'}"
 
         if self.pref.save_errors():
-            errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func(r))
+            errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func_err(r))
 
             if errors_text:
                 output = f"{output}Errors - Saved on {now}\n{'-' * 40}\n{errors_text}\n"
@@ -1338,28 +1336,35 @@ class MainWindow(Adw.ApplicationWindow):
         self.header_title_widget.set_label(f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>")
 
     def on_search_changed(self, entry: Gtk.SearchEntry, ui_list: Gtk.ListBox):
-        self.search_query = entry.get_text().lower().strip()
+        self.search_query = entry.get_text().lower()
         ui_list.invalidate_filter()
 
     def filter_func(self, row: HashResultRow):
         if not self.search_query:
-            if row.is_hidden_result() and row.get_visible():
-                row.set_visible(False)
-
+            row.set_visible(not row.is_hidden_result())
             return True
 
-        has_term = all(any(term in field for field in (row.path.as_posix(), row.hash_value, row.algo)) for term in self.search_query.split())
+        terms = self.search_query.split()
+        fields = (row.path.as_posix().lower(), row.hash_value, row.algo)
+        has_term = all(any(term in field for field in fields) for term in terms)
 
         if has_term:
             if not row.get_visible():
                 row.set_visible(True)
-
             return True
 
-        elif row.is_hidden_result() and row.get_visible() and not has_term:
+        if row.is_hidden_result() and row.get_visible() and not has_term:
             row.set_visible(False)
-
         return False
+
+    def filter_func_err(self, row: HashErrorRow):
+        if not self.search_query:
+            return True
+
+        terms = self.search_query.split()
+        fields = (row.path.as_posix().lower(), row.error_message)
+
+        return all(any(term in field for field in fields) for term in terms)
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
