@@ -326,6 +326,9 @@ class CalculateHashes:
                 self.logger.debug(f"Error processing {root_path.name}: {e}")
                 self.queue_handler.update_error(root_path, str(e))
 
+        if self.TOTAL_BYTES == 0:
+            self.queue_handler.update_progress(1, 1)
+
         return jobs
 
     def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list]):
@@ -450,6 +453,16 @@ class HashRow(Adw.ActionRow):
             cls._counter_hidden -= 1
         return cls._counter_hidden
 
+    def update_hidden_status(self):
+        # Hide the row if the counter exceeds MAX_ROWS
+        exceeded_limit = self.get_counter() > self.MAX_ROWS
+        self.set_visible(not exceeded_limit)
+        self._hidden_result = exceeded_limit
+        if exceeded_limit:
+            self.increment_counter_hidden()
+        else:
+            self.decrement_counter_hidden()
+
     def is_hidden_result(self):
         return self._hidden_result
 
@@ -472,9 +485,8 @@ class HashRow(Adw.ActionRow):
             if parent.get_first_child():
                 for row in parent:
                     row: HashResultRow
-                    if row.get_visible() is False:
-                        row.set_visible(True)
-                        row.decrement_counter_hidden()
+                    if row.is_hidden_result():
+                        row.update_hidden_status()
                         break
 
                 main_window.update_badge_numbers()
@@ -537,12 +549,7 @@ class HashResultRow(HashRow):
         self.add_suffix(self.button_compare)
         self.add_suffix(self.button_delete)
 
-        # Hide the row if the counter exceeds MAX_ROWS
-        exceeded_limit = self.get_counter() > self.MAX_ROWS
-        self.set_visible(not exceeded_limit)
-        self._hidden_result = exceeded_limit
-        if exceeded_limit:
-            self.increment_counter_hidden()
+        self.update_hidden_status()
 
     def __str__(self):
         return f"{self.path}:{self.hash_value}:{self.algo}"
