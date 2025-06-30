@@ -453,22 +453,21 @@ class HashRow(Adw.ActionRow):
             cls._counter_hidden -= 1
         return cls._counter_hidden
 
-    def update_hidden_status(self):
-        # Hide the row if the counter exceeds MAX_ROWS
-        exceeded_limit = self.get_counter() > self.MAX_ROWS
-        self.set_visible(not exceeded_limit)
-        self._hidden_result = exceeded_limit
-        if exceeded_limit:
+    def is_hidden_result(self):
+        return self._hidden_result
+
+    def set_hidden_result(self, value: bool):
+        self._hidden_result = value
+        self.set_visible(not value)
+        if value:
             self.increment_counter_hidden()
         else:
             self.decrement_counter_hidden()
-
-    def is_hidden_result(self):
         return self._hidden_result
 
     def on_delete_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
-        parent: Gtk.ListBox = self.get_parent()
+        parent: list[HashRow] = self.get_parent()
         main_window: MainWindow = self.get_root()
         anim = Adw.TimedAnimation(
             widget=self,
@@ -482,18 +481,15 @@ class HashRow(Adw.ActionRow):
             self.decrement_counter()
             parent.remove(self)
 
-            if parent.get_first_child():
+            if self.is_hidden_result():
+                self.set_hidden_result(False)
+            else:
                 for row in parent:
-                    row: HashResultRow
                     if row.is_hidden_result():
-                        row.update_hidden_status()
+                        row.set_hidden_result(False)
                         break
 
-                main_window.update_badge_numbers()
-                main_window.has_exceeded_row_count()
-
-            else:
-                main_window.has_results()
+            main_window.has_results()
 
         anim.connect("done", on_fade_done)
         anim.play()
@@ -549,7 +545,9 @@ class HashResultRow(HashRow):
         self.add_suffix(self.button_compare)
         self.add_suffix(self.button_delete)
 
-        self.update_hidden_status()
+        # Hide the row if the counter exceeds MAX_ROWS
+        exceeded_limit = self.get_counter() > self.MAX_ROWS
+        self.set_hidden_result(exceeded_limit)
 
     def __str__(self):
         return f"{self.path}:{self.hash_value}:{self.algo}"
@@ -1132,8 +1130,8 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def hide_progress(self):
-        self.animate_opacity(self.progress_bar, 1.0, 0.0, 500)
-        self.animate_opacity(self.spinner, 1.0, 0, 500)
+        self.animate_opacity(self.progress_bar, 1, 0, 500)
+        self.animate_opacity(self.spinner, 1, 0, 500)
         GLib.timeout_add(1000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
@@ -1150,7 +1148,7 @@ class MainWindow(Adw.ApplicationWindow):
             return False  # Stop monitoring
         return True  # Continue monitoring
 
-    def has_exceeded_row_count(self):
+    def notify_limit_breach(self):
         hash_result_row_count = HashResultRow.get_counter()
 
         if hash_result_row_count > HashResultRow.MAX_ROWS and self.pref.notified_of_limit_breach() is False:
@@ -1172,6 +1170,8 @@ class MainWindow(Adw.ApplicationWindow):
 
             self.pref.set_notified_of_limit_breach(False)
             self.logger.debug(f"{hash_result_row_count} < {HashResultRow.MAX_ROWS}, showing new results.")
+
+        return hash_result_row_count > HashResultRow.MAX_ROWS
 
     def update_badge_numbers(self):
         self.results_stack_page.set_badge_number(HashResultRow.get_counter())
@@ -1206,8 +1206,8 @@ class MainWindow(Adw.ApplicationWindow):
         animation.play()
 
     def has_results(self, *signal_from_view_stack):
-        has_results = self.ui_results.get_first_child() is not None
-        has_errors = self.ui_errors.get_first_child() is not None
+        has_results = HashResultRow.get_counter() > 0
+        has_errors = HashErrorRow.get_counter() > 0
         save_errors = self.pref.save_errors()
         current_page_name = self.view_stack.get_visible_child_name()
 
@@ -1216,7 +1216,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results or has_errors)
         self.update_badge_numbers()
-        self.has_exceeded_row_count()
+        self.notify_limit_breach()
 
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         relevant_placeholder = self.empty_placeholder if current_page_name == "results" else self.empty_error_placeholder
