@@ -288,7 +288,6 @@ class CalculateHashes:
         with ThreadPoolExecutor(max_workers=self.pref.max_workers()) as executor:
             self.logger.debug(f"Starting hashing with {self.pref.max_workers()} workers")
             list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
-        # self.queue_handler.update_progress(1, 1)
 
     def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
         self.BYTES_READ = 0
@@ -336,14 +335,17 @@ class CalculateHashes:
         if self.cancel_event.is_set():
             return
         try:
-            if IgnoreRule.is_ignored(current_path, current_rules):
-                self.logger.debug(f"Skipped late: {current_path}")
-                return
             if current_path.is_symlink():
                 self.queue_handler.update_error(current_path, "Symbolic links are not supported")
+                self.logger.debug(f"Skipped symbolic link: {current_path}")
+
+            elif IgnoreRule.is_ignored(current_path, current_rules):
+                self.logger.debug(f"Skipped late: {current_path}")
 
             elif current_path.is_file():
-                if (file_size := current_path.stat().st_size) == 0:
+                file_size = current_path.stat().st_size
+
+                if file_size == 0:
                     self.queue_handler.update_error(current_path, "File is empty")
 
                 else:
@@ -364,8 +366,6 @@ class CalculateHashes:
 
                 for subpath in current_path.iterdir():
                     self.process_path_n_rules(subpath, local_rules, jobs)
-            else:
-                current_path.stat()
 
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
@@ -1133,7 +1133,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.animate_opacity(self.progress_bar, 1, 0, 500)
         self.animate_opacity(self.spinner, 1, 0, 500)
         GLib.timeout_add(1000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
-        GLib.timeout_add(100, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(1000, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
     def check_processing_complete(self):
         if (self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set()) and not self.processing_thread.is_alive():
@@ -1174,7 +1174,7 @@ class MainWindow(Adw.ApplicationWindow):
         return hash_result_row_count > HashResultRow.MAX_ROWS
 
     def update_badge_numbers(self):
-        self.results_stack_page.set_badge_number(HashResultRow.get_counter())
+        self.results_stack_page.set_badge_number(HashResultRow.get_counter() - HashResultRow.get_counter_hidden())
         self.errors_stack_page.set_badge_number(HashErrorRow.get_counter())
         self.update_hidden_row_counter()
 
