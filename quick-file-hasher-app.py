@@ -282,6 +282,8 @@ class CalculateHashes:
         self.pref = preferences
         self.queue_handler = queue
         self.cancel_event = event
+        self.TOTAL_BYTES = 0
+        self.BYTES_READ = 0
 
     def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list):
         hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
@@ -290,8 +292,6 @@ class CalculateHashes:
             list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
 
     def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
-        self.BYTES_READ = 0
-        self.TOTAL_BYTES = 0
         jobs = self.create_jobs(paths)
         self.execute_jobs(jobs, hash_algorithm)
 
@@ -1017,7 +1017,7 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.set_show_text(False)
-        self.progress_bar.set_visible(False)
+        self.progress_bar.set_opacity(0)
 
     def setup_drag_and_drop(self):
         self.dnd = Adw.StatusPage(
@@ -1086,10 +1086,7 @@ class MainWindow(Adw.ApplicationWindow):
     def start_job(self, paths: list[Path] | list[Gio.File], algo: str | list | None = None):
         self.cancel_event.clear()
 
-        self.progress_bar.set_fraction(0.0)
         self.progress_bar.set_opacity(1.0)
-        self.progress_bar.set_visible(True)
-
         self.spinner.set_opacity(1.0)
         self.spinner.set_visible(True)
 
@@ -1136,6 +1133,9 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def processing_complete(self):
+        self.calculate_hashes.BYTES_READ = 0
+        self.calculate_hashes.TOTAL_BYTES = 0
+
         self.button_cancel.set_visible(False)
         self.hide_progress()
 
@@ -1148,6 +1148,7 @@ class MainWindow(Adw.ApplicationWindow):
     def hide_progress(self):
         self.animate_opacity(self.progress_bar, 1, 0, 500)
         self.animate_opacity(self.spinner, 1, 0, 500)
+        GLib.timeout_add(1000, self.progress_bar.set_fraction, 0.0, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(1000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(1000, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
