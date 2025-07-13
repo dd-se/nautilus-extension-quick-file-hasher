@@ -837,16 +837,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
         self.first_top_bar_box.append(self.drop_down_algo_button)
 
-        self.button_cancel = Gtk.Button(label="Cancel Job")
+        self.button_cancel = Gtk.Button(label="Cancel Jobs")
         self.button_cancel.add_css_class("destructive-action")
         self.button_cancel.set_valign(Gtk.Align.CENTER)
         self.button_cancel.set_visible(False)
-        self.button_cancel.set_tooltip_text("Cancel the current operation")
         self.button_cancel.connect(
             "clicked",
             lambda _: (
                 self.cancel_event.set(),
-                self.add_toast("<big>❌ Job cancelled</big>"),
+                self.add_toast("<big>❌ Jobs Cancelled</big>"),
             ),
         )
         self.first_top_bar_box.append(self.button_cancel)
@@ -925,7 +924,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def setup_header_bar(self):
         self.header_bar = Adw.HeaderBar()
-        self.header_title_widget = Gtk.Label(label=f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>", use_markup=True)
+        self.header_title_widget = Gtk.Label(label="<big><b>Quick File Hasher</b></big>", use_markup=True)
         self.header_bar.set_title_widget(self.header_title_widget)
         self.setup_menu()
 
@@ -1091,9 +1090,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.spinner.set_visible(True)
 
         self.button_cancel.set_visible(True)
-        self.button_select_files.set_sensitive(False)
-        self.button_select_folders.set_sensitive(False)
-        self.drop_down_algo_button.set_sensitive(False)
 
         self.toolbar_view.set_content(self.main_content_overlay)
 
@@ -1138,10 +1134,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.button_cancel.set_visible(False)
         self.hide_progress()
-
-        self.button_select_files.set_sensitive(True)
-        self.button_select_folders.set_sensitive(True)
-        self.drop_down_algo_button.set_sensitive(True)
 
         GLib.timeout_add(500, self.has_results, priority=GLib.PRIORITY_DEFAULT)
 
@@ -1239,16 +1231,16 @@ class MainWindow(Adw.ApplicationWindow):
     def results_to_txt(self):
         output = ""
         results_text = "\n".join(str(r) for r in self.ui_results if self.filter_func(r))
-        now = datetime.now().strftime("%B %d, %Y at %I:%H:%M %Z")
+        now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
 
         if results_text:
-            output = f"Results - Saved on {now}\n{'-' * 40}\n{results_text} {'\n\n' if self.pref.save_errors() else '\n'}"
+            output = f"Results - Saved on {now}\n{'-' * 50}\n{results_text} {'\n\n' if self.pref.save_errors() else '\n'}"
 
         if self.pref.save_errors():
             errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func_err(r))
 
             if errors_text:
-                output = f"{output}Errors - Saved on {now}\n{'-' * 40}\n{errors_text}\n"
+                output = f"{output}Errors - Saved on {now}\n{'-' * 50}\n{errors_text}\n"
 
         return output
 
@@ -1340,7 +1332,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_selected_item(self, drop_down: Gtk.DropDown, g_param_object):
         self.algo = drop_down.get_selected_item().get_string()
-        self.header_title_widget.set_label(f"<big><b>Calculate {self.algo.upper()} Hashes</b></big>")
+        self.add_toast(f"<big>✅ Algorithm changed to <b>{self.algo.upper()}</b></big>")
 
     def on_search_changed(self, entry: Gtk.SearchEntry, ui_list: Gtk.ListBox):
         self.search_query = entry.get_text().lower()
