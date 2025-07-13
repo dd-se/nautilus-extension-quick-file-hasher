@@ -46,6 +46,8 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
   - Select files/folders, right-click, and select "Calculate Hashes".
 - **From command-line:**
   - Run directly: `python3 quick-file-hasher-app.py [file1] [file2] [folder1] ...`
+- **From overview:**
+  - After running `make install`, a desktop shortcut will be created. You can then launch the app from your system application overview (press the Super key and search for "Quick File Hasher")
 - **Drag-and-drop:**
   - Drag files/folders into the app window to compute their hashes.
 - **Filter results:**
@@ -57,16 +59,19 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 
 ## Uninstall
 
-Remove the extension manually:
+1. **Remove the extension manually**:
 ```bash
 rm ~/.local/share/nautilus-python/extensions/quick-file-hasher-app.py
-nautilus -q
 ```
 
-Or use the Makefile for easy uninstall:
+2. **Or use the Makefile for easy uninstall:**
 ```bash
 make uninstall
 ```
+3. **Restart Nautilus:**
+  ```bash
+  nautilus -q
+  ```
 
 ## Tested Platforms
 
