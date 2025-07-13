@@ -38,7 +38,7 @@ from datetime import datetime
 from functools import lru_cache
 from itertools import repeat
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Callable, Literal
 
 import gi  # type: ignore
@@ -101,7 +101,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
         self.logger.info(f"App {APP_ID} launched by file manager")
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
-        cmd = ["python3", Path(__file__).as_posix()] + file_paths
+        cmd = ["python3", __file__] + file_paths
         env = None
         if recursive_mode:
             env = os.environ.copy()
@@ -300,9 +300,10 @@ class CalculateHashes:
         jobs = {"paths": [], "sizes": []}
 
         for root_path in paths:
-            if issubclass(type(root_path), Gio.File):
-                root_path = Path(root_path.get_path())
             try:
+                if issubclass(type(root_path), Gio.File):
+                    root_path = Path(root_path.get_path())
+
                 ignore_rules = []
 
                 if root_path.is_dir():
@@ -1101,52 +1102,54 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.processing_thread = threading.Thread(target=self.calculate_hashes, args=(paths, algo or self.algo), daemon=True)
         self.processing_thread.start()
-        GLib.timeout_add(100, self.process_queue, priority=GLib.PRIORITY_DEFAULT)
-        GLib.timeout_add(500, self.check_processing_complete, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(50, self.process_queue, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
     def process_queue(self):
-        if self.cancel_event.is_set():
-            return False  # Stop monitoring
+        queue_empty = self.queue_handler.empty()
+        job_done = self.progress_bar.get_fraction() == 1.0
+
+        if self.cancel_event.is_set() or (queue_empty and job_done):
+            self.processing_complete()
+            return False
 
         iterations = 0
-        while not self.queue_handler.empty() and iterations < 100:
-            update = self.queue_handler.get_nowait()
-            if update[0] == "progress":
-                _, progress = update
-                self.progress_bar.set_fraction(progress)
+        while iterations < 100:
+            try:
+                update = self.queue_handler.get_nowait()
+            except Empty:
+                break
 
-            elif update[0] == "result":
+            kind = update[0]
+            if kind == "progress":
+                self.progress_bar.set_fraction(update[1])
+
+            elif kind == "result":
                 iterations += 1
-                _, *args = update
-                row = HashResultRow(*args)
+                row = HashResultRow(*update[1:])
                 self.ui_results.append(row)
 
-            elif update[0] == "error":
+            elif kind == "error":
                 iterations += 1
-                _, *args = update
-                row = HashErrorRow(*args)
+                row = HashErrorRow(*update[1:])
                 self.ui_errors.append(row)
 
         return True  # Continue monitoring
+
+    def processing_complete(self):
+        self.button_cancel.set_visible(False)
+        self.hide_progress()
+
+        self.button_select_files.set_sensitive(True)
+        self.button_select_folders.set_sensitive(True)
+        self.drop_down_algo_button.set_sensitive(True)
+
+        GLib.timeout_add(500, self.has_results, priority=GLib.PRIORITY_DEFAULT)
 
     def hide_progress(self):
         self.animate_opacity(self.progress_bar, 1, 0, 500)
         self.animate_opacity(self.spinner, 1, 0, 500)
         GLib.timeout_add(1000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(1000, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
-
-    def check_processing_complete(self):
-        if (self.progress_bar.get_fraction() == 1.0 or self.cancel_event.is_set()) and not self.processing_thread.is_alive():
-            self.button_cancel.set_visible(False)
-            self.hide_progress()
-
-            self.button_select_files.set_sensitive(True)
-            self.button_select_folders.set_sensitive(True)
-            self.drop_down_algo_button.set_sensitive(True)
-
-            GLib.timeout_add(500, self.has_results, priority=GLib.PRIORITY_DEFAULT)
-            return False  # Stop monitoring
-        return True  # Continue monitoring
 
     def notify_limit_breach(self):
         hash_result_row_count = HashResultRow.get_counter()
