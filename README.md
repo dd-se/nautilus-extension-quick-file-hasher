@@ -53,6 +53,27 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 - **Filter results:**
   - Just start typing to filter the results instantly. Press `ESC` to clear the search.
 
+## Preferences
+
+The **Preferences** dialog allows you to customize the application's behavior. The available options include:
+
+- **Recursive Traversal**
+  - Enable this to process files within subdirectories.
+
+- **Respect `.gitignore`**
+  - When enabled, files and folders listed in the `.gitignore` file will be skipped.
+
+- **Error Saving**
+  - Allows errors to be saved to the results file for later review.
+
+- **Max Workers**
+  - Sets the maximum number of parallel hashing operations. Adjust this value to optimize performance based on your systems capabilities.
+
+- **Hashing Algorithm**
+  - Select the default hashing algorithm from the list.
+
+> **Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, environment variables can override these preferences at startup.
+
 ## Screenshot
 
 ![demo](<demo.png>)

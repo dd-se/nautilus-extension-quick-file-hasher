@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 # MIT License
 
 # Copyright (c) 2025 Doğukan Doğru
@@ -21,11 +22,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.25"
-APP_DEFAULT_HASHING_ALGORITHM = "sha256"
-
 import hashlib
+import json
 import logging
 import os
 import re
@@ -49,9 +47,21 @@ gi.require_version(namespace="Nautilus", version="4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
-Adw.init()
+APP_ID = "com.github.dd-se.quick-file-hasher"
+APP_VERSION = "0.9.65"
 
-css = b"""
+DEFAULTS = {
+    "default_hash_algorithm": "sha256",
+    "max_visible_results": 100,
+    "max_workers": 4,
+    "recursive_mode": False,
+    "respect_gitignore": False,
+    "save_errors": False,
+}
+CONFIG_DIR = Path.home() / ".config" / APP_ID
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+VIEW_SWITCHER_CSS = b"""
 .view-switcher button {
     background-color: #404040;
     color: white;
@@ -76,8 +86,10 @@ css = b"""
     background-color: #c7162b;
 }
 """
+
+Adw.init()
 css_provider = Gtk.CssProvider()
-css_provider.load_from_data(css)
+css_provider.load_from_data(VIEW_SWITCHER_CSS)
 Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
@@ -107,8 +119,10 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             env = os.environ.copy()
             env["CH_RECURSIVE_MODE"] = "yes"
             os.system(f"gapplication action {APP_ID} set-recursive-mode \"'yes'\"")
+
         else:
             os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
+
         subprocess.Popen(cmd, env=env)
 
     def create_menu(self, files, caller):
@@ -151,6 +165,199 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         if not files:
             return []
         return self.create_menu(files, 2)
+
+
+class Preferences(Adw.PreferencesDialog):
+    _instance = None
+    _notified_of_limit_breach = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, **kwargs):
+        if hasattr(self, "_initialized"):
+            return
+
+        super().__init__(**kwargs)
+        self.logger = get_logger(self.__class__.__name__)
+        self.set_title(title="Preferences")
+
+        self.load_config_file()
+
+        preference_page = Adw.PreferencesPage()
+        self.add(preference_page)
+
+        preference_group = Adw.PreferencesGroup()
+        preference_group.set_description(description="Configure how files and folders are processed")
+        preference_page.add(group=preference_group)
+
+        self.setting_recursive = Adw.SwitchRow()
+        self.setting_recursive.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="edit-find-symbolic"))
+        self.setting_recursive.set_title(title="Recursive Traversal")
+        self.setting_recursive.set_subtitle(subtitle="Enable to process all files in subdirectories")
+        self.setting_recursive.set_active(self.config["recursive_mode"])
+        self.setting_recursive.connect("notify::active", self.on_switch_row_changed, "recursive_mode")
+        preference_group.add(child=self.setting_recursive)
+
+        self.setting_gitignore = Adw.SwitchRow()
+        self.setting_gitignore.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="action-unavailable-symbolic"))
+        self.setting_gitignore.set_title(title="Respect .gitignore")
+        self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
+        self.setting_gitignore.set_active(self.config["respect_gitignore"])
+        self.setting_gitignore.connect("notify::active", self.on_switch_row_changed, "respect_gitignore")
+        preference_group.add(child=self.setting_gitignore)
+
+        preference_group_2 = Adw.PreferencesGroup()
+        preference_group_2.set_description(description="Configure how results are saved")
+        preference_page.add(group=preference_group_2)
+
+        self.setting_save_errors = Adw.SwitchRow()
+        self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
+        self.setting_save_errors.set_title(title="Save errors")
+        self.setting_save_errors.set_subtitle(subtitle="Save errors to results file")
+        self.setting_save_errors.set_active(self.config["save_errors"])
+        self.setting_save_errors.connect("notify::active", self.on_save_errors_toggled)
+        self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
+        preference_group_2.add(child=self.setting_save_errors)
+
+        preference_group_3 = Adw.PreferencesGroup()
+        preference_group_3.set_description(description="Configure hashing behavior")
+        preference_page.add(group=preference_group_3)
+
+        self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
+        self.setting_max_workers.set_editable(True)
+        self.setting_max_workers.set_numeric(True)
+        self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-working-symbolic"))
+        self.setting_max_workers.set_title(title="Max Workers")
+        self.setting_max_workers.set_subtitle(subtitle="Set how many files are hashed in parallel")
+        self.setting_max_workers.set_value(self.config["max_workers"])
+        self.setting_max_workers.connect("notify::value", self.on_spin_row_changed, "max_workers")
+        preference_group_3.add(child=self.setting_max_workers)
+
+        self.drop_down_algo_button = Adw.ComboRow()
+        self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.drop_down_algo_button.set_model(Gtk.StringList.new(self.available_algorithms))
+        self.drop_down_algo_button.set_title("Hashing Algorithm")
+        self.drop_down_algo_button.set_subtitle("Select the default hashing algorithm for new jobs")
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.config["default_hash_algorithm"]))
+        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
+        self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
+        preference_group_3.add(child=self.drop_down_algo_button)
+
+        preference_group_4 = Adw.PreferencesGroup()
+        preference_page.add(group=preference_group_4)
+
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+
+        self.button_save_preferences = Gtk.Button(label="Persist")
+        self.button_save_preferences.add_css_class("suggested-action")
+        self.button_save_preferences.set_tooltip_text("Persist current preferences to config file")
+        self.button_save_preferences.connect("clicked", lambda _: self.save_preferences_to_config_file())
+        self.button_save_preferences.set_hexpand(True)
+        button_box.append(self.button_save_preferences)
+
+        self.button_reset_preferences = Gtk.Button(label="Reset")
+        self.button_reset_preferences.add_css_class("destructive-action")
+        self.button_reset_preferences.set_tooltip_text("Reset all preferences to default values")
+        self.button_reset_preferences.connect("clicked", lambda _: self.reset_preferences())
+        self.button_reset_preferences.set_hexpand(True)
+        button_box.append(self.button_reset_preferences)
+
+        preference_group_4.add(child=button_box)
+
+        self.process_env_variables()
+        self._initialized = True
+
+    def load_config_file(self):
+        self.config = DEFAULTS.copy()
+        try:
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    user_settings = json.load(f)
+                self.config.update(user_settings)
+                self.logger.debug(f"Loaded settings from {CONFIG_FILE}")
+            else:
+                self.logger.debug("Config file not found. Creating one with default settings.")
+                self.save_preferences_to_config_file()
+
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Error decoding JSON from {CONFIG_FILE}: {e}. Using defaults.")
+
+        except Exception as e:
+            self.logger.error(f"Unexpected error loading config from {CONFIG_FILE}: {e}. Using defaults.")
+
+    def save_preferences_to_config_file(self):
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=4, sort_keys=True)
+            self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
+            self.logger.info(f"Preferences persisted to file: {CONFIG_FILE}")
+
+        except Exception as e:
+            self.add_toast(Adw.Toast(title=str(e)))
+            self.logger.error(f"Error saving preferences to {CONFIG_FILE}: {e}")
+
+    def reset_preferences(self):
+        self.setting_recursive.set_active(DEFAULTS["recursive_mode"])
+        self.setting_gitignore.set_active(DEFAULTS["respect_gitignore"])
+        self.setting_save_errors.set_active(DEFAULTS["save_errors"])
+        self.setting_max_workers.set_value(DEFAULTS["max_workers"])
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index(DEFAULTS["default_hash_algorithm"]))
+        self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
+
+    def process_env_variables(self):
+        recursive_mode = os.getenv("CH_RECURSIVE_MODE")
+        if recursive_mode:
+            state = recursive_mode.lower() == "yes"
+            self.setting_recursive.set_active(state)
+            self.setting_gitignore.set_active(state)
+            self.logger.info(f"Recursive mode set to {state} via env variable")
+
+    def recursive_mode(self):
+        return self.setting_recursive.get_active()
+
+    def respect_gitignore(self):
+        return self.setting_gitignore.get_active()
+
+    def save_errors(self):
+        return self.setting_save_errors.get_active()
+
+    def max_workers(self):
+        return self.setting_max_workers.get_value()
+
+    def notified_of_limit_breach(self) -> bool:
+        return self._notified_of_limit_breach
+
+    def hashing_algorithm(self) -> str:
+        return self.drop_down_algo_button.get_selected_item().get_string()
+
+    def set_notified_of_limit_breach(self, state: bool):
+        self._notified_of_limit_breach = state
+
+    def on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec, config_key: str):
+        new_value = switch_row.get_active()
+        if self.config.get(config_key) != new_value:
+            self.config[config_key] = new_value
+            self.logger.info(f"Switch Preference '{config_key}' changed to '{new_value}'")
+
+    def on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec, config_key: str):
+        new_value = int(spin_row.get_value())
+        if self.config.get(config_key) != new_value:
+            self.config[config_key] = new_value
+            self.logger.info(f"Spin Preference '{config_key}' changed to {new_value}")
+
+    def on_algo_selected(self, drop_down: Gtk.DropDown, g_param_object):
+        selected_hashing_algorithm = self.hashing_algorithm()
+        if self.config.get("default_hash_algorithm") != selected_hashing_algorithm:
+            self.config["default_hash_algorithm"] = selected_hashing_algorithm
+            self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
+
+    def on_save_errors_toggled(self, row: Adw.SwitchRow, param: GObject.ParamSpec):
+        self.get_root().has_results()
 
 
 class IgnoreRule:
@@ -254,7 +461,6 @@ class QueueUpdateHandler(Queue):
 
     def update_progress(self, bytes_read: int, total_bytes: int):
         progress = min(bytes_read / total_bytes, 1.0)
-        # self.logger.debug(progress)
         self.put(("progress", progress))
 
     def update_result(self, file: Path, hash_value: str, algo: str):
@@ -282,8 +488,8 @@ class CalculateHashes:
         self.pref = preferences
         self.queue_handler = queue
         self.cancel_event = event
-        self.TOTAL_BYTES = 0
-        self.BYTES_READ = 0
+        self.total_bytes = 0
+        self.bytes_read = 0
 
     def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list):
         hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
@@ -296,7 +502,6 @@ class CalculateHashes:
         self.execute_jobs(jobs, hash_algorithm)
 
     def create_jobs(self, paths: list[Path] | list[Gio.File]):
-        # Process root .gitignore file early to skip ignored files/folders efficiently
         jobs = {"paths": [], "sizes": []}
 
         for root_path in paths:
@@ -326,7 +531,7 @@ class CalculateHashes:
                 self.logger.debug(f"Error processing {root_path.name}: {e}")
                 self.queue_handler.update_error(root_path, str(e))
 
-        if self.TOTAL_BYTES == 0:
+        if self.total_bytes == 0:
             self.queue_handler.update_progress(1, 1)
 
         return jobs
@@ -365,8 +570,8 @@ class CalculateHashes:
                         IgnoreRule.parse_gitignore(gitignore_file, extend=local_rules)
                         self.logger.debug(f"Added rule late: {gitignore_file} ({len(local_rules)})")
 
-                for subpath in current_path.iterdir():
-                    self.process_path_n_rules(subpath, local_rules, jobs)
+                for sub_path in current_path.iterdir():
+                    self.process_path_n_rules(sub_path, local_rules, jobs)
 
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
@@ -390,8 +595,8 @@ class CalculateHashes:
                         return
 
                     hash_obj.update(chunk)
-                    self.BYTES_READ += len(chunk)
-                    self.queue_handler.update_progress(self.BYTES_READ, self.TOTAL_BYTES)
+                    self.bytes_read += len(chunk)
+                    self.queue_handler.update_progress(self.bytes_read, self.total_bytes)
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
             self.queue_handler.update_result(file, hash_value, algorithm)
@@ -400,12 +605,11 @@ class CalculateHashes:
             self.queue_handler.update_error(file, str(e))
 
     def add_bytes(self, bytes_: int):
-        # self.logger.debug(f"Adding {bytes_} bytes to total (was {self.TOTAL_BYTES})")
-        self.TOTAL_BYTES += bytes_
+        self.total_bytes += bytes_
 
 
 class HashRow(Adw.ActionRow):
-    MAX_ROWS = 100
+    MAX_ROWS = Preferences().config["max_visible_results"]
     MAX_WIDTH_LABEL = max(len(algo) for algo in hashlib.algorithms_guaranteed)
     _counter = 0
     _counter_hidden = 0
@@ -554,9 +758,11 @@ class HashResultRow(HashRow):
         return f"{self.path}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
+        available_algorithms = Preferences().available_algorithms
+        paths = [self.path] * (len(available_algorithms) - 1)
+        hashes = [a for a in available_algorithms if a != self.algo]
+
         main_window: MainWindow = button.get_root()
-        paths = [self.path] * (len(main_window.available_algorithms) - 1)
-        hashes = [a for a in main_window.available_algorithms if a != self.algo]
         main_window.start_job(paths, hashes)
 
     def on_copy_clicked(self, button: Gtk.Button):
@@ -645,96 +851,15 @@ class HashErrorRow(HashRow):
         GLib.timeout_add(1500, lambda: (button.set_child(original_child), button.set_sensitive(True)))
 
 
-class Preferences(Adw.PreferencesDialog):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.logger = get_logger(self.__class__.__name__)
-        self.set_title(title="Preferences")
-        self._notified_of_limit_breach = False
-
-        preference_page = Adw.PreferencesPage()
-        self.add(preference_page)
-
-        preference_group = Adw.PreferencesGroup()
-        preference_group.set_description(description="Configure how files and folders are processed")
-        preference_page.add(group=preference_group)
-
-        self.setting_recursive = Adw.SwitchRow()
-        self.setting_recursive.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="edit-find-symbolic"))
-        self.setting_recursive.set_title(title="Recursive Traversal")
-        self.setting_recursive.set_subtitle(subtitle="Enable to process all files in subdirectories")
-        preference_group.add(child=self.setting_recursive)
-
-        self.setting_gitignore = Adw.SwitchRow()
-        self.setting_gitignore.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="action-unavailable-symbolic"))
-        self.setting_gitignore.set_title(title="Respect .gitignore")
-        self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
-        preference_group.add(child=self.setting_gitignore)
-
-        preference_group_2 = Adw.PreferencesGroup()
-        preference_group_2.set_description(description="Configure how results are saved")
-        preference_page.add(group=preference_group_2)
-
-        self.setting_save_errors = Adw.SwitchRow()
-        self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
-        self.setting_save_errors.set_title(title="Save errors")
-        self.setting_save_errors.set_subtitle(subtitle="Save errors to results file")
-        self.setting_save_errors.connect("notify::active", self.on_save_errors_toggled)
-        preference_group_2.add(child=self.setting_save_errors)
-
-        preference_group_3 = Adw.PreferencesGroup()
-        preference_group_3.set_description(description="Configure performance settings")
-        preference_page.add(group=preference_group_3)
-
-        self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
-        self.setting_max_workers.set_editable(True)
-        self.setting_max_workers.set_numeric(True)
-        self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-working-symbolic"))
-        self.setting_max_workers.set_title(title="Max Concurrent Workers")
-        self.setting_max_workers.set_subtitle(subtitle="Set the maximum number of concurrent hashing operations")
-        preference_group_3.add(child=self.setting_max_workers)
-
-        if recursive_mode := bool(os.getenv("CH_RECURSIVE_MODE")):
-            self.set_recursive_mode(recursive_mode)
-            self.logger.info(f"Recursive mode set to {recursive_mode} via env variable")
-
-    def set_recursive_mode(self, state: bool):
-        self.setting_recursive.set_active(state)
-        self.setting_gitignore.set_active(state)
-
-    def recursive_mode(self):
-        return self.setting_recursive.get_active()
-
-    def respect_gitignore(self):
-        return self.setting_gitignore.get_active()
-
-    def save_errors(self):
-        return self.setting_save_errors.get_active()
-
-    def max_workers(self):
-        return self.setting_max_workers.get_value()
-
-    def notified_of_limit_breach(self) -> bool:
-        return self._notified_of_limit_breach
-
-    def set_notified_of_limit_breach(self, value: bool):
-        self._notified_of_limit_breach = value
-        return self._notified_of_limit_breach
-
-    def on_save_errors_toggled(self, row: Adw.SwitchRow, param: GObject.ParamSpec):
-        self.get_root().has_results()
-
-
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
-    DEFAULT_HIGHT = 600
-    algo: str = APP_DEFAULT_HASHING_ALGORITHM
+    DEFAULT_HEIGHT = 650
 
     def __init__(self, app, paths: list[Path] | list[Gio.File] | None = None):
         super().__init__(application=app)
         self.logger = get_logger(self.__class__.__name__)
-        self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
-        self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HIGHT)
+        self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
+        self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
 
         self.pref = Preferences()
         self.queue_handler = QueueUpdateHandler()
@@ -829,14 +954,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save.set_child(self.button_save_content)
         self.first_top_bar_box.append(self.button_save)
 
-        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.drop_down_algo_button = Gtk.DropDown.new_from_strings(self.available_algorithms)
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.algo))
-        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
-        self.drop_down_algo_button.set_tooltip_text("Choose hashing algorithm")
-        self.drop_down_algo_button.connect("notify::selected-item", self.on_selected_item)
-        self.first_top_bar_box.append(self.drop_down_algo_button)
-
         self.button_cancel = Gtk.Button(label="Cancel Jobs")
         self.button_cancel.add_css_class("destructive-action")
         self.button_cancel.set_valign(Gtk.Align.CENTER)
@@ -867,10 +984,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.hidden_row_counter = Gtk.Button()
         self.hidden_row_counter.set_valign(Gtk.Align.CENTER)
+        self.hidden_row_counter.set_sensitive(False)
         self.hidden_row_counter_content = Adw.ButtonContent.new()
         self.hidden_row_counter_content.set_tooltip_text("Number of hidden results. Use search to reveal them.")
         self.hidden_row_counter_content.set_icon_name(icon_name="help-about-symbolic")
-        self.hidden_row_counter_content.set_label(label=f"Hidden: {HashRow.get_counter_hidden()}")
+        self.hidden_row_counter_content.set_label(label="Hidden: 0")
+
         self.hidden_row_counter_content.set_use_underline(use_underline=True)
         self.hidden_row_counter.set_child(self.hidden_row_counter_content)
         self.second_top_bar_box.append(self.hidden_row_counter)
@@ -1082,7 +1201,7 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
-    def start_job(self, paths: list[Path] | list[Gio.File], algo: str | list | None = None):
+    def start_job(self, paths: list[Path] | list[Gio.File], hashing_algorithm: str | list | None = None):
         self.cancel_event.clear()
 
         self.progress_bar.set_opacity(1.0)
@@ -1093,7 +1212,14 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.toolbar_view.set_content(self.main_content_overlay)
 
-        self.processing_thread = threading.Thread(target=self.calculate_hashes, args=(paths, algo or self.algo), daemon=True)
+        self.processing_thread = threading.Thread(
+            target=self.calculate_hashes,
+            args=(
+                paths,
+                hashing_algorithm or self.pref.hashing_algorithm(),
+            ),
+            daemon=True,
+        )
         self.processing_thread.start()
         GLib.timeout_add(50, self.process_queue, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
@@ -1129,8 +1255,8 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def processing_complete(self):
-        self.calculate_hashes.BYTES_READ = 0
-        self.calculate_hashes.TOTAL_BYTES = 0
+        self.calculate_hashes.bytes_read = 0
+        self.calculate_hashes.total_bytes = 0
 
         self.button_cancel.set_visible(False)
         self.hide_progress()
@@ -1330,10 +1456,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
 
-    def on_selected_item(self, drop_down: Gtk.DropDown, g_param_object):
-        self.algo = drop_down.get_selected_item().get_string()
-        self.add_toast(f"<big>✅ Algorithm changed to <b>{self.algo.upper()}</b></big>")
-
     def on_search_changed(self, entry: Gtk.SearchEntry, ui_list: Gtk.ListBox):
         self.search_query = entry.get_text().lower()
         ui_list.invalidate_filter()
@@ -1399,8 +1521,9 @@ class Application(Adw.Application):
     def on_set_recursive_mode(self, action, param):
         value: str = param.get_string()
         win: MainWindow = self.props.active_window
-        if win and value.lower() in ("yes", "no"):
-            win.pref.set_recursive_mode(value == "yes")
+        if win:
+            win.pref.setting_gitignore.set_active(value == "yes")
+            win.pref.setting_recursive.set_active(value == "yes")
             self.logger.info(f"Recursive mode set to {value} via action")
 
     def do_activate(self):
