@@ -55,7 +55,7 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 
 ## Preferences
 
-The **Preferences** dialog allows you to customize the application's behavior. The available options include:
+The **Preferences** dialog allows you to customize the application's behavior.
 
 - **Recursive Traversal**
   - Enable this to process files within subdirectories.
@@ -72,7 +72,7 @@ The **Preferences** dialog allows you to customize the application's behavior. T
 - **Hashing Algorithm**
   - Select the default hashing algorithm from the list.
 
-> **Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, environment variables can override these preferences at startup.
+**Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, environment variables can override these preferences at startup.
 
 ## Screenshot
 
