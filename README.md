@@ -47,7 +47,7 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 - **From command-line:**
   - Run directly: `python3 quick-file-hasher-app.py [file1] [file2] [folder1] ...`
 - **From overview:**
-  - After running `make install`, a desktop shortcut will be created. You can then launch the app from your system application overview (press the Super key and search for "Quick File Hasher")
+  - After running `make install`, a desktop shortcut will be created. You can then launch the app from your system application overview. (Press the Super key and search for "Quick File Hasher")
 - **Drag-and-drop:**
   - Drag files/folders into the app window to compute their hashes.
 - **Filter results:**
@@ -59,19 +59,14 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 ## Preferences
 
 The **Preferences** dialog allows you to customize the application's behavior.
-
 - **Recursive Traversal**
   - Enable this to process files within subdirectories.
-
 - **Respect `.gitignore`**
   - When enabled, files and folders listed in the `.gitignore` file will be skipped.
-
 - **Error Saving**
   - Allows errors to be saved to the results file for later review.
-
 - **Max Workers**
   - Sets the maximum number of parallel hashing operations. Adjust this value to optimize performance based on your systems capabilities.
-
 - **Hashing Algorithm**
   - Select the default hashing algorithm from the list.
 

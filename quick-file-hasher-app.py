@@ -217,7 +217,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors = Adw.SwitchRow()
         self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
         self.setting_save_errors.set_title(title="Save errors")
-        self.setting_save_errors.set_subtitle(subtitle="Save errors to results file")
+        self.setting_save_errors.set_subtitle(subtitle="Save errors to results file or clipboard")
         self.setting_save_errors.set_active(self.config["save_errors"])
         self.setting_save_errors.connect("notify::active", self.on_save_errors_toggled)
         self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
@@ -249,8 +249,9 @@ class Preferences(Adw.PreferencesDialog):
         self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
         preference_group_3.add(child=self.drop_down_algo_button)
 
-        preference_group_4 = Adw.PreferencesGroup()
-        preference_page.add(group=preference_group_4)
+        button_group = Adw.PreferencesGroup()
+        button_group.set_margin_top(6)
+        preference_page.add(group=button_group)
 
         button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
 
@@ -268,7 +269,7 @@ class Preferences(Adw.PreferencesDialog):
         self.button_reset_preferences.set_hexpand(True)
         button_box.append(self.button_reset_preferences)
 
-        preference_group_4.add(child=button_box)
+        button_group.add(child=button_box)
 
         self.process_env_variables()
         self._initialized = True
@@ -279,12 +280,9 @@ class Preferences(Adw.PreferencesDialog):
             if CONFIG_FILE.exists():
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     user_settings = json.load(f)
-                self.config.update(user_settings)
-                self.logger.debug(f"Loaded settings from {CONFIG_FILE}")
 
-            else:
-                self.logger.debug("Config file not found. Creating one with default settings.")
-                self.save_preferences_to_config_file()
+                self.config.update(user_settings)
+                self.logger.debug(f"Loaded preferences from {CONFIG_FILE}")
 
         except json.JSONDecodeError as e:
             self.logger.error(f"Error decoding JSON from {CONFIG_FILE}: {e}. Using defaults.")
@@ -295,8 +293,10 @@ class Preferences(Adw.PreferencesDialog):
     def save_preferences_to_config_file(self):
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, sort_keys=True)
+
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
             self.logger.info(f"Preferences saved to file: {CONFIG_FILE}")
 
@@ -764,7 +764,6 @@ class HashResultRow(HashRow):
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("compute", "Compute")
         dialog.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("compute")
         dialog.set_close_response("cancel")
 
         main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
