@@ -456,31 +456,29 @@ class IgnoreRule:
         return False
 
 
-class QueueUpdateHandler(Queue):
-    def __init__(self, maxsize=0):
-        super().__init__(maxsize)
+class QueueUpdateHandler:
+    def __init__(self):
+        self.q = Queue()
         self.logger = get_logger(self.__class__.__name__)
-
-    def __iter__(self):
-        while not self.empty():
-            yield self.get_nowait()
 
     def update_progress(self, bytes_read: int, total_bytes: int):
         progress = min(bytes_read / total_bytes, 1.0)
-        self.put(("progress", progress))
+        self.q.put(("progress", progress))
 
     def update_result(self, file: Path, hash_value: str, algo: str):
-        self.put(("result", file, hash_value, algo))
+        self.q.put(("result", file, hash_value, algo))
 
     def update_error(self, file: Path, error: str):
-        self.put(("error", file, error))
+        self.q.put(("error", file, error))
+
+    def get_update(self):
+        return self.q.get_nowait()
+
+    def is_empty(self):
+        return self.q.empty()
 
     def reset(self):
-        while not self.empty():
-            try:
-                self.get_nowait()
-            except Exception:
-                break
+        self.q = Queue()
 
 
 class CalculateHashes:
@@ -612,6 +610,10 @@ class CalculateHashes:
 
     def add_bytes(self, bytes_: int):
         self.total_bytes += bytes_
+
+    def reset_counters(self):
+        self.bytes_read = 0
+        self.total_bytes = 0
 
 
 class HashRow(Adw.ActionRow):
@@ -1296,19 +1298,17 @@ class MainWindow(Adw.ApplicationWindow):
 
             elif kind == "result":
                 iterations += 1
-                row = HashResultRow(*update[1:])
-                self.ui_results.append(row)
+                self.ui_results.append(HashResultRow(*update[1:]))
 
             elif kind == "error":
                 iterations += 1
-                row = HashErrorRow(*update[1:])
-                self.ui_errors.append(row)
+                self.ui_errors.append(HashErrorRow(*update[1:]))
 
         return True  # Continue monitoring
 
     def processing_complete(self):
-        self.calculate_hashes.bytes_read = 0
-        self.calculate_hashes.total_bytes = 0
+        self.calculate_hashes.reset_counters()
+        self.queue_handler.reset()
 
         self.button_cancel.set_visible(False)
         self.hide_progress()
@@ -1575,10 +1575,10 @@ class Application(Adw.Application):
     def on_set_recursive_mode(self, action, param):
         win: MainWindow = self.props.active_window
         if win:
-            value: str = param.get_string()
-            win.pref.setting_gitignore.set_active(value == "yes")
-            win.pref.setting_recursive.set_active(value == "yes")
-            self.logger.info(f"Recursive mode set to {value} via action")
+            state: bool = param.get_string() == "yes"
+            win.pref.setting_gitignore.set_active(state)
+            win.pref.setting_recursive.set_active(state)
+            self.logger.info(f"Recursive mode set to {state} via action")
 
     def do_activate(self):
         self.logger.info(f"App {self.get_application_id()} activated")
