@@ -787,7 +787,8 @@ class HashResultRow(HashRow):
         return f"{self.path}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
-        dialog = Adw.AlertDialog(heading="Select Hashing Algorithms")
+        dialog = Adw.AlertDialog(body="<big><b>Select Hashing Algorithms</b></big>", body_use_markup=True)
+        dialog.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("compute", "Compute")
         dialog.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
@@ -820,7 +821,10 @@ class HashResultRow(HashRow):
                     current_list_box.add_css_class("boxed-list")
                     horizontal_container.append(current_list_box)
 
-                switch = Adw.SwitchRow(title=algo.upper())
+                switch = Adw.SwitchRow()
+                switch.add_prefix(Gtk.Label(label=algo.upper()))
+                switch.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+
                 switches.append((switch, algo))
                 current_list_box.append(switch)
                 count += 1
