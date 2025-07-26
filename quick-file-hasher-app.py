@@ -183,16 +183,19 @@ class Preferences(Adw.PreferencesDialog):
 
         super().__init__(**kwargs)
         self.logger = get_logger(self.__class__.__name__)
-        self.set_title(title="Preferences")
+        self.set_title("Preferences")
 
         self.load_config_file()
 
-        preference_page = Adw.PreferencesPage()
-        self.add(preference_page)
+        # 1. Processing Page
+        processing_page = Adw.PreferencesPage()
+        processing_page.set_title("Processing")
+        processing_page.set_icon_name("edit-find-symbolic")
+        self.add(processing_page)
 
-        preference_group = Adw.PreferencesGroup()
-        preference_group.set_description(description="Configure how files and folders are processed")
-        preference_page.add(group=preference_group)
+        processing_group = Adw.PreferencesGroup()
+        processing_group.set_description(description="Configure how files and folders are processed")
+        processing_page.add(group=processing_group)
 
         self.setting_recursive = Adw.SwitchRow()
         self.setting_recursive.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="edit-find-symbolic"))
@@ -200,7 +203,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_recursive.set_subtitle(subtitle="Enable to process all files in subdirectories")
         self.setting_recursive.set_active(self.config["recursive_mode"])
         self.setting_recursive.connect("notify::active", self.on_switch_row_changed, "recursive_mode")
-        preference_group.add(child=self.setting_recursive)
+        processing_group.add(child=self.setting_recursive)
 
         self.setting_gitignore = Adw.SwitchRow()
         self.setting_gitignore.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="action-unavailable-symbolic"))
@@ -208,11 +211,18 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
         self.setting_gitignore.set_active(self.config["respect_gitignore"])
         self.setting_gitignore.connect("notify::active", self.on_switch_row_changed, "respect_gitignore")
-        preference_group.add(child=self.setting_gitignore)
+        processing_group.add(child=self.setting_gitignore)
+        processing_group.add(self.create_buttons())
 
-        preference_group_2 = Adw.PreferencesGroup()
-        preference_group_2.set_description(description="Configure how results are saved")
-        preference_page.add(group=preference_group_2)
+        # 2. Saving Page
+        saving_page = Adw.PreferencesPage()
+        saving_page.set_title("Saving")
+        saving_page.set_icon_name("document-save-symbolic")
+        self.add(saving_page)
+
+        saving_group = Adw.PreferencesGroup()
+        saving_group.set_description(description="Configure how results are saved")
+        saving_page.add(group=saving_group)
 
         self.setting_save_errors = Adw.SwitchRow()
         self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
@@ -221,11 +231,20 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors.set_active(self.config["save_errors"])
         self.setting_save_errors.connect("notify::active", self.on_save_errors_toggled)
         self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
-        preference_group_2.add(child=self.setting_save_errors)
 
-        preference_group_3 = Adw.PreferencesGroup()
-        preference_group_3.set_description(description="Configure hashing behavior")
-        preference_page.add(group=preference_group_3)
+        saving_group.add(child=self.setting_save_errors)
+
+        saving_group.add(child=self.create_buttons())
+
+        # 3. Hashing Page
+        hashing_page = Adw.PreferencesPage()
+        hashing_page.set_title("Hashing")
+        hashing_page.set_icon_name("dialog-password-symbolic")
+        self.add(hashing_page)
+
+        hashing_group = Adw.PreferencesGroup()
+        hashing_group.set_description(description="Configure hashing behavior")
+        hashing_page.add(group=hashing_group)
 
         self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
         self.setting_max_workers.set_editable(True)
@@ -235,7 +254,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_max_workers.set_subtitle(subtitle="Set how many files are hashed in parallel")
         self.setting_max_workers.set_value(self.config["max_workers"])
         self.setting_max_workers.connect("notify::value", self.on_spin_row_changed, "max_workers")
-        preference_group_3.add(child=self.setting_max_workers)
+        hashing_group.add(child=self.setting_max_workers)
 
         self.drop_down_algo_button = Adw.ComboRow()
         self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
@@ -247,32 +266,38 @@ class Preferences(Adw.PreferencesDialog):
         self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.config["default_hash_algorithm"]))
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
-        preference_group_3.add(child=self.drop_down_algo_button)
+        hashing_group.add(child=self.drop_down_algo_button)
 
-        button_group = Adw.PreferencesGroup()
-        button_group.set_margin_top(6)
-        preference_page.add(group=button_group)
-
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-
-        self.button_save_preferences = Gtk.Button(label="Persist")
-        self.button_save_preferences.add_css_class("suggested-action")
-        self.button_save_preferences.set_tooltip_text("Persist current preferences to config file")
-        self.button_save_preferences.connect("clicked", lambda _: self.save_preferences_to_config_file())
-        self.button_save_preferences.set_hexpand(True)
-        button_box.append(self.button_save_preferences)
-
-        self.button_reset_preferences = Gtk.Button(label="Reset")
-        self.button_reset_preferences.add_css_class("destructive-action")
-        self.button_reset_preferences.set_tooltip_text("Reset all preferences to default values")
-        self.button_reset_preferences.connect("clicked", lambda _: self.reset_preferences())
-        self.button_reset_preferences.set_hexpand(True)
-        button_box.append(self.button_reset_preferences)
-
-        button_group.add(child=button_box)
+        hashing_group.add(child=self.create_buttons())
 
         self.process_env_variables()
         self._initialized = True
+
+    def create_buttons(self):
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        spacer = Gtk.Separator()
+        spacer.set_vexpand(True)
+        spacer.set_opacity(0)
+        main_box.append(spacer)
+
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        button_box.set_margin_top(20)
+        main_box.append(button_box)
+
+        button_save_preferences = Gtk.Button(label="Persist")
+        button_save_preferences.set_tooltip_text("Persist current preferences to config file")
+        button_save_preferences.connect("clicked", lambda _: self.save_preferences_to_config_file())
+        button_save_preferences.set_hexpand(True)
+        button_box.append(button_save_preferences)
+
+        button_reset_preferences = Gtk.Button(label="Reset")
+        button_reset_preferences.add_css_class("destructive-action")
+        button_reset_preferences.set_tooltip_text("Reset all preferences to default values")
+        button_reset_preferences.connect("clicked", lambda _: self.reset_preferences())
+        button_reset_preferences.set_hexpand(True)
+        button_box.append(button_reset_preferences)
+        return main_box
 
     def load_config_file(self):
         self.config = DEFAULTS.copy()
