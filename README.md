@@ -52,6 +52,9 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
   - Drag files/folders into the app window to compute their hashes.
 - **Filter results:**
   - Just start typing to filter the results instantly. Press `ESC` to clear the search.
+- **Multi-Hash:**
+  - This feature enables selection of additional hashing algorithms for the given file.
+
 
 ## Preferences
 

@@ -47,8 +47,10 @@ gi.require_version(namespace="Nautilus", version="4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
+Adw.init()
+
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.65"
+APP_VERSION = "0.9.70"
 
 DEFAULTS = {
     "default_hash_algorithm": "sha256",
@@ -87,7 +89,6 @@ VIEW_SWITCHER_CSS = b"""
 }
 """
 
-Adw.init()
 css_provider = Gtk.CssProvider()
 css_provider.load_from_data(VIEW_SWITCHER_CSS)
 Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -126,7 +127,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         subprocess.Popen(cmd, env=env)
 
     def create_menu(self, files, caller):
-        if (caller == 1) or (caller == 2 and any(f.is_directory() for f in files)):
+        if any(f.is_directory() for f in files):
             menu = Nautilus.MenuItem(
                 name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",
                 label="Calculate Hashes Menu",
@@ -239,6 +240,7 @@ class Preferences(Adw.PreferencesDialog):
         self.drop_down_algo_button = Adw.ComboRow()
         self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
         self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
+        self.max_width_label = max(len(algo) for algo in self.available_algorithms)
         self.drop_down_algo_button.set_model(Gtk.StringList.new(self.available_algorithms))
         self.drop_down_algo_button.set_title("Hashing Algorithm")
         self.drop_down_algo_button.set_subtitle("Select the default hashing algorithm for new jobs")
@@ -279,6 +281,7 @@ class Preferences(Adw.PreferencesDialog):
                     user_settings = json.load(f)
                 self.config.update(user_settings)
                 self.logger.debug(f"Loaded settings from {CONFIG_FILE}")
+
             else:
                 self.logger.debug("Config file not found. Creating one with default settings.")
                 self.save_preferences_to_config_file()
@@ -295,7 +298,7 @@ class Preferences(Adw.PreferencesDialog):
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, sort_keys=True)
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
-            self.logger.info(f"Preferences persisted to file: {CONFIG_FILE}")
+            self.logger.info(f"Preferences saved to file: {CONFIG_FILE}")
 
         except Exception as e:
             self.add_toast(Adw.Toast(title=str(e)))
@@ -328,6 +331,9 @@ class Preferences(Adw.PreferencesDialog):
 
     def max_workers(self):
         return self.setting_max_workers.get_value()
+
+    def max_rows(self) -> int:
+        return self.config["max_visible_results"]
 
     def notified_of_limit_breach(self) -> bool:
         return self._notified_of_limit_breach
@@ -609,8 +615,6 @@ class CalculateHashes:
 
 
 class HashRow(Adw.ActionRow):
-    MAX_ROWS = Preferences().config["max_visible_results"]
-    MAX_WIDTH_LABEL = max(len(algo) for algo in hashlib.algorithms_guaranteed)
     _counter = 0
     _counter_hidden = 0
 
@@ -719,7 +723,7 @@ class HashResultRow(HashRow):
         self.prefix_hash_box.append(self.hash_icon)
 
         self.hash_name = Gtk.Label(label=self.algo.upper())
-        self.hash_name.set_width_chars(self.MAX_WIDTH_LABEL)
+        self.hash_name.set_width_chars(Preferences().max_width_label)
         self.prefix_hash_box.append(self.hash_name)
 
         self.add_prefix(self.prefix_hash_box)
@@ -727,7 +731,7 @@ class HashResultRow(HashRow):
         self.button_make_hashes = Gtk.Button()
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_make_hashes.set_valign(Gtk.Align.CENTER)
-        self.button_make_hashes.set_tooltip_text("Calculate all available hash types for this file")
+        self.button_make_hashes.set_tooltip_text("Select and compute multiple hash algorithms for this file")
         self.button_make_hashes.connect("clicked", self.on_click_make_hashes)
 
         self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
@@ -750,20 +754,69 @@ class HashResultRow(HashRow):
         self.add_suffix(self.button_compare)
         self.add_suffix(self.button_delete)
 
-        # Hide the row if the counter exceeds MAX_ROWS
-        exceeded_limit = self.get_counter() > self.MAX_ROWS
-        self.set_hidden_result(exceeded_limit)
+        self.set_hidden_result(self.get_counter() > Preferences().max_rows())
 
     def __str__(self):
         return f"{self.path}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
-        available_algorithms = Preferences().available_algorithms
-        paths = [self.path] * (len(available_algorithms) - 1)
-        hashes = [a for a in available_algorithms if a != self.algo]
+        dialog = Adw.AlertDialog(heading="Select Hashing Algorithms")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("compute", "Compute")
+        dialog.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("compute")
+        dialog.set_close_response("cancel")
+
+        main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        dialog.set_extra_child(main_container)
+
+        horizontal_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        main_container.append(horizontal_container)
+
+        horizontal_container_2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        horizontal_container_2.set_halign(Gtk.Align.END)
+        main_container.append(horizontal_container_2)
+
+        select_all_button = Gtk.Button(label="Select All")
+        select_all_button.add_css_class("flat")
+        horizontal_container_2.append(select_all_button)
+
+        deselect_all_button = Gtk.Button(label="Deselect All")
+        deselect_all_button.add_css_class("flat")
+        horizontal_container_2.append(deselect_all_button)
+
+        switches: list[tuple[Adw.SwitchRow, str]] = []
+        count = 0
+        for algo in Preferences().available_algorithms:
+            if algo != self.algo:
+                if count % 5 == 0:
+                    current_list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+                    current_list_box.add_css_class("boxed-list")
+                    horizontal_container.append(current_list_box)
+
+                switch = Adw.SwitchRow(title=algo.upper())
+                switches.append((switch, algo))
+                current_list_box.append(switch)
+                count += 1
+
+        def on_button_click(_, state: bool):
+            for switch, _ in switches:
+                switch.set_active(state)
+
+        select_all_button.connect("clicked", on_button_click, True)
+        deselect_all_button.connect("clicked", on_button_click, False)
 
         main_window: MainWindow = button.get_root()
-        main_window.start_job(paths, hashes)
+
+        def on_response(_, response_id):
+            if response_id == "compute":
+                selected_algos = [algo for (check, algo) in switches if check.get_active()]
+                if selected_algos:
+                    paths = [self.path] * len(selected_algos)
+                    main_window.start_job(paths, selected_algos)
+
+        dialog.connect("response", on_response)
+        dialog.present(main_window)
 
     def on_copy_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -1272,8 +1325,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     def notify_limit_breach(self):
         hash_result_row_count = HashResultRow.get_counter()
+        max_rows = self.pref.max_rows()
+        notified = self.pref.notified_of_limit_breach()
 
-        if hash_result_row_count > HashResultRow.MAX_ROWS and self.pref.notified_of_limit_breach() is False:
+        if hash_result_row_count > max_rows and notified is False:
             self.add_toast(
                 "<big>⚠️ Too many results! New results are now hidden from display for performance reasons.</big>",
                 timeout=5,
@@ -1281,9 +1336,9 @@ class MainWindow(Adw.ApplicationWindow):
             )
 
             self.pref.set_notified_of_limit_breach(True)
-            self.logger.debug(f"{hash_result_row_count} > {HashResultRow.MAX_ROWS}, hiding new results")
+            self.logger.debug(f"{hash_result_row_count} > {max_rows}, hiding new results")
 
-        elif hash_result_row_count <= HashResultRow.MAX_ROWS and self.pref.notified_of_limit_breach():
+        elif hash_result_row_count <= max_rows and notified:
             self.add_toast(
                 "<big>✅ Results are now visible again. Displaying all results.</big>",
                 timeout=3,
@@ -1291,9 +1346,9 @@ class MainWindow(Adw.ApplicationWindow):
             )
 
             self.pref.set_notified_of_limit_breach(False)
-            self.logger.debug(f"{hash_result_row_count} < {HashResultRow.MAX_ROWS}, showing new results.")
+            self.logger.debug(f"{hash_result_row_count} <= {max_rows}, showing new results.")
 
-        return hash_result_row_count > HashResultRow.MAX_ROWS
+        return hash_result_row_count > max_rows
 
     def update_badge_numbers(self):
         self.results_stack_page.set_badge_number(HashResultRow.get_counter() - HashResultRow.get_counter_hidden())
@@ -1519,9 +1574,9 @@ class Application(Adw.Application):
         self.quit()
 
     def on_set_recursive_mode(self, action, param):
-        value: str = param.get_string()
         win: MainWindow = self.props.active_window
         if win:
+            value: str = param.get_string()
             win.pref.setting_gitignore.set_active(value == "yes")
             win.pref.setting_recursive.set_active(value == "yes")
             self.logger.info(f"Recursive mode set to {value} via action")
