@@ -1104,14 +1104,7 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_main_content(self):
         self.main_content_overlay = Gtk.Overlay()
 
-        self.spinner = Gtk.Spinner()
-        self.spinner.set_size_request(100, 100)
-        self.spinner.set_valign(Gtk.Align.CENTER)
-        self.spinner.start()
-
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-
-        self.main_content_overlay.add_overlay(self.spinner)
         self.main_content_overlay.add_overlay(self.main_box)
 
         self.view_stack = Adw.ViewStack()
@@ -1188,7 +1181,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
-        self.progress_bar.set_show_text(False)
         self.progress_bar.set_opacity(0)
 
     def setup_drag_and_drop(self):
@@ -1257,14 +1249,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def start_job(self, paths: list[Path] | list[Gio.File], hashing_algorithm: str | list | None = None):
         self.cancel_event.clear()
-
         self.progress_bar.set_opacity(1.0)
-        self.spinner.set_opacity(1.0)
-        self.spinner.set_visible(True)
-
         self.button_cancel.set_visible(True)
-
-        self.toolbar_view.set_content(self.main_content_overlay)
 
         self.processing_thread = threading.Thread(
             target=self.calculate_hashes,
@@ -1278,7 +1264,7 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.timeout_add(50, self.process_queue, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
     def process_queue(self):
-        queue_empty = self.queue_handler.empty()
+        queue_empty = self.queue_handler.is_empty()
         job_done = self.progress_bar.get_fraction() == 1.0
 
         if self.cancel_event.is_set() or (queue_empty and job_done):
@@ -1288,7 +1274,7 @@ class MainWindow(Adw.ApplicationWindow):
         iterations = 0
         while iterations < 100:
             try:
-                update = self.queue_handler.get_nowait()
+                update = self.queue_handler.get_update()
             except Empty:
                 break
 
@@ -1317,9 +1303,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def hide_progress(self):
         self.animate_opacity(self.progress_bar, 1, 0, 500)
-        self.animate_opacity(self.spinner, 1, 0, 500)
         GLib.timeout_add(1000, self.progress_bar.set_fraction, 0.0, priority=GLib.PRIORITY_DEFAULT)
-        GLib.timeout_add(1000, self.spinner.set_visible, False, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(1000, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
     def notify_limit_breach(self):
