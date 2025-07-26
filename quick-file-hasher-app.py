@@ -1249,7 +1249,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def start_job(self, paths: list[Path] | list[Gio.File], hashing_algorithm: str | list | None = None):
         self.cancel_event.clear()
-        self.progress_bar.set_opacity(1.0)
         self.button_cancel.set_visible(True)
 
         self.processing_thread = threading.Thread(
@@ -1261,9 +1260,17 @@ class MainWindow(Adw.ApplicationWindow):
             daemon=True,
         )
         self.processing_thread.start()
+        GLib.timeout_add(500, self.first_result, priority=GLib.PRIORITY_DEFAULT_IDLE)
         GLib.timeout_add(50, self.process_queue, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
+    def first_result(self):
+        if not (HashResultRow.get_counter() > 0 or HashErrorRow.get_counter() > 0):
+            return True
+        self.has_results()
+
     def process_queue(self):
+        self.progress_bar.set_opacity(1.0)
+
         queue_empty = self.queue_handler.is_empty()
         job_done = self.progress_bar.get_fraction() == 1.0
 
@@ -1303,7 +1310,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def hide_progress(self):
         self.animate_opacity(self.progress_bar, 1, 0, 500)
-        GLib.timeout_add(1000, self.progress_bar.set_fraction, 0.0, priority=GLib.PRIORITY_DEFAULT)
+        GLib.timeout_add(500, self.progress_bar.set_fraction, 0.0, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(1000, self.scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
 
     def notify_limit_breach(self):
