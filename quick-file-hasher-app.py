@@ -180,14 +180,21 @@ class Preferences(Adw.PreferencesDialog):
     def __init__(self, **kwargs):
         if hasattr(self, "_initialized"):
             return
-
         super().__init__(**kwargs)
         self.logger = get_logger(self.__class__.__name__)
         self.set_title("Preferences")
+        self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
+        self.set_search_enabled(True)
 
         self.load_config_file()
+        self.setup_processing_page()
+        self.setup_saving_page()
+        self.setup_hashing_page()
 
-        # 1. Processing Page
+        self.process_env_variables()
+        self._initialized = True
+
+    def setup_processing_page(self):
         processing_page = Adw.PreferencesPage()
         processing_page.set_title("Processing")
         processing_page.set_icon_name("edit-find-symbolic")
@@ -214,7 +221,7 @@ class Preferences(Adw.PreferencesDialog):
         processing_group.add(child=self.setting_gitignore)
         processing_group.add(self.create_buttons())
 
-        # 2. Saving Page
+    def setup_saving_page(self):
         saving_page = Adw.PreferencesPage()
         saving_page.set_title("Saving")
         saving_page.set_icon_name("document-save-symbolic")
@@ -233,10 +240,9 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
 
         saving_group.add(child=self.setting_save_errors)
-
         saving_group.add(child=self.create_buttons())
 
-        # 3. Hashing Page
+    def setup_hashing_page(self):
         hashing_page = Adw.PreferencesPage()
         hashing_page.set_title("Hashing")
         hashing_page.set_icon_name("dialog-password-symbolic")
@@ -266,19 +272,15 @@ class Preferences(Adw.PreferencesDialog):
         self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.config["default_hash_algorithm"]))
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
+
         hashing_group.add(child=self.drop_down_algo_button)
-
         hashing_group.add(child=self.create_buttons())
-
-        self.process_env_variables()
-        self._initialized = True
 
     def create_buttons(self):
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-        spacer = Gtk.Separator()
+        spacer = Gtk.Box()
         spacer.set_vexpand(True)
-        spacer.set_opacity(0)
         main_box.append(spacer)
 
         button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -304,9 +306,9 @@ class Preferences(Adw.PreferencesDialog):
         try:
             if CONFIG_FILE.exists():
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    user_settings = json.load(f)
+                    config = json.load(f)
 
-                self.config.update(user_settings)
+                self.config.update(config)
                 self.logger.debug(f"Loaded preferences from {CONFIG_FILE}")
 
         except json.JSONDecodeError as e:
@@ -1320,11 +1322,11 @@ class MainWindow(Adw.ApplicationWindow):
 
             elif kind == "result":
                 iterations += 1
-                self.ui_results.append(HashResultRow(*update[1:]))
+                GLib.timeout_add(500, self.ui_results.append, HashResultRow(*update[1:]))
 
             elif kind == "error":
                 iterations += 1
-                self.ui_errors.append(HashErrorRow(*update[1:]))
+                GLib.timeout_add(500, self.ui_errors.append, HashErrorRow(*update[1:]))
 
         return True  # Continue monitoring
 
