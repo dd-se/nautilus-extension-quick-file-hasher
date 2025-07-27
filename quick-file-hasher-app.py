@@ -192,6 +192,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setup_hashing_page()
 
         self.process_env_variables()
+        self.connect("closed", self.on_close)
         self._initialized = True
 
     def setup_processing_page(self):
@@ -236,7 +237,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors.set_title(title="Save errors")
         self.setting_save_errors.set_subtitle(subtitle="Save errors to results file or clipboard")
         self.setting_save_errors.set_active(self.config["save_errors"])
-        self.setting_save_errors.connect("notify::active", self.on_save_errors_toggled)
+        self.setting_save_errors.connect("notify::active", lambda *_: self.get_root().has_results())
         self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
 
         saving_group.add(child=self.setting_save_errors)
@@ -389,8 +390,8 @@ class Preferences(Adw.PreferencesDialog):
             self.config["default_hash_algorithm"] = selected_hashing_algorithm
             self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
 
-    def on_save_errors_toggled(self, row: Adw.SwitchRow, param: GObject.ParamSpec):
-        self.get_root().has_results()
+    def on_close(self, _):
+        self.get_root().search_entry.grab_focus()
 
 
 class IgnoreRule:
@@ -962,7 +963,7 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_window_key_controller(self):
         window_key_controller = Gtk.EventControllerKey()
         window_key_controller.connect("key-pressed", self.on_window_key_pressed)
-        self.add_controller(window_key_controller)
+        self.toolbar_view.add_controller(window_key_controller)
 
     def build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -1449,7 +1450,6 @@ class MainWindow(Adw.ApplicationWindow):
     def on_window_key_pressed(self, controller, keyval, keycode, state):
         if self.toolbar_view.get_content() is not self.main_content_overlay:
             return
-
         ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
         if not self.search_entry.has_focus() and not ctrl_pressed:
             self.search_entry.set_visible(True)
