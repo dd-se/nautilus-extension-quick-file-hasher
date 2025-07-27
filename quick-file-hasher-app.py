@@ -237,7 +237,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setting_save_errors.set_title(title="Save errors")
         self.setting_save_errors.set_subtitle(subtitle="Save errors to results file or clipboard")
         self.setting_save_errors.set_active(self.config["save_errors"])
-        self.setting_save_errors.connect("notify::active", lambda *_: self.get_root().has_results())
+        self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
 
         saving_group.add(child=self.setting_save_errors)
@@ -313,10 +313,12 @@ class Preferences(Adw.PreferencesDialog):
                 self.logger.debug(f"Loaded preferences from {CONFIG_FILE}")
 
         except json.JSONDecodeError as e:
-            self.logger.error(f"Error decoding JSON from {CONFIG_FILE}: {e}. Using defaults.")
+            self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
+            MainWindow().add_toast(f"Error decoding JSON from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
         except Exception as e:
-            self.logger.error(f"Unexpected error loading config from {CONFIG_FILE}: {e}. Using defaults.")
+            self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
+            MainWindow().add_toast(f"Unexpected error loading config from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
     def save_preferences_to_config_file(self):
         try:
@@ -391,7 +393,7 @@ class Preferences(Adw.PreferencesDialog):
             self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
 
     def on_close(self, _):
-        self.get_root().search_entry.grab_focus()
+        MainWindow().search_entry.grab_focus()
 
 
 class IgnoreRule:
@@ -512,12 +514,11 @@ class QueueUpdateHandler:
 class CalculateHashes:
     def __init__(
         self,
-        preferences: "Preferences",
         queue: QueueUpdateHandler,
         event: threading.Event,
     ):
         self.logger = get_logger(self.__class__.__name__)
-        self.pref = preferences
+        self.pref: Preferences = Preferences()
         self.queue_handler = queue
         self.cancel_event = event
         self.total_bytes = 0
@@ -707,7 +708,6 @@ class HashRow(Adw.ActionRow):
     def on_delete_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
         parent: list[HashRow] = self.get_parent()
-        main_window: MainWindow = self.get_root()
         anim = Adw.TimedAnimation(
             widget=self,
             value_from=1.0,
@@ -728,7 +728,7 @@ class HashRow(Adw.ActionRow):
                         row.set_hidden_result(False)
                         break
 
-            main_window.has_results()
+            MainWindow().has_results()
 
         anim.connect("done", on_fade_done)
         anim.play()
@@ -839,17 +839,15 @@ class HashResultRow(HashRow):
         select_all_button.connect("clicked", on_button_click, True)
         deselect_all_button.connect("clicked", on_button_click, False)
 
-        main_window: MainWindow = button.get_root()
-
         def on_response(_, response_id):
             if response_id == "compute":
                 selected_algos = [algo for (check, algo) in switches if check.get_active()]
                 if selected_algos:
                     paths = [self.path] * len(selected_algos)
-                    main_window.start_job(paths, selected_algos)
+                    MainWindow().start_job(paths, selected_algos)
 
         dialog.connect("response", on_response)
-        dialog.present(main_window)
+        dialog.present(MainWindow())
 
     def on_copy_clicked(self, button: Gtk.Button):
         button.set_sensitive(False)
@@ -860,18 +858,17 @@ class HashResultRow(HashRow):
 
     def on_compare_clicked(self, button: Gtk.Button):
         def handle_clipboard_comparison(clipboard, result):
-            main_window: MainWindow = button.get_root()
             try:
                 self.button_compare.set_sensitive(False)
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
                 if clipboard_text == self.hash_value:
                     self.set_icon_("object-select-symbolic")
                     self.set_css_("success")
-                    main_window.add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
+                    MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
                 else:
                     self.set_icon_("dialog-error-symbolic")
                     self.set_css_("error")
-                    main_window.add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
+                    MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
 
                 GLib.timeout_add(
                     3000,
@@ -883,7 +880,7 @@ class HashResultRow(HashRow):
                 )
             except Exception as e:
                 self.logger.exception(f"Error reading clipboard: {e}")
-                main_window.add_toast(f"<big>❌ Clipboard read error: {e}</big>")
+                MainWindow().add_toast(f"<big>❌ Clipboard read error: {e}</big>")
 
         clipboard = button.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
@@ -940,22 +937,31 @@ class HashErrorRow(HashRow):
 class MainWindow(Adw.ApplicationWindow):
     DEFAULT_WIDTH = 970
     DEFAULT_HEIGHT = 650
+    _instance = None
 
-    def __init__(self, app, paths: list[Path] | list[Gio.File] | None = None):
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, app=None, paths: list[Path] | list[Gio.File] | None = None):
+        if hasattr(self, "_initialized"):
+            return
         super().__init__(application=app)
         self.logger = get_logger(self.__class__.__name__)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
+        self.build_ui()
+        self._initialized = True
 
         self.pref = Preferences()
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self.calculate_hashes = CalculateHashes(
-            self.pref,
             self.queue_handler,
             self.cancel_event,
         )
-        self.build_ui()
+
         if paths:
             self.start_job(paths)
 
