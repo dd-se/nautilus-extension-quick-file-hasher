@@ -11,6 +11,7 @@ shortcut:
 	@echo "Version=$(VERSION)" >> $(SHORTCUT_NAME)
 	@echo "Name=$(APPNAME)" >> $(SHORTCUT_NAME)
 	@echo "Comment=Python-based file hashing utility for Nautilus" >> $(SHORTCUT_NAME)
+	@echo "Icon=document-properties" >> $(SHORTCUT_NAME)
 	@echo "Exec=python3 $(INSTALL_DIR)/$(EXTENSION)" >> $(SHORTCUT_NAME)
 	@echo "Type=Application" >> $(SHORTCUT_NAME)
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)

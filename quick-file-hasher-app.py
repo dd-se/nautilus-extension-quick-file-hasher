@@ -957,10 +957,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.pref = Preferences()
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
-        self.calculate_hashes = CalculateHashes(
-            self.queue_handler,
-            self.cancel_event,
-        )
+        self.calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
         if paths:
             self.start_job(paths)
@@ -1278,6 +1275,7 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_about_dialog(self):
         self.about = Adw.AboutDialog()
         self.about.set_application_name("Quick File Hasher")
+        self.about.set_application_icon("document-properties")
         self.about.set_version(APP_VERSION)
         self.about.set_developer_name("Doğukan Doğru (dd-se)")
         self.about.set_license_type(Gtk.License(Gtk.License.MIT_X11))
@@ -1358,8 +1356,9 @@ class MainWindow(Adw.ApplicationWindow):
         return True  # Continue monitoring
 
     def processing_complete(self):
+        if self.cancel_event.is_set():
+            self.queue_handler.reset()
         self.calculate_hashes.reset_counters()
-        self.queue_handler.reset()
 
         self.button_cancel.set_visible(False)
         self.hide_progress()
