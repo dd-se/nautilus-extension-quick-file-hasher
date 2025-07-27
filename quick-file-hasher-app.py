@@ -956,14 +956,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.cancel_event,
         )
         self.build_ui()
-        self.setup_window_key_controller()
         if paths:
             self.start_job(paths)
-
-    def setup_window_key_controller(self):
-        window_key_controller = Gtk.EventControllerKey()
-        window_key_controller.connect("key-pressed", self.on_window_key_pressed)
-        self.toolbar_view.add_controller(window_key_controller)
 
     def build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -985,6 +979,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
         self.setup_drag_and_drop()
+
+        self.setup_about_dialog()
 
     def setup_toolbar_view(self):
         self.empty_placeholder = Adw.StatusPage(
@@ -1132,6 +1128,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.header_title_widget = Gtk.Label(label="<big><b>Quick File Hasher</b></big>", use_markup=True)
         self.header_bar.set_title_widget(self.header_title_widget)
         self.setup_menu()
+        self.setup_search()
 
     def setup_main_content(self):
         self.main_content_overlay = Gtk.Overlay()
@@ -1192,6 +1189,7 @@ class MainWindow(Adw.ApplicationWindow):
             if keyval == Gdk.KEY_Escape:
                 self.search_entry.set_text("")
                 self.search_entry.set_visible(False)
+            return True
 
         key_controller = Gtk.EventControllerKey()
         key_controller.connect("key-pressed", on_search_key_pressed)
@@ -1204,12 +1202,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.menu.append("Preferences", "win.preferences")
         self.menu.append("About", "win.about")
         self.menu.append("Quit", "app.quit")
-        self.create_win_action("about", self.on_click_present_about_dialog)
+        self.create_win_action("about", lambda *_: self.about.present(self))
         self.create_win_action("preferences", lambda *_: self.pref.present(self))
         self.button_menu = Gtk.MenuButton()
         self.button_menu.set_icon_name("open-menu-symbolic")
         self.button_menu.set_menu_model(self.menu)
         self.header_bar.pack_end(self.button_menu)
+
+    def setup_search(self):
+        self.button_show_searchbar = Gtk.ToggleButton()
+        self.button_show_searchbar.set_tooltip_text("Show search bar to filter results and errors")
+        self.button_show_searchbar.set_sensitive(False)
+        self.button_show_searchbar.set_icon_name(icon_name="system-search-symbolic")
+
+        self.button_show_searchbar.connect("clicked", self.on_click_show_searchbar)
+        self.header_bar.pack_end(self.button_show_searchbar)
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
@@ -1261,6 +1268,19 @@ class MainWindow(Adw.ApplicationWindow):
             ),
         )
         self.add_controller(self.drop)
+
+    def setup_about_dialog(self):
+        self.about = Adw.AboutDialog()
+        self.about.set_application_name("Quick File Hasher")
+        self.about.set_version(APP_VERSION)
+        self.about.set_developer_name("Doğukan Doğru (dd-se)")
+        self.about.set_license_type(Gtk.License(Gtk.License.MIT_X11))
+        self.about.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
+        self.about.set_website("https://github.com/dd-se/nautilus-extension-quick-file-hasher")
+        self.about.set_issue_url("https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues")
+        self.about.set_copyright("© 2025 Doğukan Doğru (dd-se)")
+        self.about.set_developers(["dd-se https://github.com/dd-se"])
+        self.about.connect("closed", lambda _: self.search_entry.grab_focus())
 
     def sort_by_hierarchy(self, row1: HashResultRow, row2: HashResultRow) -> int:
         """
@@ -1414,6 +1434,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_copy_all.set_sensitive(has_results or (has_errors and save_errors))
         self.button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(has_results or has_errors)
+        self.button_show_searchbar.set_sensitive(has_results or has_errors)
         self.update_badge_numbers()
         self.notify_limit_breach()
 
@@ -1447,35 +1468,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         return output
 
-    def on_window_key_pressed(self, controller, keyval, keycode, state):
-        if self.toolbar_view.get_content() is not self.main_content_overlay:
-            return
-        ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
-        if not self.search_entry.has_focus() and not ctrl_pressed:
+    def on_click_show_searchbar(self, *_):
+        if self.button_show_searchbar.is_sensitive():
             self.search_entry.set_visible(True)
             self.search_entry.grab_focus()
-
-            if keyval == Gdk.KEY_Escape:
-                self.search_entry.set_text("")
-                self.search_entry.set_visible(False)
-
-            elif keyval_to_unicode := Gdk.keyval_to_unicode(keyval):
-                char = chr(keyval_to_unicode)
-                self.search_entry.set_text(f"{self.search_entry.get_text()}{char if char.isprintable() else ''}")
-                self.search_entry.set_position(-1)
-
-    def on_click_present_about_dialog(self, *_):
-        about_dialog = Adw.AboutDialog()
-        about_dialog.set_application_name("Quick File Hasher")
-        about_dialog.set_version(APP_VERSION)
-        about_dialog.set_developer_name("Doğukan Doğru (dd-se)")
-        about_dialog.set_license_type(Gtk.License(Gtk.License.MIT_X11))
-        about_dialog.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
-        about_dialog.set_website("https://github.com/dd-se/nautilus-extension-quick-file-hasher")
-        about_dialog.set_issue_url("https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues")
-        about_dialog.set_copyright("© 2025 Doğukan Doğru (dd-se)")
-        about_dialog.set_developers(["dd-se https://github.com/dd-se"])
-        about_dialog.present(self)
+        else:
+            self.add_toast("<big>🔍 No Results. Search is unavailable.</big>")
 
     def on_select_files_clicked(self, _):
         file_dialog = Gtk.FileDialog()
@@ -1588,8 +1586,9 @@ class Application(Adw.Application):
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
         self.logger = get_logger(self.__class__.__name__)
-        self.create_action("quit", self.on_click_quit)
+        self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
         self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
+        self.create_action("show-searchbar", lambda *_: self.props.active_window.on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
 
     def on_click_quit(self, *_):
         self.quit()
