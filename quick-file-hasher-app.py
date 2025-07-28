@@ -168,7 +168,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return self.create_menu(files, 2)
 
 
-class Preferences(Adw.PreferencesDialog):
+class Preferences(Adw.PreferencesWindow):
     _instance = None
     _notified_of_limit_breach = False
 
@@ -183,6 +183,10 @@ class Preferences(Adw.PreferencesDialog):
         super().__init__(**kwargs)
         self.logger = get_logger(self.__class__.__name__)
         self.set_title("Preferences")
+        self.set_transient_for(MainWindow())
+        self.set_modal(True)
+        self.set_hide_on_close(True)
+
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
         self.set_search_enabled(True)
 
@@ -192,7 +196,7 @@ class Preferences(Adw.PreferencesDialog):
         self.setup_hashing_page()
 
         self.process_env_variables()
-        self.connect("closed", self.on_close)
+        self.connect("close-request", self.on_close)
         self._initialized = True
 
     def setup_processing_page(self):
@@ -983,7 +987,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.setup_drag_and_drop()
 
-        self.setup_about_dialog()
+        self.setup_about_window()
+
+        self.setup_shortcuts()
 
     def setup_toolbar_view(self):
         self.empty_placeholder = Adw.StatusPage(
@@ -1096,14 +1102,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
 
-        self.button_sort.connect(
-            "clicked",
-            lambda _: (
-                self.ui_results.set_sort_func(self.sort_by_hierarchy),
-                self.ui_results.set_sort_func(None),
-                self.add_toast("<big>✅ Results sorted by file path</big>"),
-            ),
-        )
+        self.button_sort.connect("clicked", self.on_sort_clicked)
         self.second_top_bar_box.append(self.button_sort)
 
         self.button_clear = Gtk.Button(label="Clear")
@@ -1111,19 +1110,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_clear.add_css_class("destructive-action")
         self.button_clear.set_valign(Gtk.Align.CENTER)
         self.button_clear.set_tooltip_text("Clear all results")
-        self.button_clear.connect(
-            "clicked",
-            lambda _: (
-                HashResultRow.reset_counter(),
-                HashErrorRow.reset_counter(),
-                self.ui_results.remove_all(),
-                self.ui_errors.remove_all(),
-                self.pref.set_notified_of_limit_breach(False),
-                self.has_results(),
-                self.view_stack.set_visible_child_name("results"),
-                self.add_toast("<big>✅ Results cleared</big>"),
-            ),
-        )
+        self.button_clear.connect("clicked", self.on_clear_clicked)
         self.second_top_bar_box.append(self.button_clear)
 
     def setup_header_bar(self):
@@ -1187,26 +1174,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.search_entry.set_visible(False)
         for ui_list in (self.ui_results, self.ui_errors):
             self.search_entry.connect("search-changed", self.on_search_changed, ui_list)
-
-        def on_search_key_pressed(controller, keyval, keycode, state):
-            if keyval == Gdk.KEY_Escape:
-                self.search_entry.set_text("")
-                self.search_entry.set_visible(False)
-            return True
-
-        key_controller = Gtk.EventControllerKey()
-        key_controller.connect("key-pressed", on_search_key_pressed)
-        self.search_entry.add_controller(key_controller)
         self.search_query = ""
         self.main_box.append(self.search_entry)
 
     def setup_menu(self):
         self.menu = Gio.Menu()
-        self.menu.append("Preferences", "win.preferences")
-        self.menu.append("About", "win.about")
+        self.menu.append("Preferences", "app.preferences")
+        self.menu.append("Keyboard Shortcuts", "app.shortcuts")
+        self.menu.append("About", "app.about")
         self.menu.append("Quit", "app.quit")
-        self.create_win_action("about", lambda *_: self.about.present(self))
-        self.create_win_action("preferences", lambda *_: self.pref.present(self))
         self.button_menu = Gtk.MenuButton()
         self.button_menu.set_icon_name("open-menu-symbolic")
         self.button_menu.set_menu_model(self.menu)
@@ -1220,6 +1196,50 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.button_show_searchbar.connect("clicked", self.on_click_show_searchbar)
         self.header_bar.pack_end(self.button_show_searchbar)
+
+    def setup_shortcuts(self):
+        shortcuts = [
+            {
+                "title": "File Operations",
+                "shortcuts": [
+                    {"title": "Open Files", "accelerator": "<Ctrl>O"},
+                    {"title": "Save Results", "accelerator": "<Ctrl>S"},
+                    {"title": "Quit Application", "accelerator": "<Ctrl>Q"},
+                ],
+            },
+            {
+                "title": "View & Search",
+                "shortcuts": [
+                    {"title": "Search Results", "accelerator": "<Ctrl>F"},
+                    {"title": "Hide Searchbar", "accelerator": "Escape"},
+                    {"title": "Sort Results", "accelerator": "<Ctrl>R"},
+                    {"title": "Clear Results", "accelerator": "<Ctrl>L"},
+                ],
+            },
+            {
+                "title": "Clipboard",
+                "shortcuts": [
+                    {"title": "Copy All Results", "accelerator": "<Ctrl>C"},
+                ],
+            },
+        ]
+
+        self.shortcuts_window = Gtk.ShortcutsWindow()
+        self.shortcuts_window.set_modal(True)
+        self.shortcuts_window.set_transient_for(self)
+        self.shortcuts_window.set_hide_on_close(True)
+
+        shortcuts_section = Gtk.ShortcutsSection(section_name="shortcuts", max_height=12)
+
+        for group in shortcuts:
+            shortcuts_group = Gtk.ShortcutsGroup(title=group["title"])
+
+            for shortcut in group["shortcuts"]:
+                shortcuts_group.add_shortcut(Gtk.ShortcutsShortcut(title=shortcut["title"], accelerator=shortcut["accelerator"]))
+
+            shortcuts_section.add_group(shortcuts_group)
+
+        self.shortcuts_window.add_section(shortcuts_section)
 
     def setup_progress_bar(self):
         self.progress_bar = Gtk.ProgressBar()
@@ -1272,19 +1292,21 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_controller(self.drop)
 
-    def setup_about_dialog(self):
-        self.about = Adw.AboutDialog()
-        self.about.set_application_name("Quick File Hasher")
-        self.about.set_application_icon("document-properties")
-        self.about.set_version(APP_VERSION)
-        self.about.set_developer_name("Doğukan Doğru (dd-se)")
-        self.about.set_license_type(Gtk.License(Gtk.License.MIT_X11))
-        self.about.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
-        self.about.set_website("https://github.com/dd-se/nautilus-extension-quick-file-hasher")
-        self.about.set_issue_url("https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues")
-        self.about.set_copyright("© 2025 Doğukan Doğru (dd-se)")
-        self.about.set_developers(["dd-se https://github.com/dd-se"])
-        self.about.connect("closed", lambda _: self.search_entry.grab_focus())
+    def setup_about_window(self):
+        self.about_window = Adw.AboutWindow.new()
+        self.about_window.set_hide_on_close(True)
+        self.about_window.set_modal(True)
+        self.about_window.set_transient_for(self)
+        self.about_window.set_application_name("Quick File Hasher")
+        self.about_window.set_application_icon("document-properties")
+        self.about_window.set_version(APP_VERSION)
+        self.about_window.set_developer_name("Doğukan Doğru (dd-se)")
+        self.about_window.set_license_type(Gtk.License(Gtk.License.MIT_X11))
+        self.about_window.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
+        self.about_window.set_website("https://github.com/dd-se/nautilus-extension-quick-file-hasher")
+        self.about_window.set_issue_url("https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues")
+        self.about_window.set_copyright("© 2025 Doğukan Doğru (dd-se)")
+        self.about_window.set_developers(["dd-se https://github.com/dd-se"])
 
     def sort_by_hierarchy(self, row1: HashResultRow, row2: HashResultRow) -> int:
         """
@@ -1480,6 +1502,10 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.add_toast("<big>🔍 No Results. Search is unavailable.</big>")
 
+    def on_hide_searchbar(self):
+        self.search_entry.set_text("")
+        self.search_entry.set_visible(False)
+
     def on_select_files_clicked(self, _):
         file_dialog = Gtk.FileDialog()
         file_dialog.set_title(title="Select files")
@@ -1512,32 +1538,53 @@ class MainWindow(Adw.ApplicationWindow):
         if self.pref.notified_of_limit_breach():
             self.add_toast("<big>❌ Too many results to copy. Please use the Save button instead.</big>")
             return
-        output = self.results_to_txt()
-        clipboard = button.get_clipboard()
-        clipboard.set(output)
-        self.add_toast("<big>✅ Results copied to clipboard</big>")
+        if self.button_copy_all.is_sensitive():
+            output = self.results_to_txt()
+            clipboard = self.get_clipboard()
+            clipboard.set(output)
+            self.add_toast("<big>✅ Results copied to clipboard</big>")
 
     def on_save_clicked(self, widget):
+        if not self.button_save.is_sensitive():
+            return
         file_dialog = Gtk.FileDialog()
         file_dialog.set_title(title="Save")
         file_dialog.set_initial_name(name="results.txt")
-        file_dialog.set_modal(modal=True)
 
-        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task):
-            local_file = file_dialog.save_finish(gio_task)
-            path: str = local_file.get_path()
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(self.results_to_txt())
-                self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
-            except Exception as e:
-                self.add_toast(f"<big>❌ Failed to save: {e}</big>")
+        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
+            if not gio_task.had_error():
+                try:
+                    local_file = file_dialog.save_finish(gio_task)
+                    path: str = local_file.get_path()
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(self.results_to_txt())
+                    self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
+                except Exception as e:
+                    self.logger.error(f"Unexcepted error occured for {path}: {e}")
+                    self.add_toast(f"<big>❌ Failed to save: {e}</big>")
 
         file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
 
     def on_search_changed(self, entry: Gtk.SearchEntry, ui_list: Gtk.ListBox):
         self.search_query = entry.get_text().lower()
         ui_list.invalidate_filter()
+
+    def on_sort_clicked(self, _):
+        if self.button_sort.is_sensitive():
+            self.ui_results.set_sort_func(self.sort_by_hierarchy)
+            self.ui_results.set_sort_func(None)
+            self.add_toast("<big>✅ Results sorted by file path</big>")
+
+    def on_clear_clicked(self, _):
+        if self.button_clear.is_sensitive():
+            HashResultRow.reset_counter()
+            HashErrorRow.reset_counter()
+            self.ui_results.remove_all()
+            self.ui_errors.remove_all()
+            self.pref.set_notified_of_limit_breach(False)
+            self.has_results()
+            self.view_stack.set_visible_child_name("results")
+            self.add_toast("<big>✅ Results cleared</big>")
 
     def filter_func(self, row: HashResultRow):
         if not self.search_query:
@@ -1591,12 +1638,21 @@ class Application(Adw.Application):
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
         self.logger = get_logger(self.__class__.__name__)
-        self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
-        self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
-        self.create_action("show-searchbar", lambda *_: self.props.active_window.on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
+        self.create_action("show-searchbar", lambda *_: MainWindow().on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
+        self.create_action("hide-searchbar", lambda *_: MainWindow().on_hide_searchbar(), shortcuts=["Escape"])
 
-    def on_click_quit(self, *_):
-        self.quit()
+        self.create_action("results-copy", lambda *_: MainWindow().on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
+        self.create_action("results-save", lambda *_: MainWindow().on_save_clicked(_), shortcuts=["<Ctrl>S"])
+        self.create_action("results-sort", lambda *_: MainWindow().on_sort_clicked(_), shortcuts=["<Ctrl>R"])
+        self.create_action("results-clear", lambda *_: MainWindow().on_clear_clicked(_), shortcuts=["<Ctrl>L"])
+
+        self.create_action("open-files", lambda *_: MainWindow().on_select_files_clicked(_), shortcuts=["<Ctrl>O"])
+        self.create_action("preferences", lambda *_: Preferences().present(), shortcuts=["<Ctrl>comma"])
+        self.create_action("shortcuts", lambda *_: MainWindow().shortcuts_window.present(), shortcuts=["<Ctrl>question"])
+        self.create_action("about", lambda *_: MainWindow().about_window.present())
+
+        self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
+        self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
 
     def on_set_recursive_mode(self, action, param):
         win: MainWindow = self.props.active_window
@@ -1605,6 +1661,9 @@ class Application(Adw.Application):
             win.pref.setting_gitignore.set_active(state)
             win.pref.setting_recursive.set_active(state)
             self.logger.info(f"Recursive mode set to {state} via action")
+
+    def on_click_quit(self, *_):
+        self.quit()
 
     def do_activate(self):
         self.logger.info(f"App {self.get_application_id()} activated")
