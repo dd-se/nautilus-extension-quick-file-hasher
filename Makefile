@@ -8,10 +8,15 @@ INSTALL_DIR = $(HOME)/.local/bin
 EXTENSION_DIR = $(HOME)/.local/share/nautilus-python/extensions
 SHORTCUT_DIR = $(HOME)/.local/share/applications
 
-.PHONY: shortcut install uninstall symlink
+.PHONY: shortcut install uninstall symlink makedir
+
+makedir:
+	@mkdir -p $(INSTALL_DIR)
+	@mkdir -p $(EXTENSION_DIR)
+	@mkdir -p $(SHORTCUT_DIR)
+	@echo "Created directories: $(INSTALL_DIR), $(EXTENSION_DIR), $(SHORTCUT_DIR)"
 
 shortcut:
-	@echo "Creating .desktop file: $(SHORTCUT_NAME)"
 	@echo "[Desktop Entry]" > $(SHORTCUT_NAME)
 	@echo "Version=$(VERSION)" >> $(SHORTCUT_NAME)
 	@echo "Name=$(NAME)" >> $(SHORTCUT_NAME)
@@ -22,13 +27,10 @@ shortcut:
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
 	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
-	@echo ".desktop file created in current directory"
+	@echo "$(SHORTCUT_NAME) file created in current directory"
 
-install: shortcut
-	@mkdir -p $(INSTALL_DIR)
-	@mkdir -p $(EXTENSION_DIR)
-	@mkdir -p $(SHORTCUT_DIR)
 
+install: makedir shortcut
 	@install -m 755 $(APP) $(INSTALL_DIR)
 	@echo "Installed $(APP) to $(INSTALL_DIR)"
 
@@ -54,11 +56,7 @@ uninstall:
 
 	@echo "Uninstallation completed successfully"
 
-symlink: shortcut
-	@mkdir -p $(INSTALL_DIR)
-	@mkdir -p $(EXTENSION_DIR)
-	@mkdir -p $(SHORTCUT_DIR)
-
+symlink: makedir shortcut
 	@ln -sf $(PWD)/$(APP) $(INSTALL_DIR)/
 	@echo "Symlink for $(APP) created in $(INSTALL_DIR)"
 

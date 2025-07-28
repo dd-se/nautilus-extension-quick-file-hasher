@@ -730,7 +730,7 @@ class HashRow(Adw.ActionRow):
             self.decrement_counter_hidden()
         return self._hidden_result
 
-    def on_delete_clicked(self, button: Gtk.Button):
+    def on_click_delete(self, button: Gtk.Button):
         button.set_sensitive(False)
         parent: list[HashRow] = self.get_parent()
         anim = Adw.TimedAnimation(
@@ -792,17 +792,17 @@ class HashResultRow(HashRow):
         self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
         self.button_copy_hash.set_valign(Gtk.Align.CENTER)
         self.button_copy_hash.set_tooltip_text("Copy hash")
-        self.button_copy_hash.connect("clicked", self.on_copy_clicked)
+        self.button_copy_hash.connect("clicked", self.on_click_copy)
 
         self.button_compare = Gtk.Button.new_from_icon_name("edit-paste-symbolic")
         self.button_compare.set_valign(Gtk.Align.CENTER)
         self.button_compare.set_tooltip_text("Compare with clipboard")
-        self.button_compare.connect("clicked", self.on_compare_clicked)
+        self.button_compare.connect("clicked", self.on_click_compare)
 
         self.button_delete = Gtk.Button.new_from_icon_name("user-trash-symbolic")
         self.button_delete.set_valign(Gtk.Align.CENTER)
         self.button_delete.set_tooltip_text("Remove this result")
-        self.button_delete.connect("clicked", self.on_delete_clicked)
+        self.button_delete.connect("clicked", self.on_click_delete)
 
         self.add_suffix(self.button_make_hashes)
         self.add_suffix(self.button_copy_hash)
@@ -815,11 +815,12 @@ class HashResultRow(HashRow):
         return f"{self.path}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
-        dialog = Adw.AlertDialog(body=f"<big><b>Select Additional Hashing Algorithms for {self.path.name}</b></big>", body_use_markup=True)
+        dialog = Adw.AlertDialog(body="<big><b>Select Hash Algorithms</b></big>", body_use_markup=True)
         dialog.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("compute", "Compute")
         dialog.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_response_enabled("compute", False)
         dialog.set_close_response("cancel")
 
         main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
@@ -841,6 +842,9 @@ class HashResultRow(HashRow):
         horizontal_container_2.append(deselect_all_button)
 
         switches: list[tuple[Adw.SwitchRow, str]] = []
+        can_compute = lambda *_: dialog.set_response_enabled("compute", any(s.get_active() for s, _ in switches))
+        on_button_click = lambda _, state: list(s.set_active(state) for s, _ in switches)
+
         count = 0
         for algo in Preferences().available_algorithms:
             if algo != self.algo:
@@ -849,7 +853,8 @@ class HashResultRow(HashRow):
                     current_list_box.add_css_class("boxed-list")
                     horizontal_container.append(current_list_box)
 
-                switch = Adw.SwitchRow()
+                switch = Adw.SwitchRow.new()
+                switch.connect("notify::active", can_compute)
                 switch.add_prefix(Gtk.Label(label=algo.upper()))
                 switch.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
 
@@ -857,31 +862,26 @@ class HashResultRow(HashRow):
                 current_list_box.append(switch)
                 count += 1
 
-        def on_button_click(_, state: bool):
-            for switch, _ in switches:
-                switch.set_active(state)
-
         select_all_button.connect("clicked", on_button_click, True)
         deselect_all_button.connect("clicked", on_button_click, False)
 
         def on_response(_, response_id):
             if response_id == "compute":
-                selected_algos = [algo for (check, algo) in switches if check.get_active()]
-                if selected_algos:
-                    paths = [self.path] * len(selected_algos)
-                    MainWindow().start_job(paths, selected_algos)
+                selected_algos = [algo for switch, algo in switches if switch.get_active()]
+                paths = [self.path] * len(selected_algos)
+                MainWindow().start_job(paths, selected_algos)
 
         dialog.connect("response", on_response)
         dialog.present(MainWindow())
 
-    def on_copy_clicked(self, button: Gtk.Button):
+    def on_click_copy(self, button: Gtk.Button):
         button.set_sensitive(False)
         button.get_clipboard().set(self.hash_value)
         original_child = button.get_child()
         button.set_child(Gtk.Label(label="Copied!"))
         GLib.timeout_add(1500, lambda: (button.set_child(original_child), button.set_sensitive(True)))
 
-    def on_compare_clicked(self, button: Gtk.Button):
+    def on_click_compare(self, button: Gtk.Button):
         def handle_clipboard_comparison(clipboard, result):
             try:
                 self.button_compare.set_sensitive(False)
@@ -1091,7 +1091,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.first_top_bar_box.append(self.header_bar)
 
     def setup_second_top_bar(self):
-        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=5)
+        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
 
         self.view_switcher = Adw.ViewSwitcher()
         self.view_switcher.set_hexpand(True)
@@ -1105,7 +1105,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.hidden_row_counter_content.set_tooltip_text("Number of hidden results. Use search to reveal them.")
         self.hidden_row_counter_content.set_icon_name(icon_name="help-about-symbolic")
         self.hidden_row_counter_content.set_label(label="Hidden: 0")
-
         self.hidden_row_counter_content.set_use_underline(use_underline=True)
         self.hidden_row_counter.set_child(self.hidden_row_counter_content)
         self.second_top_bar_box.append(self.hidden_row_counter)
@@ -1126,7 +1125,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_sensitive(False)
         self.button_sort.set_valign(Gtk.Align.CENTER)
         self.button_sort.set_tooltip_text("Sort results by path")
-
         self.button_sort.connect("clicked", self.on_sort_clicked)
         self.second_top_bar_box.append(self.button_sort)
 
@@ -1162,7 +1160,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_group.set_vexpand(True)
 
         self.ui_results = Gtk.ListBox()
-        self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.ui_results.set_selection_mode(Gtk.SelectionMode.BROWSE)
         self.ui_results.add_css_class("boxed-list")
         self.ui_results.set_filter_func(self.filter_func)
         self.results_group.add(self.ui_results)
