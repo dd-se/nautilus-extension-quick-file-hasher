@@ -40,6 +40,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Callable, Literal
 
+os.environ["LANG"] = "en_US.UTF-8"
 import gi  # type: ignore
 
 gi.require_version(namespace="Gtk", version="4.0")
