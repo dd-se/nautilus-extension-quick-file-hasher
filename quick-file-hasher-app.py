@@ -815,7 +815,7 @@ class HashResultRow(HashRow):
         return f"{self.path}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
-        dialog = Adw.AlertDialog(body="<big><b>Select Hashing Algorithms</b></big>", body_use_markup=True)
+        dialog = Adw.AlertDialog(body=f"<big><b>Select Additional Hashing Algorithms for {self.path.name}</b></big>", body_use_markup=True)
         dialog.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("compute", "Compute")
@@ -886,15 +886,22 @@ class HashResultRow(HashRow):
             try:
                 self.button_compare.set_sensitive(False)
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
+
                 if clipboard_text == self.hash_value:
                     self.set_icon_("object-select-symbolic")
                     self.set_css_("success")
                     MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
+
                 else:
                     self.set_icon_("dialog-error-symbolic")
                     self.set_css_("error")
                     MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
 
+            except Exception as e:
+                self.logger.exception(f"Error reading clipboard: {e}")
+                MainWindow().add_toast(f"<big>❌ Clipboard read error: {e}</big>")
+
+            finally:
                 GLib.timeout_add(
                     3000,
                     lambda: (
@@ -903,9 +910,6 @@ class HashResultRow(HashRow):
                         self.button_compare.set_sensitive(True),
                     ),
                 )
-            except Exception as e:
-                self.logger.exception(f"Error reading clipboard: {e}")
-                MainWindow().add_toast(f"<big>❌ Clipboard read error: {e}</big>")
 
         clipboard = button.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
