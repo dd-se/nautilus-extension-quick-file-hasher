@@ -12,10 +12,11 @@ shortcut:
 	@echo "Name=$(APPNAME)" >> $(SHORTCUT_NAME)
 	@echo "Comment=Python-based file hashing utility for Nautilus" >> $(SHORTCUT_NAME)
 	@echo "Icon=document-properties" >> $(SHORTCUT_NAME)
-	@echo "Exec=python3 $(INSTALL_DIR)/$(EXTENSION)" >> $(SHORTCUT_NAME)
+	@echo "Exec=python3 $(INSTALL_DIR)/$(EXTENSION) %U"  >> $(SHORTCUT_NAME)
 	@echo "Type=Application" >> $(SHORTCUT_NAME)
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
+	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
 	@echo ".desktop file created in current directory"
 
 install: shortcut

@@ -55,6 +55,13 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 - **Multi-Hash:**
   - This feature enables selection of additional hashing algorithms for the given file.
 
+## Arguments
+You can also run the app with additional command-line arguments for more control:
+
+`python3 app.py [file1] [file2] ... [folder69] [--recursive] [--gitignore] [--max-workers 4]  [--algo sha256]`
+
+Type `--help` for more information.
+
 
 ## Preferences
 
@@ -70,7 +77,7 @@ The **Preferences** dialog allows you to customize the application's behavior.
 - **Hashing Algorithm**
   - Select the default hashing algorithm from the list.
 
-**Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, environment variables can override these preferences at startup.
+#### **Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, environment variables and command-line arguments can override these preferences at startup.
 
 ## Screenshot
 

@@ -22,6 +22,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import argparse
 import hashlib
 import json
 import logging
@@ -56,7 +57,7 @@ DEFAULTS = {
     "default_hash_algorithm": "sha256",
     "max_visible_results": 100,
     "max_workers": 4,
-    "recursive_mode": False,
+    "recursive": False,
     "respect_gitignore": False,
     "save_errors": False,
 }
@@ -115,13 +116,12 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         self.logger.info(f"App {APP_ID} launched by file manager")
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
         cmd = ["python3", __file__] + file_paths
-        env = None
+        env = os.environ.copy()
         if recursive_mode:
-            env = os.environ.copy()
-            env["CH_RECURSIVE_MODE"] = "yes"
+            env["FILEMANAGER_RECURSIVE_MODE"] = "yes"
             os.system(f"gapplication action {APP_ID} set-recursive-mode \"'yes'\"")
-
         else:
+            env["FILEMANAGER_RECURSIVE_MODE"] = "no"
             os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
 
         subprocess.Popen(cmd, env=env)
@@ -190,12 +190,15 @@ class Preferences(Adw.PreferencesWindow):
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
         self.set_search_enabled(True)
 
-        self.load_config_file()
         self.setup_processing_page()
         self.setup_saving_page()
         self.setup_hashing_page()
 
-        self.process_env_variables()
+        self.load_config_file()
+        self.apply_config()
+        self.apply_arguments()
+        self.apply_env_variables()
+
         self.connect("close-request", self.on_close)
         self._initialized = True
 
@@ -213,15 +216,13 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_recursive.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="edit-find-symbolic"))
         self.setting_recursive.set_title(title="Recursive Traversal")
         self.setting_recursive.set_subtitle(subtitle="Enable to process all files in subdirectories")
-        self.setting_recursive.set_active(self.config["recursive_mode"])
-        self.setting_recursive.connect("notify::active", self.on_switch_row_changed, "recursive_mode")
+        self.setting_recursive.connect("notify::active", self.on_switch_row_changed, "recursive")
         processing_group.add(child=self.setting_recursive)
 
         self.setting_gitignore = Adw.SwitchRow()
         self.setting_gitignore.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="action-unavailable-symbolic"))
         self.setting_gitignore.set_title(title="Respect .gitignore")
         self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
-        self.setting_gitignore.set_active(self.config["respect_gitignore"])
         self.setting_gitignore.connect("notify::active", self.on_switch_row_changed, "respect_gitignore")
         processing_group.add(child=self.setting_gitignore)
         processing_group.add(self.create_buttons())
@@ -240,7 +241,6 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
         self.setting_save_errors.set_title(title="Save errors")
         self.setting_save_errors.set_subtitle(subtitle="Save errors to results file or clipboard")
-        self.setting_save_errors.set_active(self.config["save_errors"])
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
 
@@ -263,7 +263,6 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-working-symbolic"))
         self.setting_max_workers.set_title(title="Max Workers")
         self.setting_max_workers.set_subtitle(subtitle="Set how many files are hashed in parallel")
-        self.setting_max_workers.set_value(self.config["max_workers"])
         self.setting_max_workers.connect("notify::value", self.on_spin_row_changed, "max_workers")
         hashing_group.add(child=self.setting_max_workers)
 
@@ -274,7 +273,6 @@ class Preferences(Adw.PreferencesWindow):
         self.drop_down_algo_button.set_model(Gtk.StringList.new(self.available_algorithms))
         self.drop_down_algo_button.set_title("Hashing Algorithm")
         self.drop_down_algo_button.set_subtitle("Select the default hashing algorithm for new jobs")
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.config["default_hash_algorithm"]))
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
 
@@ -324,6 +322,34 @@ class Preferences(Adw.PreferencesWindow):
             self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
             MainWindow().add_toast(f"Unexpected error loading config from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
+    def apply_config(self):
+        self.setting_recursive.set_active(self.config["recursive"])
+        self.setting_gitignore.set_active(self.config["respect_gitignore"])
+        self.setting_save_errors.set_active(self.config["save_errors"])
+        self.setting_max_workers.set_value(self.config["max_workers"])
+        self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.config["default_hash_algorithm"]))
+        self.logger.debug("Applied preferences to UI components")
+
+    def apply_arguments(self):
+        if ARGS.recursive:
+            self.setting_recursive.set_active(ARGS.recursive)
+        if ARGS.respect_gitignore:
+            self.setting_gitignore.set_active(ARGS.respect_gitignore)
+        if ARGS.save_errors:
+            self.setting_save_errors.set_active(ARGS.save_errors)
+        if ARGS.max_workers:
+            self.setting_max_workers.set_value(ARGS.max_workers)
+        if ARGS.default_hash_algorithm:
+            self.drop_down_algo_button.set_selected(self.available_algorithms.index(ARGS.default_hash_algorithm))
+
+    def apply_env_variables(self):
+        fm_recursive_mode = os.getenv("FILEMANAGER_RECURSIVE_MODE")
+        if fm_recursive_mode:
+            state = fm_recursive_mode.lower() == "yes"
+            self.setting_recursive.set_active(state)
+            self.setting_gitignore.set_active(state)
+            self.logger.info(f"Recursive mode set to {state} via env variable")
+
     def save_preferences_to_config_file(self):
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -339,22 +365,14 @@ class Preferences(Adw.PreferencesWindow):
             self.logger.error(f"Error saving preferences to {CONFIG_FILE}: {e}")
 
     def reset_preferences(self):
-        self.setting_recursive.set_active(DEFAULTS["recursive_mode"])
+        self.setting_recursive.set_active(DEFAULTS["recursive"])
         self.setting_gitignore.set_active(DEFAULTS["respect_gitignore"])
         self.setting_save_errors.set_active(DEFAULTS["save_errors"])
         self.setting_max_workers.set_value(DEFAULTS["max_workers"])
         self.drop_down_algo_button.set_selected(self.available_algorithms.index(DEFAULTS["default_hash_algorithm"]))
         self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
 
-    def process_env_variables(self):
-        recursive_mode = os.getenv("CH_RECURSIVE_MODE")
-        if recursive_mode:
-            state = recursive_mode.lower() == "yes"
-            self.setting_recursive.set_active(state)
-            self.setting_gitignore.set_active(state)
-            self.logger.info(f"Recursive mode set to {state} via env variable")
-
-    def recursive_mode(self):
+    def recursive(self):
         return self.setting_recursive.get_active()
 
     def respect_gitignore(self):
@@ -596,7 +614,7 @@ class CalculateHashes:
                     jobs["paths"].append(current_path)
                     jobs["sizes"].append(file_size)
 
-            elif current_path.is_dir() and self.pref.recursive_mode():
+            elif current_path.is_dir() and self.pref.recursive():
                 local_rules = []
 
                 if self.pref.respect_gitignore():
@@ -609,6 +627,9 @@ class CalculateHashes:
 
                 for sub_path in current_path.iterdir():
                     self.process_path_n_rules(sub_path, local_rules, jobs)
+
+            else:
+                current_path.stat()
 
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
@@ -1633,26 +1654,9 @@ class MainWindow(Adw.ApplicationWindow):
 
 class Application(Adw.Application):
     def __init__(self):
-        super().__init__(
-            application_id=APP_ID,
-            flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.DEFAULT_FLAGS,
-        )
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
         self.logger = get_logger(self.__class__.__name__)
-        self.create_action("show-searchbar", lambda *_: MainWindow().on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
-        self.create_action("hide-searchbar", lambda *_: MainWindow().on_hide_searchbar(), shortcuts=["Escape"])
-
-        self.create_action("results-copy", lambda *_: MainWindow().on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
-        self.create_action("results-save", lambda *_: MainWindow().on_save_clicked(_), shortcuts=["<Ctrl>S"])
-        self.create_action("results-sort", lambda *_: MainWindow().on_sort_clicked(_), shortcuts=["<Ctrl>R"])
-        self.create_action("results-clear", lambda *_: MainWindow().on_clear_clicked(_), shortcuts=["<Ctrl>L"])
-
-        self.create_action("open-files", lambda *_: MainWindow().on_select_files_clicked(_), shortcuts=["<Ctrl>O"])
-        self.create_action("preferences", lambda *_: Preferences().present(), shortcuts=["<Ctrl>comma"])
-        self.create_action("shortcuts", lambda *_: MainWindow().shortcuts_window.present(), shortcuts=["<Ctrl>question"])
-        self.create_action("about", lambda *_: MainWindow().about_window.present())
-
-        self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
-        self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
+        self.create_actions()
 
     def on_set_recursive_mode(self, action, param):
         win: MainWindow = self.props.active_window
@@ -1682,6 +1686,7 @@ class Application(Adw.Application):
         self.main_window.present()
 
     def do_startup(self):
+        print("a")
         Adw.Application.do_startup(self)
 
     def do_shutdown(self):
@@ -1699,12 +1704,43 @@ class Application(Adw.Application):
                 accels=shortcuts,
             )
 
+    def create_actions(self):
+        self.create_action("show-searchbar", lambda *_: MainWindow().on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
+        self.create_action("hide-searchbar", lambda *_: MainWindow().on_hide_searchbar(), shortcuts=["Escape"])
+
+        self.create_action("results-copy", lambda *_: MainWindow().on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
+        self.create_action("results-save", lambda *_: MainWindow().on_save_clicked(_), shortcuts=["<Ctrl>S"])
+        self.create_action("results-sort", lambda *_: MainWindow().on_sort_clicked(_), shortcuts=["<Ctrl>R"])
+        self.create_action("results-clear", lambda *_: MainWindow().on_clear_clicked(_), shortcuts=["<Ctrl>L"])
+
+        self.create_action("open-files", lambda *_: MainWindow().on_select_files_clicked(_), shortcuts=["<Ctrl>O"])
+        self.create_action("preferences", lambda *_: Preferences().present(), shortcuts=["<Ctrl>comma"])
+        self.create_action("shortcuts", lambda *_: MainWindow().shortcuts_window.present(), shortcuts=["<Ctrl>question"])
+        self.create_action("about", lambda *_: MainWindow().about_window.present())
+
+        self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
+        self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Quick File Hasher - Modern Nautilus Extension and GTK4 App")
+
+    parser.add_argument("paths", nargs="*", type=str, help="Files and directories to process")
+    parser.add_argument("--recursive", action="store_true", help="Process files within subdirectories")
+    parser.add_argument("--gitignore", dest="respect_gitignore", action="store_true", help="Skip files/folders listed in .gitignore")
+    parser.add_argument("--save-errors", dest="save_errors", action="store_true", help="Save errors to results file")
+    parser.add_argument("--max-workers", type=int, help="Maximum number of parallel hashing operations")
+    parser.add_argument("--algo", dest="default_hash_algorithm", choices=hashlib.algorithms_guaranteed, help="Default hash algorithm for new jobs")
+
+    args = parser.parse_args()
+
+    return args, [__file__] + args.paths
+
 
 if __name__ == "__main__":
     try:
+        ARGS, paths = parse_args()
         app = Application()
-        app.run(sys.argv)
+        app.run(paths)
     except KeyboardInterrupt:
         app.logger.info("App interrupted by user")
-    finally:
-        app.quit()
