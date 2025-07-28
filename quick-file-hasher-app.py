@@ -188,7 +188,6 @@ class Preferences(Adw.PreferencesWindow):
         self.set_hide_on_close(True)
 
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
-        self.set_search_enabled(True)
 
         self.setup_processing_page()
         self.setup_saving_page()
