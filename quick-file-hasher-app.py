@@ -61,6 +61,8 @@ DEFAULTS = {
     "recursive": False,
     "respect_gitignore": False,
     "save_errors": False,
+    "absolute_paths": True,
+    "include_time": True,
 }
 CONFIG_DIR = Path.home() / ".config" / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -183,11 +185,11 @@ class Preferences(Adw.PreferencesWindow):
             return
         super().__init__(**kwargs)
         self.logger = get_logger(self.__class__.__name__)
+        self.settings = []
         self.set_title("Preferences")
         self.set_transient_for(MainWindow())
         self.set_modal(True)
         self.set_hide_on_close(True)
-
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
 
         self.setup_processing_page()
@@ -196,77 +198,104 @@ class Preferences(Adw.PreferencesWindow):
 
         self.load_config_file()
         self.apply_config()
-        self.apply_arguments()
         self.apply_env_variables()
+        self.apply_arguments()
 
         self.connect("close-request", self.on_close)
         self._initialized = True
 
     def setup_processing_page(self):
-        processing_page = Adw.PreferencesPage()
-        processing_page.set_title("Processing")
-        processing_page.set_icon_name("edit-find-symbolic")
+        processing_page = Adw.PreferencesPage(
+            title="Processing",
+            icon_name="edit-find-symbolic",
+        )
         self.add(processing_page)
 
-        processing_group = Adw.PreferencesGroup()
-        processing_group.set_description(description="Configure how files and folders are processed")
+        processing_group = Adw.PreferencesGroup(
+            description="Configure how files and folders are processed",
+        )
         processing_page.add(group=processing_group)
 
-        self.setting_recursive = Adw.SwitchRow()
-        self.setting_recursive.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="edit-find-symbolic"))
-        self.setting_recursive.set_title(title="Recursive Traversal")
-        self.setting_recursive.set_subtitle(subtitle="Enable to process all files in subdirectories")
-        self.setting_recursive.connect("notify::active", self.on_switch_row_changed, "recursive")
+        self.setting_recursive = self.create_switch_row(
+            name="recursive",
+            icon_name="edit-find-symbolic",
+            title="Recursive Traversal",
+            subtitle="Enable to process all files in subdirectories",
+        )
         processing_group.add(child=self.setting_recursive)
 
-        self.setting_gitignore = Adw.SwitchRow()
-        self.setting_gitignore.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="action-unavailable-symbolic"))
-        self.setting_gitignore.set_title(title="Respect .gitignore")
-        self.setting_gitignore.set_subtitle(subtitle="Skip files and folders listed in .gitignore file")
-        self.setting_gitignore.connect("notify::active", self.on_switch_row_changed, "respect_gitignore")
+        self.setting_gitignore = self.create_switch_row(
+            name="respect_gitignore",
+            icon_name="action-unavailable-symbolic",
+            title="Respect .gitignore",
+            subtitle="Skip files and folders listed in .gitignore file",
+        )
         processing_group.add(child=self.setting_gitignore)
+
         processing_group.add(self.create_buttons())
 
     def setup_saving_page(self):
-        saving_page = Adw.PreferencesPage()
-        saving_page.set_title("Saving")
-        saving_page.set_icon_name("document-save-symbolic")
+        saving_page = Adw.PreferencesPage(
+            title="Saving",
+            icon_name="document-save-symbolic",
+        )
         self.add(saving_page)
 
-        saving_group = Adw.PreferencesGroup()
-        saving_group.set_description(description="Configure how results are saved")
+        saving_group = Adw.PreferencesGroup(
+            description="Configure how results are saved",
+        )
         saving_page.add(group=saving_group)
 
-        self.setting_save_errors = Adw.SwitchRow()
-        self.setting_save_errors.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="dialog-error-symbolic"))
-        self.setting_save_errors.set_title(title="Save errors")
-        self.setting_save_errors.set_subtitle(subtitle="Save errors to results file or clipboard")
+        self.setting_save_errors = self.create_switch_row(
+            name="save_errors",
+            icon_name="dialog-error-symbolic",
+            title="Save Errors",
+            subtitle="Save errors to results file or clipboard",
+        )
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
-        self.setting_save_errors.connect("notify::active", self.on_switch_row_changed, "save_errors")
-
         saving_group.add(child=self.setting_save_errors)
+
+        self.setting_abs_path = self.create_switch_row(
+            name="absolute_paths",
+            icon_name="view-list-symbolic",
+            title="Absolute Paths",
+            subtitle="Include absolute paths in results",
+        )
+        saving_group.add(child=self.setting_abs_path)
+
+        self.setting_include_time = self.create_switch_row(
+            name="include_time",
+            icon_name="edit-find-symbolic",
+            title="Include Timestamp",
+            subtitle="Include timestamp in results",
+        )
+        saving_group.add(child=self.setting_include_time)
+
         saving_group.add(child=self.create_buttons())
 
     def setup_hashing_page(self):
-        hashing_page = Adw.PreferencesPage()
-        hashing_page.set_title("Hashing")
-        hashing_page.set_icon_name("dialog-password-symbolic")
+        hashing_page = Adw.PreferencesPage(
+            title="Hashing",
+            icon_name="dialog-password-symbolic",
+        )
         self.add(hashing_page)
 
-        hashing_group = Adw.PreferencesGroup()
-        hashing_group.set_description(description="Configure hashing behavior")
+        hashing_group = Adw.PreferencesGroup(description="Configure hashing behavior")
         hashing_page.add(group=hashing_group)
 
         self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
+        self.setting_max_workers.set_name("max_workers")
         self.setting_max_workers.set_editable(True)
         self.setting_max_workers.set_numeric(True)
-        self.setting_max_workers.add_prefix(widget=Gtk.Image.new_from_icon_name(icon_name="process-working-symbolic"))
-        self.setting_max_workers.set_title(title="Max Workers")
-        self.setting_max_workers.set_subtitle(subtitle="Set how many files are hashed in parallel")
-        self.setting_max_workers.connect("notify::value", self.on_spin_row_changed, "max_workers")
+        self.setting_max_workers.add_prefix(Gtk.Image.new_from_icon_name("process-working-symbolic"))
+        self.setting_max_workers.set_title("Max Workers")
+        self.setting_max_workers.set_subtitle("Set how many files are hashed in parallel")
+        self.setting_max_workers.connect("notify::value", self.on_spin_row_changed)
+        self.add_reset_button(self.setting_max_workers)
+        self.settings.append(self.setting_max_workers)
         hashing_group.add(child=self.setting_max_workers)
 
-        self.drop_down_algo_button = Adw.ComboRow()
+        self.drop_down_algo_button = Adw.ComboRow(name="default_hash_algorithm")
         self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
         self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
         self.max_width_label = max(len(algo) for algo in self.available_algorithms)
@@ -275,9 +304,39 @@ class Preferences(Adw.PreferencesWindow):
         self.drop_down_algo_button.set_subtitle("Select the default hashing algorithm for new jobs")
         self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
-
+        self.add_reset_button(self.drop_down_algo_button)
+        self.settings.append(self.drop_down_algo_button)
         hashing_group.add(child=self.drop_down_algo_button)
+
         hashing_group.add(child=self.create_buttons())
+
+    def create_switch_row(self, name: str, icon_name: str, title: str, subtitle: str) -> Adw.SwitchRow:
+        switch_row = Adw.SwitchRow(
+            name=name,
+            title=title,
+            subtitle=subtitle,
+        )
+        switch_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
+        switch_row.connect("notify::active", self.on_switch_row_changed)
+        self.add_reset_button(switch_row)
+        self.settings.append(switch_row)
+        return switch_row
+
+    def add_reset_button(self, row):
+        reset_button = Gtk.Button(
+            label="Reset",
+            css_classes=["flat"],
+            valign=Gtk.Align.CENTER,
+            tooltip_markup="<b>Reset</b> to default value",
+            icon_name="edit-undo-symbolic",
+        )
+        if isinstance(row, Adw.SwitchRow):
+            reset_button.connect("clicked", lambda _: row.set_active(DEFAULTS[row.get_name()]))
+        elif isinstance(row, Adw.SpinRow):
+            reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[row.get_name()]))
+        elif isinstance(row, Adw.ComboRow):
+            reset_button.connect("clicked", lambda _: row.set_selected(self.available_algorithms.index(DEFAULTS[row.get_name()])))
+        row.add_suffix(reset_button)
 
     def create_buttons(self):
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -323,11 +382,13 @@ class Preferences(Adw.PreferencesWindow):
             MainWindow().add_toast(f"Unexpected error loading config from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
     def apply_config(self):
-        self.setting_recursive.set_active(self.config["recursive"])
-        self.setting_gitignore.set_active(self.config["respect_gitignore"])
-        self.setting_save_errors.set_active(self.config["save_errors"])
-        self.setting_max_workers.set_value(self.config["max_workers"])
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index(self.config["default_hash_algorithm"]))
+        for setting in self.settings:
+            if isinstance(setting, Adw.SwitchRow):
+                setting.set_active(self.config[setting.get_name()])
+            elif isinstance(setting, Adw.SpinRow):
+                setting.set_value(self.config[setting.get_name()])
+            elif isinstance(setting, Adw.ComboRow):
+                setting.set_selected(self.available_algorithms.index(self.config[setting.get_name()]))
         self.logger.debug("Applied preferences to UI components")
 
     def apply_arguments(self):
@@ -365,12 +426,14 @@ class Preferences(Adw.PreferencesWindow):
             self.logger.error(f"Error saving preferences to {CONFIG_FILE}: {e}")
 
     def reset_preferences(self):
-        self.setting_recursive.set_active(DEFAULTS["recursive"])
-        self.setting_gitignore.set_active(DEFAULTS["respect_gitignore"])
-        self.setting_save_errors.set_active(DEFAULTS["save_errors"])
-        self.setting_max_workers.set_value(DEFAULTS["max_workers"])
-        self.drop_down_algo_button.set_selected(self.available_algorithms.index(DEFAULTS["default_hash_algorithm"]))
-        self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
+        for setting in self.settings:
+            if isinstance(setting, Adw.SwitchRow):
+                setting.set_active(DEFAULTS[setting.get_name()])
+            elif isinstance(setting, Adw.SpinRow):
+                setting.set_value(DEFAULTS[setting.get_name()])
+            elif isinstance(setting, Adw.ComboRow):
+                setting.set_selected(self.available_algorithms.index(DEFAULTS[setting.get_name()]))
+        self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
 
     def recursive(self):
         return self.setting_recursive.get_active()
@@ -380,6 +443,9 @@ class Preferences(Adw.PreferencesWindow):
 
     def save_errors(self):
         return self.setting_save_errors.get_active()
+
+    def include_time(self):
+        return self.setting_include_time.get_active()
 
     def max_workers(self):
         return self.setting_max_workers.get_value()
@@ -396,14 +462,16 @@ class Preferences(Adw.PreferencesWindow):
     def set_notified_of_limit_breach(self, state: bool):
         self._notified_of_limit_breach = state
 
-    def on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec, config_key: str):
+    def on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec):
         new_value = switch_row.get_active()
+        config_key = switch_row.get_name()
         if self.config.get(config_key) != new_value:
             self.config[config_key] = new_value
             self.logger.info(f"Switch Preference '{config_key}' changed to '{new_value}'")
 
-    def on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec, config_key: str):
+    def on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec):
         new_value = int(spin_row.get_value())
+        config_key = spin_row.get_name()
         if self.config.get(config_key) != new_value:
             self.config[config_key] = new_value
             self.logger.info(f"Spin Preference '{config_key}' changed to {new_value}")
@@ -758,6 +826,22 @@ class HashRow(Adw.ActionRow):
         anim.connect("done", on_fade_done)
         anim.play()
 
+    def on_click_copy(self, button: Gtk.Button, add_css: bool = False):
+        button.disconnect_by_func(self.on_click_copy)
+        button.get_clipboard().set(self.get_subtitle())
+        icon_name = button.get_icon_name()
+        button.set_icon_name("object-select-symbolic")
+        if add_css:
+            button.add_css_class("success")
+        GLib.timeout_add(
+            1500,
+            lambda: (
+                button.set_icon_name(icon_name),
+                button.remove_css_class("success"),
+                button.connect("clicked", self.on_click_copy, add_css),
+            ),
+        )
+
 
 class HashResultRow(HashRow):
     def __init__(self, path: Path, hash_value: str, hash_algorithm: str, **kwargs):
@@ -792,7 +876,7 @@ class HashResultRow(HashRow):
         self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
         self.button_copy_hash.set_valign(Gtk.Align.CENTER)
         self.button_copy_hash.set_tooltip_text("Copy hash")
-        self.button_copy_hash.connect("clicked", self.on_click_copy)
+        self.button_copy_hash.connect("clicked", self.on_click_copy, True)
 
         self.button_compare = Gtk.Button.new_from_icon_name("edit-paste-symbolic")
         self.button_compare.set_valign(Gtk.Align.CENTER)
@@ -812,7 +896,7 @@ class HashResultRow(HashRow):
         self.set_hidden_result(self.get_counter() > Preferences().max_rows())
 
     def __str__(self):
-        return f"{self.path}:{self.hash_value}:{self.algo}"
+        return f"{self.path if Preferences().setting_abs_path.get_active() else self.path.name}:{self.hash_value}:{self.algo}"
 
     def on_click_make_hashes(self, button: Gtk.Button):
         dialog = Adw.AlertDialog(body="<big><b>Select Hash Algorithms</b></big>", body_use_markup=True)
@@ -874,17 +958,11 @@ class HashResultRow(HashRow):
         dialog.connect("response", on_response)
         dialog.present(MainWindow())
 
-    def on_click_copy(self, button: Gtk.Button):
-        button.set_sensitive(False)
-        button.get_clipboard().set(self.hash_value)
-        original_child = button.get_child()
-        button.set_child(Gtk.Label(label="Copied!"))
-        GLib.timeout_add(1500, lambda: (button.set_child(original_child), button.set_sensitive(True)))
-
     def on_click_compare(self, button: Gtk.Button):
+        button.disconnect_by_func(self.on_click_compare)
+
         def handle_clipboard_comparison(clipboard, result):
             try:
-                self.button_compare.set_sensitive(False)
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
 
                 if clipboard_text == self.hash_value:
@@ -907,7 +985,7 @@ class HashResultRow(HashRow):
                     lambda: (
                         self.reset_css(),
                         self.reset_icon(),
-                        self.button_compare.set_sensitive(True),
+                        button.connect("clicked", self.on_click_compare),
                     ),
                 )
 
@@ -947,20 +1025,13 @@ class HashErrorRow(HashRow):
         self.button_copy_error = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
         self.button_copy_error.set_valign(Gtk.Align.CENTER)
         self.button_copy_error.set_tooltip_text("Copy error message")
-        self.button_copy_error.connect("clicked", self.on_copy_error_clicked)
+        self.button_copy_error.connect("clicked", self.on_click_copy)
         self.add_suffix(self.button_copy_error)
 
         self.add_css_class("error")
 
     def __str__(self) -> str:
-        return f"{self.path}:ERROR:{self.error_message}"
-
-    def on_copy_error_clicked(self, button: Gtk.Button) -> None:
-        button.set_sensitive(False)
-        button.get_clipboard().set(self.error_message)
-        original_child = button.get_child()
-        button.set_child(Gtk.Label(label="Copied!"))
-        GLib.timeout_add(1500, lambda: (button.set_child(original_child), button.set_sensitive(True)))
+        return f"{self.path if Preferences().setting_abs_path.get_active() else self.path.name}:ERROR:{self.error_message}"
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1160,7 +1231,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_group.set_vexpand(True)
 
         self.ui_results = Gtk.ListBox()
-        self.ui_results.set_selection_mode(Gtk.SelectionMode.BROWSE)
+        self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
         self.ui_results.add_css_class("boxed-list")
         self.ui_results.set_filter_func(self.filter_func)
         self.results_group.add(self.ui_results)
@@ -1503,18 +1574,26 @@ class MainWindow(Adw.ApplicationWindow):
         ).play()
 
     def results_to_txt(self):
-        output = ""
-        results_text = "\n".join(str(r) for r in self.ui_results if self.filter_func(r))
-        now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
+        parts = []
+        total_results = HashResultRow.get_counter()
+        total_errors = HashErrorRow.get_counter()
 
-        if results_text:
-            output = f"Results - Saved on {now}\n{'-' * 50}\n{results_text} {'\n\n' if self.pref.save_errors() else '\n'}"
+        if total_results > 0:
+            results_text = "\n".join(str(r) for r in self.ui_results if self.filter_func(r))
+            parts.append(f"Results ({total_results}):\n\n{results_text}")
 
-        if self.pref.save_errors():
+        if self.pref.save_errors() and total_errors > 0:
             errors_text = "\n".join(str(r) for r in self.ui_errors if self.filter_func_err(r))
+            parts.append(f"Errors ({total_errors}):\n\n{errors_text}")
 
-            if errors_text:
-                output = f"{output}Errors - Saved on {now}\n{'-' * 50}\n{errors_text}\n"
+        if self.pref.include_time() and parts:
+            now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
+            parts.append(f"Generated on {now}")
+
+        if parts:
+            output = "\n\n".join(parts)
+        else:
+            output = ""
 
         return output
 
