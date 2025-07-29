@@ -62,7 +62,6 @@ You can also run the app with additional command-line arguments for more control
 
 Type `--help` for more information.
 
-
 ## Preferences
 
 The **Preferences** dialog allows you to customize the application's behavior.
@@ -76,6 +75,7 @@ The **Preferences** dialog allows you to customize the application's behavior.
   - Sets the maximum number of parallel hashing operations. Adjust this value to optimize performance based on your systems capabilities.
 - **Hashing Algorithm**
   - Select the default hashing algorithm from the list.
+  - Available options include (hashlib): `md5`, `sha1`, `sha256`, `sha512`, `blake2b`, `blake2s` and more. The default is `sha256`.
 
 #### **Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, environment variables and command-line arguments can override these preferences at startup.
 

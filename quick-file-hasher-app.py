@@ -184,13 +184,14 @@ class Preferences(Adw.PreferencesWindow):
         if hasattr(self, "_initialized"):
             return
         super().__init__(**kwargs)
-        self.logger = get_logger(self.__class__.__name__)
-        self.settings = []
         self.set_title("Preferences")
         self.set_transient_for(MainWindow())
         self.set_modal(True)
         self.set_hide_on_close(True)
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
+        self.logger = get_logger(self.__class__.__name__)
+        self._settings = []
+        self.available_algorithms = sorted(hashlib.algorithms_available)
 
         self.setup_processing_page()
         self.setup_saving_page()
@@ -216,110 +217,77 @@ class Preferences(Adw.PreferencesWindow):
         )
         processing_page.add(group=processing_group)
 
-        self.setting_recursive = self.create_switch_row(
-            name="recursive",
-            icon_name="edit-find-symbolic",
-            title="Recursive Traversal",
-            subtitle="Enable to process all files in subdirectories",
-        )
+        self.setting_recursive = self.create_switch_row("recursive", "edit-find-symbolic", "Recursive Traversal", "Enable to process all files in subdirectories")
         processing_group.add(child=self.setting_recursive)
 
-        self.setting_gitignore = self.create_switch_row(
-            name="respect_gitignore",
-            icon_name="action-unavailable-symbolic",
-            title="Respect .gitignore",
-            subtitle="Skip files and folders listed in .gitignore file",
-        )
+        self.setting_gitignore = self.create_switch_row("respect_gitignore", "action-unavailable-symbolic", "Respect .gitignore", "Skip files and folders listed in .gitignore file")
         processing_group.add(child=self.setting_gitignore)
 
         processing_group.add(self.create_buttons())
 
     def setup_saving_page(self):
-        saving_page = Adw.PreferencesPage(
-            title="Saving",
-            icon_name="document-save-symbolic",
-        )
+        saving_page = Adw.PreferencesPage(title="Saving", icon_name="document-save-symbolic")
         self.add(saving_page)
 
-        saving_group = Adw.PreferencesGroup(
-            description="Configure how results are saved",
-        )
+        saving_group = Adw.PreferencesGroup(description="Configure how results are saved")
         saving_page.add(group=saving_group)
 
-        self.setting_save_errors = self.create_switch_row(
-            name="save_errors",
-            icon_name="dialog-error-symbolic",
-            title="Save Errors",
-            subtitle="Save errors to results file or clipboard",
-        )
+        self.setting_save_errors = self.create_switch_row("save_errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         saving_group.add(child=self.setting_save_errors)
 
-        self.setting_abs_path = self.create_switch_row(
-            name="absolute_paths",
-            icon_name="view-list-symbolic",
-            title="Absolute Paths",
-            subtitle="Include absolute paths in results",
-        )
+        self.setting_abs_path = self.create_switch_row("absolute_paths", "view-list-symbolic", "Absolute Paths", "Include absolute paths in results")
         saving_group.add(child=self.setting_abs_path)
 
-        self.setting_include_time = self.create_switch_row(
-            name="include_time",
-            icon_name="edit-find-symbolic",
-            title="Include Timestamp",
-            subtitle="Include timestamp in results",
-        )
+        self.setting_include_time = self.create_switch_row("include_time", "edit-find-symbolic", "Include Timestamp", "Include timestamp in results")
         saving_group.add(child=self.setting_include_time)
 
         saving_group.add(child=self.create_buttons())
 
     def setup_hashing_page(self):
-        hashing_page = Adw.PreferencesPage(
-            title="Hashing",
-            icon_name="dialog-password-symbolic",
-        )
+        hashing_page = Adw.PreferencesPage(title="Hashing", icon_name="dialog-password-symbolic")
         self.add(hashing_page)
 
         hashing_group = Adw.PreferencesGroup(description="Configure hashing behavior")
         hashing_page.add(group=hashing_group)
 
-        self.setting_max_workers = Adw.SpinRow.new(Gtk.Adjustment.new(4, 1, 16, 1, 5, 0), 1, 0)
-        self.setting_max_workers.set_name("max_workers")
-        self.setting_max_workers.set_editable(True)
-        self.setting_max_workers.set_numeric(True)
+        self.setting_max_workers = Adw.SpinRow(
+            name="max_workers",
+            title="Max Workers",
+            subtitle="Set how many files are hashed in parallel",
+            adjustment=Gtk.Adjustment.new(4, 1, 16, 1, 5, 0),
+            climb_rate=1,
+            digits=0,
+            editable=True,
+            numeric=True,
+        )
         self.setting_max_workers.add_prefix(Gtk.Image.new_from_icon_name("process-working-symbolic"))
-        self.setting_max_workers.set_title("Max Workers")
-        self.setting_max_workers.set_subtitle("Set how many files are hashed in parallel")
         self.setting_max_workers.connect("notify::value", self.on_spin_row_changed)
         self.add_reset_button(self.setting_max_workers)
-        self.settings.append(self.setting_max_workers)
+        self._settings.append(self.setting_max_workers)
         hashing_group.add(child=self.setting_max_workers)
 
-        self.drop_down_algo_button = Adw.ComboRow(name="default_hash_algorithm")
+        self.drop_down_algo_button = Adw.ComboRow(
+            name="default_hash_algorithm",
+            title="Hash Algorithm",
+            subtitle="Select the default hashing algorithm for new jobs",
+            model=Gtk.StringList.new(self.available_algorithms),
+            valign=Gtk.Align.CENTER,
+        )
         self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
-        self.available_algorithms = sorted(hashlib.algorithms_guaranteed)
-        self.max_width_label = max(len(algo) for algo in self.available_algorithms)
-        self.drop_down_algo_button.set_model(Gtk.StringList.new(self.available_algorithms))
-        self.drop_down_algo_button.set_title("Hashing Algorithm")
-        self.drop_down_algo_button.set_subtitle("Select the default hashing algorithm for new jobs")
-        self.drop_down_algo_button.set_valign(Gtk.Align.CENTER)
         self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
         self.add_reset_button(self.drop_down_algo_button)
-        self.settings.append(self.drop_down_algo_button)
+        self._settings.append(self.drop_down_algo_button)
         hashing_group.add(child=self.drop_down_algo_button)
 
         hashing_group.add(child=self.create_buttons())
 
     def create_switch_row(self, name: str, icon_name: str, title: str, subtitle: str) -> Adw.SwitchRow:
-        switch_row = Adw.SwitchRow(
-            name=name,
-            title=title,
-            subtitle=subtitle,
-        )
+        switch_row = Adw.SwitchRow(name=name, title=title, subtitle=subtitle)
         switch_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
         switch_row.connect("notify::active", self.on_switch_row_changed)
         self.add_reset_button(switch_row)
-        self.settings.append(switch_row)
+        self._settings.append(switch_row)
         return switch_row
 
     def add_reset_button(self, row):
@@ -382,7 +350,7 @@ class Preferences(Adw.PreferencesWindow):
             MainWindow().add_toast(f"Unexpected error loading config from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
     def apply_config(self):
-        for setting in self.settings:
+        for setting in self._settings:
             if isinstance(setting, Adw.SwitchRow):
                 setting.set_active(self.config[setting.get_name()])
             elif isinstance(setting, Adw.SpinRow):
@@ -426,7 +394,7 @@ class Preferences(Adw.PreferencesWindow):
             self.logger.error(f"Error saving preferences to {CONFIG_FILE}: {e}")
 
     def reset_preferences(self):
-        for setting in self.settings:
+        for setting in self._settings:
             if isinstance(setting, Adw.SwitchRow):
                 setting.set_active(DEFAULTS[setting.get_name()])
             elif isinstance(setting, Adw.SpinRow):
@@ -458,6 +426,12 @@ class Preferences(Adw.PreferencesWindow):
 
     def hashing_algorithm(self) -> str:
         return self.drop_down_algo_button.get_selected_item().get_string()
+
+    def set_recursive_mode(self, action, param):
+        state: bool = param.get_string() == "yes"
+        self.setting_gitignore.set_active(state)
+        self.setting_recursive.set_active(state)
+        self.logger.info(f"Recursive mode set to {state} via action")
 
     def set_notified_of_limit_breach(self, state: bool):
         self._notified_of_limit_breach = state
@@ -602,13 +576,8 @@ class QueueUpdateHandler:
 
 
 class CalculateHashes:
-    def __init__(
-        self,
-        queue: QueueUpdateHandler,
-        event: threading.Event,
-    ):
+    def __init__(self, queue: QueueUpdateHandler, event: threading.Event):
         self.logger = get_logger(self.__class__.__name__)
-        self.pref: Preferences = Preferences()
         self.queue_handler = queue
         self.cancel_event = event
         self.total_bytes = 0
@@ -616,8 +585,9 @@ class CalculateHashes:
 
     def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list):
         hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
-        with ThreadPoolExecutor(max_workers=self.pref.max_workers()) as executor:
-            self.logger.debug(f"Starting hashing with {self.pref.max_workers()} workers")
+        max_workers = Preferences().max_workers()
+        with ThreadPoolExecutor(max_workers) as executor:
+            self.logger.debug(f"Starting hashing with {max_workers} workers")
             list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
 
     def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
@@ -635,7 +605,7 @@ class CalculateHashes:
                 ignore_rules = []
 
                 if root_path.is_dir():
-                    if self.pref.respect_gitignore():
+                    if Preferences().respect_gitignore():
                         gitignore_file = root_path / ".gitignore"
 
                         if gitignore_file.exists():
@@ -682,10 +652,10 @@ class CalculateHashes:
                     jobs["paths"].append(current_path)
                     jobs["sizes"].append(file_size)
 
-            elif current_path.is_dir() and self.pref.recursive():
+            elif current_path.is_dir() and Preferences().recursive():
                 local_rules = []
 
-                if self.pref.respect_gitignore():
+                if Preferences().respect_gitignore():
                     local_rules = current_rules.copy()
                     gitignore_file = current_path / ".gitignore"
 
@@ -741,14 +711,13 @@ class CalculateHashes:
 class HashRow(Adw.ActionRow):
     _counter = 0
     _counter_hidden = 0
+    _max_width_label = max(len(algo) for algo in hashlib.algorithms_guaranteed)
 
     def __init__(self, path: Path, **kwargs):
         super().__init__(**kwargs)
         self._hidden_result = False
-
         self.path = path
         self.logger = get_logger(self.__class__.__name__)
-
         self.increment_counter()
 
     @classmethod
@@ -798,13 +767,7 @@ class HashRow(Adw.ActionRow):
             self.decrement_counter_hidden()
         return self._hidden_result
 
-    def create_button(
-        self,
-        icon_name: str,
-        tooltip_text: str,
-        callback: Callable,
-        *args,
-    ) -> Gtk.Button:
+    def create_button(self, icon_name: str | None, tooltip_text: str, callback: Callable, *args) -> Gtk.Button:
         if icon_name is None:
             button = Gtk.Button()
         else:
@@ -875,36 +838,15 @@ class HashResultRow(HashRow):
         self.hash_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
         self.hash_icon_name = self.hash_icon.get_icon_name()
         self.prefix_hash_box.append(self.hash_icon)
-        self.hash_name = Gtk.Label(label=self.algo.upper())
-        self.hash_name.set_width_chars(Preferences().max_width_label)
+        self.hash_name = Gtk.Label(label=self.algo.upper(), width_chars=self._max_width_label)
         self.prefix_hash_box.append(self.hash_name)
         self.add_prefix(self.prefix_hash_box)
 
-        self.button_make_hashes = self.create_button(
-            None,
-            "Select and compute multiple hash algorithms for this file",
-            self.on_click_make_hashes,
-        )
+        self.button_make_hashes = self.create_button(None, "Select and compute multiple hash algorithms for this file", self.on_click_make_hashes)
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
-
-        self.button_copy_hash = self.create_button(
-            "edit-copy-symbolic",
-            "Copy hash",
-            self.on_click_copy,
-            True,
-        )
-
-        self.button_compare = self.create_button(
-            "edit-paste-symbolic",
-            "Compare with clipboard",
-            self.on_click_compare,
-        )
-
-        self.button_delete = self.create_button(
-            "user-trash-symbolic",
-            "Remove this result",
-            self.on_click_delete,
-        )
+        self.button_copy_hash = self.create_button("edit-copy-symbolic", "Copy hash", self.on_click_copy, True)
+        self.button_compare = self.create_button("edit-paste-symbolic", "Compare with clipboard", self.on_click_compare)
+        self.button_delete = self.create_button("user-trash-symbolic", "Remove this result", self.on_click_delete)
 
         self.add_suffix(self.button_make_hashes)
         self.add_suffix(self.button_copy_hash)
@@ -1040,16 +982,8 @@ class HashErrorRow(HashRow):
         self.prefix_hash_box.append(self.hash_icon)
         self.add_prefix(self.prefix_hash_box)
 
-        self.button_copy_error = self.create_button(
-            "edit-copy-symbolic",
-            "Copy error message",
-            self.on_click_copy,
-        )
-        self.button_delete = self.create_button(
-            "user-trash-symbolic",
-            "Remove this error",
-            self.on_click_delete,
-        )
+        self.button_copy_error = self.create_button("edit-copy-symbolic", "Copy error message", self.on_click_copy)
+        self.button_delete = self.create_button("user-trash-symbolic", "Remove this error", self.on_click_delete)
         self.add_suffix(self.button_copy_error)
         self.add_suffix(self.button_delete)
         self.add_css_class("error")
@@ -1112,21 +1046,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.setup_shortcuts()
 
     def setup_toolbar_view(self):
-        self.empty_placeholder = Adw.StatusPage(
-            title="No Results",
-            description="Select files or folders to calculate their hashes.",
-            icon_name="text-x-generic-symbolic",
-        )
-        self.empty_error_placeholder = Adw.StatusPage(
-            title="No Errors",
-            description="   ",
-            icon_name="object-select-symbolic",
-        )
-        self.toolbar_view = Adw.ToolbarView()
-        self.toolbar_view.set_margin_top(6)
-        self.toolbar_view.set_margin_bottom(6)
-        self.toolbar_view.set_margin_start(12)
-        self.toolbar_view.set_margin_end(12)
+        self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
+        self.empty_error_placeholder = Adw.StatusPage(title="No Errors", description=" ", icon_name="object-select-symbolic")
+        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
 
     def create_button(
         self,
@@ -1187,7 +1109,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.second_top_bar_box.append(self.view_switcher)
 
         self.hidden_row_counter = self.create_button("Hidden: 0", "help-about-symbolic", "Number of hidden results. Use search to reveal them.", None, None)
-        self.hidden_row_counter.set_sensitive(False)
+        self.hidden_row_counter.set_visible(False)
         self.second_top_bar_box.append(self.hidden_row_counter)
 
         spacer_1 = Gtk.Box()
@@ -1491,7 +1413,7 @@ class MainWindow(Adw.ApplicationWindow):
     def update_hidden_row_counter(self):
         hidden_count = HashResultRow.get_counter_hidden()
         self.hidden_row_counter.get_child().set_label(label=f"Hidden: {hidden_count}")
-        self.hidden_row_counter.set_sensitive(hidden_count > 0)
+        self.hidden_row_counter.set_visible(hidden_count > 0)
 
     def scroll_to_bottom(self):
         vadjustment = self.results_scrolled_window.get_vadjustment()
@@ -1579,58 +1501,51 @@ class MainWindow(Adw.ApplicationWindow):
         self.search_entry.set_visible(False)
 
     def on_select_files_clicked(self, _):
-        file_dialog = Gtk.FileDialog()
-        file_dialog.set_title(title="Select files")
+        file_dialog = Gtk.FileDialog(title="Select Files")
 
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 files = file_dialog.open_multiple_finish(gio_task)
                 self.start_job(files)
 
-        file_dialog.open_multiple(
-            parent=self,
-            callback=on_files_dialog_dismissed,
-        )
+        file_dialog.open_multiple(parent=self, callback=on_files_dialog_dismissed)
 
     def on_select_folders_clicked(self, _):
-        file_dialog = Gtk.FileDialog()
-        file_dialog.set_title(title="Select Folders")
+        file_dialog = Gtk.FileDialog(title="Select Folders")
 
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 files = file_dialog.select_multiple_folders_finish(gio_task)
                 self.start_job(files)
 
-        file_dialog.select_multiple_folders(
-            parent=self,
-            callback=on_files_dialog_dismissed,
-        )
+        file_dialog.select_multiple_folders(parent=self, callback=on_files_dialog_dismissed)
 
     def on_copy_all_clicked(self, button: Gtk.Button):
-        if self.pref.notified_of_limit_breach():
+        if HashResultRow.get_counter() > self.pref.max_rows():
             self.add_toast("<big>❌ Too many results to copy. Please use the Save button instead.</big>")
-            return
-        if self.button_copy_all.is_sensitive():
+
+        elif self.button_copy_all.is_sensitive():
             output = self.results_to_txt()
             clipboard = self.get_clipboard()
             clipboard.set(output)
             self.add_toast("<big>✅ Results copied to clipboard</big>")
 
-    def on_save_clicked(self, widget):
+    def on_save_clicked(self, _):
         if not self.button_save.is_sensitive():
             return
-        file_dialog = Gtk.FileDialog()
-        file_dialog.set_title(title="Save")
-        file_dialog.set_initial_name(name="results.txt")
+        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
 
         def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 try:
                     local_file = file_dialog.save_finish(gio_task)
                     path: str = local_file.get_path()
+
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(self.results_to_txt())
+
                     self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
+
                 except Exception as e:
                     self.logger.error(f"Unexcepted error occured for {path}: {e}")
                     self.add_toast(f"<big>❌ Failed to save: {e}</big>")
@@ -1709,14 +1624,6 @@ class Application(Adw.Application):
         self.logger = get_logger(self.__class__.__name__)
         self.create_actions()
 
-    def on_set_recursive_mode(self, action, param):
-        win: MainWindow = self.props.active_window
-        if win:
-            state: bool = param.get_string() == "yes"
-            win.pref.setting_gitignore.set_active(state)
-            win.pref.setting_recursive.set_active(state)
-            self.logger.info(f"Recursive mode set to {state} via action")
-
     def on_click_quit(self, *_):
         self.quit()
 
@@ -1769,7 +1676,7 @@ class Application(Adw.Application):
         self.create_action("shortcuts", lambda *_: MainWindow().shortcuts_window.present(), shortcuts=["<Ctrl>question"])
         self.create_action("about", lambda *_: MainWindow().about_window.present())
 
-        self.create_action("set-recursive-mode", self.on_set_recursive_mode, GLib.VariantType.new("s"))
+        self.create_action("set-recursive-mode", lambda *_: Preferences().set_recursive_mode(*_), GLib.VariantType.new("s"))
         self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
 
 
@@ -1781,7 +1688,7 @@ def parse_args():
     parser.add_argument("--gitignore", dest="respect_gitignore", action="store_true", help="Skip files/folders listed in .gitignore")
     parser.add_argument("--save-errors", dest="save_errors", action="store_true", help="Save errors to results file")
     parser.add_argument("--max-workers", type=int, help="Maximum number of parallel hashing operations")
-    parser.add_argument("--algo", dest="default_hash_algorithm", choices=hashlib.algorithms_guaranteed, help="Default hash algorithm for new jobs")
+    parser.add_argument("--algo", dest="default_hash_algorithm", choices=hashlib.algorithms_available, help="Default hash algorithm for new jobs")
 
     args = parser.parse_args()
 
