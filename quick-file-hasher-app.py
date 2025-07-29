@@ -798,6 +798,22 @@ class HashRow(Adw.ActionRow):
             self.decrement_counter_hidden()
         return self._hidden_result
 
+    def create_button(
+        self,
+        icon_name: str,
+        tooltip_text: str,
+        callback: Callable,
+        *args,
+    ) -> Gtk.Button:
+        if icon_name is None:
+            button = Gtk.Button()
+        else:
+            button = Gtk.Button.new_from_icon_name(icon_name)
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_tooltip_text(tooltip_text)
+        button.connect("clicked", callback, *args)
+        return button
+
     def on_click_delete(self, button: Gtk.Button):
         button.set_sensitive(False)
         parent: list[HashRow] = self.get_parent()
@@ -856,37 +872,39 @@ class HashResultRow(HashRow):
 
         self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
-
         self.hash_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
         self.hash_icon_name = self.hash_icon.get_icon_name()
         self.prefix_hash_box.append(self.hash_icon)
-
         self.hash_name = Gtk.Label(label=self.algo.upper())
         self.hash_name.set_width_chars(Preferences().max_width_label)
         self.prefix_hash_box.append(self.hash_name)
-
         self.add_prefix(self.prefix_hash_box)
 
-        self.button_make_hashes = Gtk.Button()
+        self.button_make_hashes = self.create_button(
+            None,
+            "Select and compute multiple hash algorithms for this file",
+            self.on_click_make_hashes,
+        )
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
-        self.button_make_hashes.set_valign(Gtk.Align.CENTER)
-        self.button_make_hashes.set_tooltip_text("Select and compute multiple hash algorithms for this file")
-        self.button_make_hashes.connect("clicked", self.on_click_make_hashes)
 
-        self.button_copy_hash = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
-        self.button_copy_hash.set_valign(Gtk.Align.CENTER)
-        self.button_copy_hash.set_tooltip_text("Copy hash")
-        self.button_copy_hash.connect("clicked", self.on_click_copy, True)
+        self.button_copy_hash = self.create_button(
+            "edit-copy-symbolic",
+            "Copy hash",
+            self.on_click_copy,
+            True,
+        )
 
-        self.button_compare = Gtk.Button.new_from_icon_name("edit-paste-symbolic")
-        self.button_compare.set_valign(Gtk.Align.CENTER)
-        self.button_compare.set_tooltip_text("Compare with clipboard")
-        self.button_compare.connect("clicked", self.on_click_compare)
+        self.button_compare = self.create_button(
+            "edit-paste-symbolic",
+            "Compare with clipboard",
+            self.on_click_compare,
+        )
 
-        self.button_delete = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-        self.button_delete.set_valign(Gtk.Align.CENTER)
-        self.button_delete.set_tooltip_text("Remove this result")
-        self.button_delete.connect("clicked", self.on_click_delete)
+        self.button_delete = self.create_button(
+            "user-trash-symbolic",
+            "Remove this result",
+            self.on_click_delete,
+        )
 
         self.add_suffix(self.button_make_hashes)
         self.add_suffix(self.button_copy_hash)
@@ -1022,12 +1040,18 @@ class HashErrorRow(HashRow):
         self.prefix_hash_box.append(self.hash_icon)
         self.add_prefix(self.prefix_hash_box)
 
-        self.button_copy_error = Gtk.Button.new_from_icon_name("edit-copy-symbolic")
-        self.button_copy_error.set_valign(Gtk.Align.CENTER)
-        self.button_copy_error.set_tooltip_text("Copy error message")
-        self.button_copy_error.connect("clicked", self.on_click_copy)
+        self.button_copy_error = self.create_button(
+            "edit-copy-symbolic",
+            "Copy error message",
+            self.on_click_copy,
+        )
+        self.button_delete = self.create_button(
+            "user-trash-symbolic",
+            "Remove this error",
+            self.on_click_delete,
+        )
         self.add_suffix(self.button_copy_error)
-
+        self.add_suffix(self.button_delete)
         self.add_css_class("error")
 
     def __str__(self) -> str:
