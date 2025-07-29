@@ -1128,54 +1128,48 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.set_margin_start(12)
         self.toolbar_view.set_margin_end(12)
 
+    def create_button(
+        self,
+        label: str,
+        icon_name: str,
+        tooltip_text: str,
+        css_class: str,
+        callback: Callable,
+        *args,
+    ) -> Gtk.Button:
+        button = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text=tooltip_text)
+        if css_class:
+            button.add_css_class(css_class)
+
+        if callback:
+            button.connect("clicked", callback, *args)
+
+        if icon_name:
+            button_content = Adw.ButtonContent(icon_name=icon_name, label=label)
+            button.set_child(button_content)
+
+        else:
+            button.set_label(label)
+
+        return button
+
     def setup_first_top_bar(self):
         self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
 
-        self.button_select_files = Gtk.Button()
-        self.button_select_files.add_css_class("suggested-action")
-        self.button_select_files.set_valign(Gtk.Align.CENTER)
-        self.button_select_files.set_tooltip_text("Select files to add")
-        self.button_select_files.connect("clicked", self.on_select_files_clicked)
-        self.button_select_files_content = Adw.ButtonContent.new()
-        self.button_select_files_content.set_icon_name(icon_name="document-open-symbolic")
-        self.button_select_files_content.set_label(label="Select Files")
-        self.button_select_files.set_child(self.button_select_files_content)
+        self.button_select_files = self.create_button("Select Files", "document-open-symbolic", "Select files to add", "suggested-action", self.on_select_files_clicked)
         self.first_top_bar_box.append(self.button_select_files)
 
-        self.button_select_folders = Gtk.Button()
-        self.button_select_folders.add_css_class("suggested-action")
-        self.button_select_folders.set_valign(Gtk.Align.CENTER)
-        self.button_select_folders.set_tooltip_text("Select folders to add")
-        self.button_select_folders.connect("clicked", self.on_select_folders_clicked)
-        self.button_select_folders_content = Adw.ButtonContent.new()
-        self.button_select_folders_content.set_icon_name(icon_name="folder-open-symbolic")
-        self.button_select_folders_content.set_label(label="Select Folders")
-        self.button_select_folders.set_child(self.button_select_folders_content)
+        self.button_select_folders = self.create_button("Select Folders", "folder-open-symbolic", "Select folders to add", "suggested-action", self.on_select_folders_clicked)
         self.first_top_bar_box.append(self.button_select_folders)
 
-        self.button_save = Gtk.Button()
+        self.button_save = self.create_button("Save", "document-save-symbolic", "Save results to file", "suggested-action", self.on_save_clicked)
         self.button_save.set_sensitive(False)
-        self.button_save.add_css_class("suggested-action")
-        self.button_save.set_valign(Gtk.Align.CENTER)
-        self.button_save.set_tooltip_text("Save results to file")
-        self.button_save.connect("clicked", self.on_save_clicked)
-        self.button_save_content = Adw.ButtonContent.new()
-        self.button_save_content.set_icon_name(icon_name="document-save-symbolic")
-        self.button_save_content.set_label(label="Save")
-        self.button_save.set_child(self.button_save_content)
+
         self.first_top_bar_box.append(self.button_save)
 
-        self.button_cancel = Gtk.Button(label="Cancel Jobs")
-        self.button_cancel.add_css_class("destructive-action")
-        self.button_cancel.set_valign(Gtk.Align.CENTER)
+        callback = lambda _: (self.cancel_event.set(), self.add_toast("<big>❌ Jobs Cancelled</big>"))
+        self.button_cancel = self.create_button("Cancel Jobs", None, None, "destructive-action", callback)
         self.button_cancel.set_visible(False)
-        self.button_cancel.connect(
-            "clicked",
-            lambda _: (
-                self.cancel_event.set(),
-                self.add_toast("<big>❌ Jobs Cancelled</big>"),
-            ),
-        )
         self.first_top_bar_box.append(self.button_cancel)
 
         spacer_0 = Gtk.Box()
@@ -1188,53 +1182,34 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_second_top_bar(self):
         self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
 
-        self.view_switcher = Adw.ViewSwitcher()
-        self.view_switcher.set_hexpand(True)
-        self.view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        self.view_switcher = Adw.ViewSwitcher(hexpand=True, policy=Adw.ViewSwitcherPolicy.WIDE)
+        self.view_switcher.add_css_class("view-switcher")
         self.second_top_bar_box.append(self.view_switcher)
 
-        self.hidden_row_counter = Gtk.Button()
-        self.hidden_row_counter.set_valign(Gtk.Align.CENTER)
+        self.hidden_row_counter = self.create_button("Hidden: 0", "help-about-symbolic", "Number of hidden results. Use search to reveal them.", None, None)
         self.hidden_row_counter.set_sensitive(False)
-        self.hidden_row_counter_content = Adw.ButtonContent.new()
-        self.hidden_row_counter_content.set_tooltip_text("Number of hidden results. Use search to reveal them.")
-        self.hidden_row_counter_content.set_icon_name(icon_name="help-about-symbolic")
-        self.hidden_row_counter_content.set_label(label="Hidden: 0")
-        self.hidden_row_counter_content.set_use_underline(use_underline=True)
-        self.hidden_row_counter.set_child(self.hidden_row_counter_content)
         self.second_top_bar_box.append(self.hidden_row_counter)
 
         spacer_1 = Gtk.Box()
         spacer_1.set_hexpand(True)
         self.second_top_bar_box.append(spacer_1)
 
-        self.button_copy_all = Gtk.Button(label="Copy")
+        self.button_copy_all = self.create_button("Copy", None, "Copy results to clipboard", "suggested-action", self.on_copy_all_clicked)
         self.button_copy_all.set_sensitive(False)
-        self.button_copy_all.add_css_class("suggested-action")
-        self.button_copy_all.set_valign(Gtk.Align.CENTER)
-        self.button_copy_all.set_tooltip_text("Copy results to clipboard")
-        self.button_copy_all.connect("clicked", self.on_copy_all_clicked)
         self.second_top_bar_box.append(self.button_copy_all)
 
-        self.button_sort = Gtk.Button(label="Sort")
+        self.button_sort = self.create_button("Sort", None, "Sort results by path", None, self.on_sort_clicked)
         self.button_sort.set_sensitive(False)
-        self.button_sort.set_valign(Gtk.Align.CENTER)
-        self.button_sort.set_tooltip_text("Sort results by path")
-        self.button_sort.connect("clicked", self.on_sort_clicked)
         self.second_top_bar_box.append(self.button_sort)
 
-        self.button_clear = Gtk.Button(label="Clear")
+        self.button_clear = self.create_button("Clear", None, "Clear all results", "destructive-action", self.on_clear_clicked)
         self.button_clear.set_sensitive(False)
-        self.button_clear.add_css_class("destructive-action")
-        self.button_clear.set_valign(Gtk.Align.CENTER)
-        self.button_clear.set_tooltip_text("Clear all results")
-        self.button_clear.connect("clicked", self.on_clear_clicked)
         self.second_top_bar_box.append(self.button_clear)
 
     def setup_header_bar(self):
-        self.header_bar = Adw.HeaderBar()
-        self.header_title_widget = Gtk.Label(label="<big><b>Quick File Hasher</b></big>", use_markup=True)
-        self.header_bar.set_title_widget(self.header_title_widget)
+        self.header_bar = Adw.HeaderBar(
+            title_widget=Gtk.Label(label="<big><b>Quick File Hasher</b></big>", use_markup=True),
+        )
         self.setup_menu()
         self.setup_search()
 
@@ -1244,18 +1219,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.main_content_overlay.add_overlay(self.main_box)
 
-        self.view_stack = Adw.ViewStack()
-        self.view_stack.set_vexpand(True)
-        self.view_stack.set_hexpand(True)
+        self.view_stack = Adw.ViewStack(vexpand=True, hexpand=True)
         self.view_switcher.set_stack(self.view_stack)
-        self.view_switcher.add_css_class("view-switcher")
 
-        self.results_group = Adw.PreferencesGroup()
-        self.results_group.set_hexpand(True)
-        self.results_group.set_vexpand(True)
+        self.results_group = Adw.PreferencesGroup(hexpand=True, vexpand=True)
 
-        self.ui_results = Gtk.ListBox()
-        self.ui_results.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.ui_results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.ui_results.add_css_class("boxed-list")
         self.ui_results.set_filter_func(self.filter_func)
         self.results_group.add(self.ui_results)
@@ -1266,12 +1235,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
 
-        self.errors_group = Adw.PreferencesGroup()
-        self.errors_group.set_hexpand(True)
-        self.errors_group.set_vexpand(True)
+        self.errors_group = Adw.PreferencesGroup(hexpand=True, vexpand=True)
 
-        self.ui_errors = Gtk.ListBox()
-        self.ui_errors.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.ui_errors = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.ui_errors.add_css_class("boxed-list")
         self.ui_errors.set_filter_func(self.filter_func_err)
         self.errors_group.add(self.ui_errors)
@@ -1286,32 +1252,27 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.connect("notify::visible-child", self.has_results)
         self.main_box.append(self.view_stack)
 
-        self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_placeholder_text("Type to filter & ESC to clear")
-        self.search_entry.set_margin_bottom(2)
-        self.search_entry.set_visible(False)
+        self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
         for ui_list in (self.ui_results, self.ui_errors):
             self.search_entry.connect("search-changed", self.on_search_changed, ui_list)
         self.search_query = ""
         self.main_box.append(self.search_entry)
 
     def setup_menu(self):
-        self.menu = Gio.Menu()
-        self.menu.append("Preferences", "app.preferences")
-        self.menu.append("Keyboard Shortcuts", "app.shortcuts")
-        self.menu.append("About", "app.about")
-        self.menu.append("Quit", "app.quit")
-        self.button_menu = Gtk.MenuButton()
-        self.button_menu.set_icon_name("open-menu-symbolic")
-        self.button_menu.set_menu_model(self.menu)
-        self.header_bar.pack_end(self.button_menu)
+        menu = Gio.Menu()
+        menu.append("Preferences", "app.preferences")
+        menu.append("Keyboard Shortcuts", "app.shortcuts")
+        menu.append("About", "app.about")
+        menu.append("Quit", "app.quit")
+        button_menu = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
+        self.header_bar.pack_end(button_menu)
 
     def setup_search(self):
-        self.button_show_searchbar = Gtk.ToggleButton()
-        self.button_show_searchbar.set_tooltip_text("Show search bar to filter results and errors")
-        self.button_show_searchbar.set_sensitive(False)
-        self.button_show_searchbar.set_icon_name(icon_name="system-search-symbolic")
-
+        self.button_show_searchbar = Gtk.ToggleButton(
+            tooltip_text="Show search bar to filter results and errors",
+            sensitive=False,
+            icon_name="system-search-symbolic",
+        )
         self.button_show_searchbar.connect("clicked", self.on_click_show_searchbar)
         self.header_bar.pack_end(self.button_show_searchbar)
 
@@ -1342,10 +1303,7 @@ class MainWindow(Adw.ApplicationWindow):
             },
         ]
 
-        self.shortcuts_window = Gtk.ShortcutsWindow()
-        self.shortcuts_window.set_modal(True)
-        self.shortcuts_window.set_transient_for(self)
-        self.shortcuts_window.set_hide_on_close(True)
+        self.shortcuts_window = Gtk.ShortcutsWindow(modal=True, transient_for=self, hide_on_close=True)
 
         shortcuts_section = Gtk.ShortcutsSection(section_name="shortcuts", max_height=12)
 
@@ -1360,8 +1318,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.shortcuts_window.add_section(shortcuts_section)
 
     def setup_progress_bar(self):
-        self.progress_bar = Gtk.ProgressBar()
-        self.progress_bar.set_opacity(0)
+        self.progress_bar = Gtk.ProgressBar(opacity=0)
 
     def setup_drag_and_drop(self):
         self.dnd = Adw.StatusPage(
@@ -1369,20 +1326,8 @@ class MainWindow(Adw.ApplicationWindow):
             icon_name="folder-open-symbolic",
         )
         self.drop = Gtk.DropTargetAsync.new(None, Gdk.DragAction.COPY)
-        self.drop.connect(
-            "drag-enter",
-            lambda *_: (
-                self.toolbar_view.set_content(self.dnd),
-                Gdk.DragAction.COPY,
-            )[1],
-        )
-        self.drop.connect(
-            "drag-leave",
-            lambda *_: (
-                self.has_results(),
-                Gdk.DragAction.COPY,
-            )[1],
-        )
+        self.drop.connect("drag-enter", lambda *_: (self.toolbar_view.set_content(self.dnd), Gdk.DragAction.COPY)[1])
+        self.drop.connect("drag-leave", lambda *_: (self.has_results(), Gdk.DragAction.COPY)[1])
 
         def on_read_value(drop: Gdk.Drop, result):
             try:
@@ -1411,20 +1356,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_controller(self.drop)
 
     def setup_about_window(self):
-        self.about_window = Adw.AboutWindow.new()
-        self.about_window.set_hide_on_close(True)
-        self.about_window.set_modal(True)
-        self.about_window.set_transient_for(self)
-        self.about_window.set_application_name("Quick File Hasher")
-        self.about_window.set_application_icon("document-properties")
-        self.about_window.set_version(APP_VERSION)
-        self.about_window.set_developer_name("Doğukan Doğru (dd-se)")
-        self.about_window.set_license_type(Gtk.License(Gtk.License.MIT_X11))
-        self.about_window.set_comments("A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.")
-        self.about_window.set_website("https://github.com/dd-se/nautilus-extension-quick-file-hasher")
-        self.about_window.set_issue_url("https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues")
-        self.about_window.set_copyright("© 2025 Doğukan Doğru (dd-se)")
-        self.about_window.set_developers(["dd-se https://github.com/dd-se"])
+        self.about_window = Adw.AboutWindow(
+            modal=True,
+            hide_on_close=True,
+            transient_for=self,
+            application_name="Quick File Hasher",
+            application_icon="document-properties",
+            version=APP_VERSION,
+            developer_name="Doğukan Doğru (dd-se)",
+            license_type=Gtk.License(Gtk.License.MIT_X11),
+            comments="A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.",
+            website="https://github.com/dd-se/nautilus-extension-quick-file-hasher",
+            issue_url="https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues",
+            copyright="© 2025 Doğukan Doğru (dd-se)",
+            developers=["dd-se https://github.com/dd-se"],
+        )
 
     def sort_by_hierarchy(self, row1: HashResultRow, row2: HashResultRow) -> int:
         """
@@ -1544,7 +1490,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def update_hidden_row_counter(self):
         hidden_count = HashResultRow.get_counter_hidden()
-        self.hidden_row_counter_content.set_label(label=f"Hidden: {hidden_count}")
+        self.hidden_row_counter.get_child().set_label(label=f"Hidden: {hidden_count}")
         self.hidden_row_counter.set_sensitive(hidden_count > 0)
 
     def scroll_to_bottom(self):
