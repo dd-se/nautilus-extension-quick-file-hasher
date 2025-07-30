@@ -118,15 +118,10 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         self.logger.info(f"App {APP_ID} launched by file manager")
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
         cmd = ["python3", __file__] + file_paths
-        env = os.environ.copy()
         if recursive_mode:
-            env["FILEMANAGER_RECURSIVE_MODE"] = "yes"
-            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'yes'\"")
-        else:
-            env["FILEMANAGER_RECURSIVE_MODE"] = "no"
-            os.system(f"gapplication action {APP_ID} set-recursive-mode \"'no'\"")
-
-        subprocess.Popen(cmd, env=env)
+            cmd.extend(["--recursive", "--gitignore"])
+        self.logger.debug(f"With args: {cmd}")
+        subprocess.Popen(cmd)
 
     def create_menu(self, files, caller):
         if any(f.is_directory() for f in files):
@@ -400,12 +395,7 @@ class Preferences(Adw.PreferencesWindow):
                 self.drop_down_algo_button.set_selected(self.available_algorithms.index(Args.get("algo").get_string()))
 
     def apply_env_variables(self):
-        fm_recursive_mode = os.getenv("FILEMANAGER_RECURSIVE_MODE")
-        if fm_recursive_mode:
-            state = fm_recursive_mode.lower() == "yes"
-            self.setting_recursive.set_active(state)
-            self.setting_gitignore.set_active(state)
-            self.logger.info(f"Recursive mode set to {state} via env variable")
+        pass
 
     def save_preferences_to_config_file(self):
         try:
