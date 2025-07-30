@@ -1634,14 +1634,15 @@ class Application(Adw.Application):
     def do_command_line(self, command_line):
         Args.set_args(command_line.get_options_dict().end().unpack())
 
-        if (algo := Args.get("algo")) not in hashlib.algorithms_available:
-            error = f"Unexpected input: {algo}\n\nAvailable Algorithms: {hashlib.algorithms_available}\n"
-            command_line.printerr_literal(error)
+        if algo := Args.get("algo"):
+            if algo not in hashlib.algorithms_available:
+                error = f"Unexpected input: {algo}\n\nAvailable Algorithms: {hashlib.algorithms_available}\n"
+                command_line.printerr_literal(error)
 
-            if hasattr(self, "main_window"):
-                self.main_window.add_toast(error, timeout=5)
+                if hasattr(self, "main_window"):
+                    self.main_window.add_toast(error, timeout=5)
 
-            return 1
+                return 1
 
         paths = command_line.get_arguments()[1:]
         if paths:
