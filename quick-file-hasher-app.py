@@ -22,7 +22,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import argparse
 import hashlib
 import json
 import logging
@@ -31,7 +30,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
@@ -52,7 +50,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # 
 Adw.init()
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "0.9.95"
+APP_VERSION = "1.0.0"
 CONFIG_DIR = Path.home() / ".config" / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
@@ -1724,6 +1722,8 @@ class Application(Adw.Application):
         self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
 
     def create_options(self):
+        self.set_option_context_summary("Quick File Hasher - Modern Nautilus Extension and GTK4 App")
+        self.set_option_context_parameter_string("[file] [folder] ... [--recursive] [--gitignore] [--max-workers 4] [--algo sha256]")
         self.add_main_option("recursive", ord("r"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Process files within subdirectories", None)
         self.add_main_option("gitignore", ord("g"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Skip files/folders listed in .gitignore", None)
         self.add_main_option("max-workers", ord("w"), GLib.OptionFlags.NONE, GLib.OptionArg.INT, "Maximum number of parallel hashing operations", "N")
