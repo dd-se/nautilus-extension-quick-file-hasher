@@ -53,6 +53,8 @@ Adw.init()
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "0.9.95"
+CONFIG_DIR = Path.home() / ".config" / APP_ID
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS = {
     "default_hash_algorithm": "sha256",
@@ -64,9 +66,6 @@ DEFAULTS = {
     "absolute_paths": True,
     "include_time": True,
 }
-CONFIG_DIR = Path.home() / ".config" / APP_ID
-CONFIG_FILE = CONFIG_DIR / "config.json"
-
 VIEW_SWITCHER_CSS = b"""
 .view-switcher button {
     background-color: #404040;
@@ -171,6 +170,36 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return self.create_menu(files, 2)
 
 
+class Args:
+    _instance = None
+    _args = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def set_args(cls, options: GLib.VariantDict):
+        cls.set("DESKTOP", options.lookup_value("DESKTOP", GLib.VariantType.new("b")) or False)
+        cls.set("recursive", options.lookup_value("recursive", GLib.VariantType.new("b")))
+        cls.set("gitignore", options.lookup_value("gitignore", GLib.VariantType.new("b")))
+        cls.set("max_workers", options.lookup_value("max-workers", GLib.VariantType.new("i")))
+        cls.set("algo", options.lookup_value("algo", GLib.VariantType.new("s")))
+
+    @classmethod
+    def set(cls, key, value):
+        cls._args[key] = value
+
+    @classmethod
+    def get(cls, key, default=None):
+        return cls._args.get(key, default)
+
+    @classmethod
+    def get_all(cls):
+        return cls._args.copy()
+
+
 class Preferences(Adw.PreferencesWindow):
     _instance = None
     _notified_of_limit_breach = False
@@ -190,7 +219,7 @@ class Preferences(Adw.PreferencesWindow):
         self.set_hide_on_close(True)
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
         self.logger = get_logger(self.__class__.__name__)
-        self._settings = []
+        self._settings: list[Adw.ActionRow] = []
         self.available_algorithms = sorted(hashlib.algorithms_available)
 
         self.setup_processing_page()
@@ -203,6 +232,7 @@ class Preferences(Adw.PreferencesWindow):
         self.apply_arguments()
 
         self.connect("close-request", self.on_close)
+        self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         self._initialized = True
 
     def setup_processing_page(self):
@@ -233,7 +263,7 @@ class Preferences(Adw.PreferencesWindow):
         saving_page.add(group=saving_group)
 
         self.setting_save_errors = self.create_switch_row("save_errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
-        self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
+
         saving_group.add(child=self.setting_save_errors)
 
         self.setting_abs_path = self.create_switch_row("absolute_paths", "view-list-symbolic", "Absolute Paths", "Include absolute paths in results")
@@ -360,16 +390,14 @@ class Preferences(Adw.PreferencesWindow):
         self.logger.debug("Applied preferences to UI components")
 
     def apply_arguments(self):
-        if ARGS.recursive:
-            self.setting_recursive.set_active(ARGS.recursive)
-        if ARGS.respect_gitignore:
-            self.setting_gitignore.set_active(ARGS.respect_gitignore)
-        if ARGS.save_errors:
-            self.setting_save_errors.set_active(ARGS.save_errors)
-        if ARGS.max_workers:
-            self.setting_max_workers.set_value(ARGS.max_workers)
-        if ARGS.default_hash_algorithm:
-            self.drop_down_algo_button.set_selected(self.available_algorithms.index(ARGS.default_hash_algorithm))
+        from_cli = not Args.get("DESKTOP")
+        if from_cli:
+            self.setting_recursive.set_active(bool(Args.get("recursive")))
+            self.setting_gitignore.set_active(bool(Args.get("respect_gitignore")))
+            if Args.get("max_workers"):
+                self.setting_max_workers.set_value(Args.get("max_workers").get_int32())
+            if Args.get("algo"):
+                self.drop_down_algo_button.set_selected(self.available_algorithms.index(Args.get("algo").get_string()))
 
     def apply_env_variables(self):
         fm_recursive_mode = os.getenv("FILEMANAGER_RECURSIVE_MODE")
@@ -711,7 +739,7 @@ class CalculateHashes:
 class HashRow(Adw.ActionRow):
     _counter = 0
     _counter_hidden = 0
-    _max_width_label = max(len(algo) for algo in hashlib.algorithms_guaranteed)
+    _max_width_label = max(len(algo) for algo in hashlib.algorithms_available)
 
     def __init__(self, path: Path, **kwargs):
         super().__init__(**kwargs)
@@ -1620,37 +1648,63 @@ class MainWindow(Adw.ApplicationWindow):
 
 class Application(Adw.Application):
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
         self.logger = get_logger(self.__class__.__name__)
         self.create_actions()
+        self.create_options()
 
-    def on_click_quit(self, *_):
-        self.quit()
+    def do_command_line(self, command_line):
+        Args.set_args(command_line.get_options_dict())
+
+        if Args.get("algo"):
+            algo = Args.get("algo").get_string()
+
+            if algo not in hashlib.algorithms_available:
+                error = f"\nUnexpected input: {algo}\n\nAvailable Algorithms: {hashlib.algorithms_available}\n"
+                command_line.printerr_literal(error)
+
+                if hasattr(self, "main_window"):
+                    self.main_window.add_toast(error, timeout=5)
+                return 1
+
+        paths = command_line.get_arguments()[1:]
+        if paths:
+            os.chdir(command_line.get_cwd())
+            self.open([Gio.File.new_for_path(path) for path in paths], "")
+        else:
+            self.do_activate()
+        return 0
 
     def do_activate(self):
-        self.logger.info(f"App {self.get_application_id()} activated")
+        self.logger.debug(f"App {self.get_application_id()} activated")
         self.main_window: MainWindow = self.props.active_window
         if not self.main_window:
             self.main_window = MainWindow(self)
+        else:
+            Preferences().apply_arguments()
         self.main_window.present()
 
     def do_open(self, files, n_files, hint):
-        self.logger.info(f"App {self.get_application_id()} opened with files ({n_files})")
+        self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
         self.main_window: MainWindow = self.props.active_window
         if not self.main_window:
             self.main_window = MainWindow(self, files)
         else:
+            Preferences().apply_arguments()
             self.main_window.start_job(files)
         self.main_window.present()
 
     def do_startup(self):
-        print("a")
         Adw.Application.do_startup(self)
 
     def do_shutdown(self):
-        self.logger.info("Shutting down...")
-        self.main_window.cancel_event.set()
+        self.logger.debug("Shutting down...")
+        if hasattr(self, "main_window"):
+            self.main_window.cancel_event.set()
         Adw.Application.do_shutdown(self)
+
+    def on_click_quit(self, *_):
+        self.quit()
 
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
@@ -1679,26 +1733,18 @@ class Application(Adw.Application):
         self.create_action("set-recursive-mode", lambda *_: Preferences().set_recursive_mode(*_), GLib.VariantType.new("s"))
         self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Quick File Hasher - Modern Nautilus Extension and GTK4 App")
-
-    parser.add_argument("paths", nargs="*", type=str, help="Files and directories to process")
-    parser.add_argument("--recursive", action="store_true", help="Process files within subdirectories")
-    parser.add_argument("--gitignore", dest="respect_gitignore", action="store_true", help="Skip files/folders listed in .gitignore")
-    parser.add_argument("--save-errors", dest="save_errors", action="store_true", help="Save errors to results file")
-    parser.add_argument("--max-workers", type=int, help="Maximum number of parallel hashing operations")
-    parser.add_argument("--algo", dest="default_hash_algorithm", choices=hashlib.algorithms_available, help="Default hash algorithm for new jobs")
-
-    args = parser.parse_args()
-
-    return args, [__file__] + args.paths
+    def create_options(self):
+        self.add_main_option("recursive", ord("r"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Process files within subdirectories", None)
+        self.add_main_option("gitignore", ord("g"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Skip files/folders listed in .gitignore", None)
+        self.add_main_option("max-workers", ord("w"), GLib.OptionFlags.NONE, GLib.OptionArg.INT, "Maximum number of parallel hashing operations", "N")
+        self.add_main_option("algo", ord("a"), GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Default hash algorithm for new jobs.", "ALGORITHM")
+        self.add_main_option("help", ord("h"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, f"Show help options\n\nAvailable algorithms:\n  {hashlib.algorithms_available}", None)
+        self.add_main_option("DESKTOP", 0, GLib.OptionFlags.HIDDEN, GLib.OptionArg.NONE, "Invoked from the Desktop Environment", None)
 
 
 if __name__ == "__main__":
     try:
-        ARGS, paths = parse_args()
         app = Application()
-        app.run(paths)
+        app.run(sys.argv)
     except KeyboardInterrupt:
         app.logger.info("App interrupted by user")
