@@ -51,18 +51,19 @@ Adw.init()
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.0.0"
+AVAILABLE_ALGOS = sorted(hashlib.algorithms_available)
 CONFIG_DIR = Path.home() / ".config" / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS = {
-    "default_hash_algorithm": "sha256",
-    "max_visible_results": 100,
-    "max_workers": 4,
+    "algo": "sha256",
+    "max-visible-results": 100,
+    "max-workers": 4,
     "recursive": False,
-    "respect_gitignore": False,
-    "save_errors": False,
-    "absolute_paths": True,
-    "include_time": True,
+    "gitignore": False,
+    "save-errors": False,
+    "absolute-paths": True,
+    "include-time": True,
 }
 VIEW_SWITCHER_CSS = b"""
 .view-switcher button {
@@ -203,7 +204,6 @@ class Preferences(Adw.PreferencesWindow):
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
         self.logger = get_logger(self.__class__.__name__)
         self._settings: list[Adw.ActionRow] = []
-        self.available_algorithms = sorted(hashlib.algorithms_available)
 
         self.setup_processing_page()
         self.setup_saving_page()
@@ -233,7 +233,7 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_recursive = self.create_switch_row("recursive", "edit-find-symbolic", "Recursive Traversal", "Enable to process all files in subdirectories")
         processing_group.add(child=self.setting_recursive)
 
-        self.setting_gitignore = self.create_switch_row("respect_gitignore", "action-unavailable-symbolic", "Respect .gitignore", "Skip files and folders listed in .gitignore file")
+        self.setting_gitignore = self.create_switch_row("gitignore", "action-unavailable-symbolic", "Respect .gitignore", "Skip files and folders listed in .gitignore file")
         processing_group.add(child=self.setting_gitignore)
 
         processing_group.add(self.create_buttons())
@@ -245,14 +245,14 @@ class Preferences(Adw.PreferencesWindow):
         saving_group = Adw.PreferencesGroup(description="Configure how results are saved")
         saving_page.add(group=saving_group)
 
-        self.setting_save_errors = self.create_switch_row("save_errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
+        self.setting_save_errors = self.create_switch_row("save-errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
 
         saving_group.add(child=self.setting_save_errors)
 
-        self.setting_abs_path = self.create_switch_row("absolute_paths", "view-list-symbolic", "Absolute Paths", "Include absolute paths in results")
+        self.setting_abs_path = self.create_switch_row("absolute-paths", "view-list-symbolic", "Absolute Paths", "Include absolute paths in results")
         saving_group.add(child=self.setting_abs_path)
 
-        self.setting_include_time = self.create_switch_row("include_time", "edit-find-symbolic", "Include Timestamp", "Include timestamp in results")
+        self.setting_include_time = self.create_switch_row("include-time", "edit-find-symbolic", "Include Timestamp", "Include timestamp in results")
         saving_group.add(child=self.setting_include_time)
 
         saving_group.add(child=self.create_buttons())
@@ -265,7 +265,7 @@ class Preferences(Adw.PreferencesWindow):
         hashing_page.add(group=hashing_group)
 
         self.setting_max_workers = Adw.SpinRow(
-            name="max_workers",
+            name="max-workers",
             title="Max Workers",
             subtitle="Set how many files are hashed in parallel",
             adjustment=Gtk.Adjustment.new(4, 1, 16, 1, 5, 0),
@@ -281,10 +281,10 @@ class Preferences(Adw.PreferencesWindow):
         hashing_group.add(child=self.setting_max_workers)
 
         self.drop_down_algo_button = Adw.ComboRow(
-            name="default_hash_algorithm",
+            name="algo",
             title="Hash Algorithm",
             subtitle="Select the default hashing algorithm for new jobs",
-            model=Gtk.StringList.new(self.available_algorithms),
+            model=Gtk.StringList.new(AVAILABLE_ALGOS),
             valign=Gtk.Align.CENTER,
         )
         self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
@@ -316,7 +316,7 @@ class Preferences(Adw.PreferencesWindow):
         elif isinstance(row, Adw.SpinRow):
             reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[row.get_name()]))
         elif isinstance(row, Adw.ComboRow):
-            reset_button.connect("clicked", lambda _: row.set_selected(self.available_algorithms.index(DEFAULTS[row.get_name()])))
+            reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGOS.index(DEFAULTS[row.get_name()])))
         row.add_suffix(reset_button)
 
     def create_buttons(self):
@@ -369,7 +369,7 @@ class Preferences(Adw.PreferencesWindow):
             elif isinstance(setting, Adw.SpinRow):
                 setting.set_value(self.config[setting.get_name()])
             elif isinstance(setting, Adw.ComboRow):
-                setting.set_selected(self.available_algorithms.index(self.config[setting.get_name()]))
+                setting.set_selected(AVAILABLE_ALGOS.index(self.config[setting.get_name()]))
         self.logger.debug("Applied preferences to UI components")
 
     def apply_arguments(self):
@@ -380,7 +380,7 @@ class Preferences(Adw.PreferencesWindow):
             if max_workers := Args.get("max-workers"):
                 self.setting_max_workers.set_value(max_workers)
             if algo := Args.get("algo"):
-                self.drop_down_algo_button.set_selected(self.available_algorithms.index(algo))
+                self.drop_down_algo_button.set_selected(AVAILABLE_ALGOS.index(algo))
 
     def apply_env_variables(self):
         pass
@@ -406,7 +406,7 @@ class Preferences(Adw.PreferencesWindow):
             elif isinstance(setting, Adw.SpinRow):
                 setting.set_value(DEFAULTS[setting.get_name()])
             elif isinstance(setting, Adw.ComboRow):
-                setting.set_selected(self.available_algorithms.index(DEFAULTS[setting.get_name()]))
+                setting.set_selected(AVAILABLE_ALGOS.index(DEFAULTS[setting.get_name()]))
         self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
 
     def recursive(self):
@@ -425,7 +425,7 @@ class Preferences(Adw.PreferencesWindow):
         return self.setting_max_workers.get_value()
 
     def max_rows(self) -> int:
-        return self.config["max_visible_results"]
+        return self.config["max-visible-results"]
 
     def notified_of_limit_breach(self) -> bool:
         return self._notified_of_limit_breach
@@ -458,8 +458,9 @@ class Preferences(Adw.PreferencesWindow):
 
     def on_algo_selected(self, drop_down: Gtk.DropDown, g_param_object):
         selected_hashing_algorithm = self.hashing_algorithm()
-        if self.config.get("default_hash_algorithm") != selected_hashing_algorithm:
-            self.config["default_hash_algorithm"] = selected_hashing_algorithm
+        config_key = drop_down.get_name()
+        if self.config.get(config_key) != selected_hashing_algorithm:
+            self.config[config_key] = selected_hashing_algorithm
             self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
 
     def on_close(self, _):
@@ -717,7 +718,7 @@ class CalculateHashes:
 class HashRow(Adw.ActionRow):
     _counter = 0
     _counter_hidden = 0
-    _max_width_label = max(len(algo) for algo in hashlib.algorithms_available)
+    _max_width_label = max(len(algo) for algo in AVAILABLE_ALGOS)
 
     def __init__(self, path: Path, **kwargs):
         super().__init__(**kwargs)
@@ -896,7 +897,7 @@ class HashResultRow(HashRow):
         on_button_click = lambda _, state: list(s.set_active(state) for s, _ in switches)
 
         count = 0
-        for algo in Preferences().available_algorithms:
+        for algo in AVAILABLE_ALGOS:
             if algo != self.algo:
                 if count % 5 == 0:
                     current_list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -1631,21 +1632,26 @@ class Application(Adw.Application):
         self.create_actions()
         self.create_options()
 
+    def do_handle_local_options(self, options):
+        if options.contains("list-choices"):
+            for i, algo in enumerate(AVAILABLE_ALGOS):
+                if i % 4 == 0 and i > 0:
+                    print()
+                print(f"{algo:<15}", end="")
+            print()
+            return 0
+        return -1
+
     def do_command_line(self, command_line):
         Args.set_args(command_line.get_options_dict().end().unpack())
-
         if algo := Args.get("algo"):
-            if algo not in hashlib.algorithms_available:
-                error = f"Unexpected input: {algo}\n\nAvailable Algorithms: {hashlib.algorithms_available}\n"
-                command_line.printerr_literal(error)
-
+            if algo not in AVAILABLE_ALGOS:
+                command_line.printerr_literal(f"Unexpected hash algorithm: {algo}\n")
                 if hasattr(self, "main_window"):
-                    self.main_window.add_toast(error, timeout=5)
-
+                    self.main_window.add_toast(f"<big>❌ Unexpected hash algorithm: <b>{algo}</b></big>", timeout=5)
                 return 1
 
-        paths = command_line.get_arguments()[1:]
-        if paths:
+        if paths := command_line.get_arguments()[1:]:
             os.chdir(command_line.get_cwd())
             self.open([Gio.File.new_for_path(path) for path in paths], "")
         else:
@@ -1654,7 +1660,7 @@ class Application(Adw.Application):
 
     def do_activate(self):
         self.logger.debug(f"App {self.get_application_id()} activated")
-        self.main_window: MainWindow = self.props.active_window
+        self.main_window: MainWindow = self.get_active_window()
         if not self.main_window:
             self.main_window = MainWindow(self)
         else:
@@ -1663,7 +1669,7 @@ class Application(Adw.Application):
 
     def do_open(self, files, n_files, hint):
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
-        self.main_window: MainWindow = self.props.active_window
+        self.main_window: MainWindow = self.get_active_window()
         if not self.main_window:
             self.main_window = MainWindow(self, files)
         else:
@@ -1717,7 +1723,7 @@ class Application(Adw.Application):
         self.add_main_option("gitignore", ord("g"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Skip files/folders listed in .gitignore", None)
         self.add_main_option("max-workers", ord("w"), GLib.OptionFlags.NONE, GLib.OptionArg.INT, "Maximum number of parallel hashing operations", "N")
         self.add_main_option("algo", ord("a"), GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Default hash algorithm for new jobs.", "ALGORITHM")
-        self.add_main_option("help", ord("h"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, f"Show help options\n\nAvailable algorithms:\n  {hashlib.algorithms_available}", None)
+        self.add_main_option("list-choices", ord("l"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "List available hash algorithms", None)
         self.add_main_option("DESKTOP", 0, GLib.OptionFlags.HIDDEN, GLib.OptionArg.NONE, "Invoked from the Desktop Environment", None)
 
 
