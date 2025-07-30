@@ -393,7 +393,7 @@ class Preferences(Adw.PreferencesWindow):
         from_cli = not Args.get("DESKTOP")
         if from_cli:
             self.setting_recursive.set_active(bool(Args.get("recursive")))
-            self.setting_gitignore.set_active(bool(Args.get("respect_gitignore")))
+            self.setting_gitignore.set_active(bool(Args.get("gitignore")))
             if Args.get("max_workers"):
                 self.setting_max_workers.set_value(Args.get("max_workers").get_int32())
             if Args.get("algo"):
