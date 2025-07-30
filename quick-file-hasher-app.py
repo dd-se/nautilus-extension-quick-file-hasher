@@ -166,6 +166,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
 class Args:
     _instance = None
     _args = {}
+    logger = get_logger("Args")
 
     def __new__(cls):
         if cls._instance is None:
@@ -173,24 +174,13 @@ class Args:
         return cls._instance
 
     @classmethod
-    def set_args(cls, options: GLib.VariantDict):
-        cls.set("DESKTOP", options.lookup_value("DESKTOP", GLib.VariantType.new("b")) or False)
-        cls.set("recursive", options.lookup_value("recursive", GLib.VariantType.new("b")))
-        cls.set("gitignore", options.lookup_value("gitignore", GLib.VariantType.new("b")))
-        cls.set("max_workers", options.lookup_value("max-workers", GLib.VariantType.new("i")))
-        cls.set("algo", options.lookup_value("algo", GLib.VariantType.new("s")))
-
-    @classmethod
-    def set(cls, key, value):
-        cls._args[key] = value
+    def set_args(cls, args: dict):
+        cls._args = args
+        cls.logger.debug(args)
 
     @classmethod
     def get(cls, key, default=None):
         return cls._args.get(key, default)
-
-    @classmethod
-    def get_all(cls):
-        return cls._args.copy()
 
 
 class Preferences(Adw.PreferencesWindow):
@@ -387,10 +377,10 @@ class Preferences(Adw.PreferencesWindow):
         if from_cli:
             self.setting_recursive.set_active(bool(Args.get("recursive")))
             self.setting_gitignore.set_active(bool(Args.get("gitignore")))
-            if Args.get("max_workers"):
-                self.setting_max_workers.set_value(Args.get("max_workers").get_int32())
-            if Args.get("algo"):
-                self.drop_down_algo_button.set_selected(self.available_algorithms.index(Args.get("algo").get_string()))
+            if max_workers := Args.get("max-workers"):
+                self.setting_max_workers.set_value(max_workers)
+            if algo := Args.get("algo"):
+                self.drop_down_algo_button.set_selected(self.available_algorithms.index(algo))
 
     def apply_env_variables(self):
         pass
@@ -1642,18 +1632,16 @@ class Application(Adw.Application):
         self.create_options()
 
     def do_command_line(self, command_line):
-        Args.set_args(command_line.get_options_dict())
+        Args.set_args(command_line.get_options_dict().end().unpack())
 
-        if Args.get("algo"):
-            algo = Args.get("algo").get_string()
+        if (algo := Args.get("algo")) not in hashlib.algorithms_available:
+            error = f"Unexpected input: {algo}\n\nAvailable Algorithms: {hashlib.algorithms_available}\n"
+            command_line.printerr_literal(error)
 
-            if algo not in hashlib.algorithms_available:
-                error = f"\nUnexpected input: {algo}\n\nAvailable Algorithms: {hashlib.algorithms_available}\n"
-                command_line.printerr_literal(error)
+            if hasattr(self, "main_window"):
+                self.main_window.add_toast(error, timeout=5)
 
-                if hasattr(self, "main_window"):
-                    self.main_window.add_toast(error, timeout=5)
-                return 1
+            return 1
 
         paths = command_line.get_arguments()[1:]
         if paths:
