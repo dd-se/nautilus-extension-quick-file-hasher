@@ -4,7 +4,7 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 
 ## Features
 
-- **Nautilus context menu integration**: Right-click files/folders and select "Calculate Hashes".
+- **Nautilus context menu integration**: Right-click files/folders and select "Quick File Hasher".
 - **Modern GTK4/libadwaita UI**: Responsive, animated, and user-friendly interface.
 - **Batch Processing**: Quickly calculate hashes for multiple files and folders in parallel.
 - **Copy/Compare**: Copy results to clipboard or compare file hash with clipboard contents.
