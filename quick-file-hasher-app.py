@@ -52,9 +52,8 @@ Adw.init()
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.0.0"
 AVAILABLE_ALGOS = sorted(hashlib.algorithms_available)
-CONFIG_DIR = Path.home() / ".config" / APP_ID
+CONFIG_DIR = Path(GLib.get_user_config_dir()) / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
-
 DEFAULTS = {
     "algo": "sha256",
     "max-visible-results": 100,
@@ -64,13 +63,14 @@ DEFAULTS = {
     "save-errors": False,
     "absolute-paths": True,
     "include-time": True,
+    "hash-context-menu": ["md5", "sha1", "sha256", "sha512"],
 }
 VIEW_SWITCHER_CSS = b"""
 .view-switcher button {
     background-color: #404040;
     color: white;
     transition: background-color 0.5s ease;
-    }
+}
 .view-switcher button:nth-child(1):hover {
     background-color: #2b66b8;
 }
@@ -110,13 +110,23 @@ def get_logger(name: str) -> logging.Logger:
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
+    hashes: list[str] = DEFAULTS["hash-context-menu"]
+
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
 
-    def nautilus_launch_app(self, menu_item: Nautilus.MenuItem, files: list[Nautilus.FileInfo], recursive_mode: bool = False):
+    def nautilus_launch_app(
+        self,
+        menu_item: Nautilus.MenuItem,
+        files: list[Nautilus.FileInfo],
+        hash_algo: str = None,
+        recursive_mode: bool = False,
+    ):
         self.logger.info(f"App {APP_ID} launched by file manager")
         file_paths = [f.get_location().get_path() for f in files if f.get_location()]
         cmd = ["python3", __file__] + file_paths
+        if hash_algo:
+            cmd.extend(["--algo", hash_algo])
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
         self.logger.debug(f"With args: {cmd}")
@@ -125,33 +135,90 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def create_menu(self, files, caller):
         if any(f.is_directory() for f in files):
             menu = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",
-                label="Calculate Hashes Menu",
+                name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",  # Quick
+                label="Quick File Hasher",
             )
-            submenu = Nautilus.Menu()
-            menu.set_submenu(submenu)
+            submenu = Nautilus.Menu()  # >
 
-            item_normal = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
-                label="Calculate Hashes",
-            )
-            item_normal.connect("activate", self.nautilus_launch_app, files)
-            submenu.append_item(item_normal)
+            menu.set_submenu(submenu)  # Quick >
 
-            item_recursive = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppRecursive_{caller}",
-                label="Calculate Hashes (Recursive)",
+            default_menu = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppCustom_{caller}",  # Default
+                label="Default",
             )
-            item_recursive.connect("activate", self.nautilus_launch_app, files, True)
-            submenu.append_item(item_recursive)
+            submenu.append_item(default_menu)  # Quick > Default
+
+            default_submenu = Nautilus.Menu()  #  >
+
+            default_menu.set_submenu(default_submenu)  # Quick > Default >
+
+            item_default_normal = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppCustomNormal_{caller}",  # Normal (Item)
+                label="Normal",
+            )
+            item_default_normal.connect("activate", self.nautilus_launch_app, files, None, False)
+
+            item_default_recursive = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppCustomRecursive_{caller}",  # Recursive (Item)
+                label="Recursive",
+            )
+            item_default_recursive.connect("activate", self.nautilus_launch_app, files, None, True)
+
+            default_submenu.append_item(item_default_normal)  # Quick > Default > Normal (Item)
+            default_submenu.append_item(item_default_recursive)  # Quick > Default > Recursive (Item)
+
+            for hash_name in self.hashes:
+                hash_menu = Nautilus.MenuItem(
+                    name=f"AdwNautilusExtension::OpenInApp_{hash_name}_{caller}",  # MD5
+                    label=hash_name.upper(),
+                )
+
+                submenu.append_item(hash_menu)  # Quick > MD5
+
+                hash_submenu = Nautilus.Menu()
+                hash_menu.set_submenu(hash_submenu)  # Quick > MD5 >
+
+                item_normal = Nautilus.MenuItem(
+                    name=f"AdwNautilusExtension::OpenInApp_{hash_name}_Normal_{caller}",  # Normal (Item)
+                    label="Normal",
+                )
+                item_normal.connect("activate", self.nautilus_launch_app, files, hash_name, False)
+
+                item_recursive = Nautilus.MenuItem(
+                    name=f"AdwNautilusExtension::OpenInApp_{hash_name}_Recursive_{caller}",  # Recursive (Item)
+                    label="Recursive",
+                )
+                item_recursive.connect("activate", self.nautilus_launch_app, files, hash_name, True)
+
+                hash_submenu.append_item(item_normal)  # Quick > MD5 > Normal (Item)
+                hash_submenu.append_item(item_recursive)  # Quick > MD5 > Recursive (Item)
+
             return [menu]
+
         else:
-            item = Nautilus.MenuItem(
-                name=f"AdwNautilusExtension::OpenInAppNormal_{caller}",
-                label="Calculate Hashes",
+            menu = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppMenu_{caller}",  # Quick
+                label="Quick File Hasher",
             )
-            item.connect("activate", self.nautilus_launch_app, files)
-            return [item]
+            submenu = Nautilus.Menu()  # >
+            menu.set_submenu(submenu)  # Quick >
+
+            item_default = Nautilus.MenuItem(
+                name=f"AdwNautilusExtension::OpenInAppCustom_{caller}",
+                label="Default",
+            )
+            item_default.connect("activate", self.nautilus_launch_app, files)
+            submenu.append_item(item_default)  # Quick > Default (Item)
+
+            for hash_name in self.hashes:
+                item = Nautilus.MenuItem(
+                    name=f"AdwNautilusExtension::OpenInApp_{hash_name}_{caller}",
+                    label=hash_name.upper(),
+                )
+                item.connect("activate", self.nautilus_launch_app, files, hash_name)
+                submenu.append_item(item)  # Quick > MD5 (Item)
+
+            return [menu]
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
         if not current_folder.is_directory():
@@ -330,17 +397,21 @@ class Preferences(Adw.PreferencesWindow):
         button_box.set_margin_top(20)
         main_box.append(button_box)
 
-        button_save_preferences = Gtk.Button(label="Persist")
-        button_save_preferences.set_tooltip_text("Persist current preferences to config file")
+        button_save_preferences = Gtk.Button(
+            label="Persist",
+            tooltip_text="Persist current preferences to config file",
+            hexpand=True,
+        )
         button_save_preferences.connect("clicked", lambda _: self.save_preferences_to_config_file())
-        button_save_preferences.set_hexpand(True)
         button_box.append(button_save_preferences)
 
-        button_reset_preferences = Gtk.Button(label="Reset")
+        button_reset_preferences = Gtk.Button(
+            label="Reset",
+            tooltip_text="Reset all preferences to default values",
+            hexpand=True,
+        )
         button_reset_preferences.add_css_class("destructive-action")
-        button_reset_preferences.set_tooltip_text("Reset all preferences to default values")
         button_reset_preferences.connect("clicked", lambda _: self.reset_preferences())
-        button_reset_preferences.set_hexpand(True)
         button_box.append(button_reset_preferences)
         return main_box
 
@@ -1639,8 +1710,8 @@ class Application(Adw.Application):
                     print()
                 print(f"{algo:<15}", end="")
             print()
-            return 0
-        return -1
+            return
+        return -1  # Continue
 
     def do_command_line(self, command_line):
         Args.set_args(command_line.get_options_dict().end().unpack())
