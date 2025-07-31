@@ -114,7 +114,6 @@ def get_logger(name: str) -> logging.Logger:
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
-        self.hashes = {"default"}.union()
 
     def nautilus_launch_app(
         self,
