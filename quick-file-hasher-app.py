@@ -60,6 +60,7 @@ DEFAULTS = {
     "max-workers": 4,
     "recursive": False,
     "gitignore": False,
+    "ignore-empty-files": False,
     "save-errors": False,
     "absolute-paths": True,
     "include-time": True,
@@ -303,6 +304,9 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_gitignore = self.create_switch_row("gitignore", "action-unavailable-symbolic", "Respect .gitignore", "Skip files and folders listed in .gitignore file")
         processing_group.add(child=self.setting_gitignore)
 
+        self.setting_ignore_empty_files = self.create_switch_row("ignore-empty-files", "action-unavailable-symbolic", "Ignore Empty Files", "Don't raise errors for empty files")
+        processing_group.add(child=self.setting_ignore_empty_files)
+
         processing_group.add(self.create_buttons())
 
     def setup_saving_page(self):
@@ -485,6 +489,9 @@ class Preferences(Adw.PreferencesWindow):
 
     def respect_gitignore(self):
         return self.setting_gitignore.get_active()
+
+    def ignore_empty_files(self):
+        return self.setting_ignore_empty_files.get_active()
 
     def save_errors(self):
         return self.setting_save_errors.get_active()
@@ -723,10 +730,11 @@ class CalculateHashes:
                 file_size = current_path.stat().st_size
 
                 if file_size == 0:
-                    self.queue_handler.update_error(current_path, "File is empty")
+                    if not Preferences().ignore_empty_files():
+                        self.queue_handler.update_error(current_path, "File is empty")
 
                 else:
-                    self.add_bytes(file_size)
+                    self.add_file_size(file_size)
                     jobs["paths"].append(current_path)
                     jobs["sizes"].append(file_size)
 
@@ -778,7 +786,7 @@ class CalculateHashes:
             self.logger.debug(f"Error processing {file.name}: {e}")
             self.queue_handler.update_error(file, str(e))
 
-    def add_bytes(self, bytes_: int):
+    def add_file_size(self, bytes_: int):
         self.total_bytes += bytes_
 
     def reset_counters(self):
