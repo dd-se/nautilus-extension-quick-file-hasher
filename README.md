@@ -43,7 +43,7 @@ A modern Nautilus (GNOME Files) Python extension and standalone GTK4/libadwaita 
 ## Usage
 
 - **From Nautilus:**
-  - Select files/folders, right-click, and select "Calculate Hashes".
+  - Select files/folders, right-click, and select "Quick File Hasher".
 - **From command-line:**
   - Run directly: `python3 quick-file-hasher-app.py [file1] [file2] [folder1] ...`
 - **From overview:**
