@@ -51,7 +51,9 @@ Adw.init()
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.0.0"
-AVAILABLE_ALGOS = sorted(hashlib.algorithms_available)
+PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
+AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
+NAUTILUS_CONTEXT_MENU_ALGORITHMS = ["default"] + AVAILABLE_ALGORITHMS
 CONFIG_DIR = Path(GLib.get_user_config_dir()) / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULTS = {
@@ -64,7 +66,6 @@ DEFAULTS = {
     "save-errors": False,
     "absolute-paths": True,
     "include-time": True,
-    "hash-context-menu": ["default", "md5", "sha1", "sha256", "sha512"],
 }
 VIEW_SWITCHER_CSS = b"""
 .view-switcher button {
@@ -111,10 +112,9 @@ def get_logger(name: str) -> logging.Logger:
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
-    hashes: list[str] = DEFAULTS["hash-context-menu"]
-
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
+        self.hashes = {"default"}.union()
 
     def nautilus_launch_app(
         self,
@@ -162,18 +162,18 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             recursive_submenu = Nautilus.Menu()  # >
             recursive_menu.set_submenu(recursive_submenu)  # Quick > Recursive >
 
-            for hash_name in self.hashes:
-                item_hash_normal = Nautilus.MenuItem(
+            for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
+                item_hash_simple = Nautilus.MenuItem(
                     name=f"{PREFIX}_{hash_name}_Simple_{caller}",  # MD5 Simple
-                    label=hash_name.upper(),
+                    label=hash_name.replace("_", "-").upper(),
                 )
-                item_hash_normal.connect("activate", self.nautilus_launch_app, files, None if hash_name == "default" else hash_name, False)
+                item_hash_simple.connect("activate", self.nautilus_launch_app, files, None if hash_name == "default" else hash_name, False)
 
-                simple_submenu.append_item(item_hash_normal)  # Quick > Simple > MD5
+                simple_submenu.append_item(item_hash_simple)  # Quick > Simple > MD5
 
                 item_hash_recursive = Nautilus.MenuItem(
                     name=f"{PREFIX}_{hash_name}_Recursive_{caller}",  # MD5 Recursive
-                    label=hash_name.upper(),
+                    label=hash_name.replace("_", "-").upper(),
                 )
                 item_hash_recursive.connect("activate", self.nautilus_launch_app, files, None if hash_name == "default" else hash_name, True)
 
@@ -331,7 +331,7 @@ class Preferences(Adw.PreferencesWindow):
             name="algo",
             title="Hash Algorithm",
             subtitle="Select the default hashing algorithm for new jobs",
-            model=Gtk.StringList.new(AVAILABLE_ALGOS),
+            model=Gtk.StringList.new(AVAILABLE_ALGORITHMS),
             valign=Gtk.Align.CENTER,
         )
         self.drop_down_algo_button.triggered = False
@@ -364,7 +364,7 @@ class Preferences(Adw.PreferencesWindow):
         elif isinstance(row, Adw.SpinRow):
             reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[row.get_name()]))
         elif isinstance(row, Adw.ComboRow):
-            reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGOS.index(DEFAULTS[row.get_name()])))
+            reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[row.get_name()])))
         row.add_suffix(reset_button)
 
     def create_buttons(self):
@@ -432,7 +432,7 @@ class Preferences(Adw.PreferencesWindow):
             elif isinstance(setting, Adw.SpinRow):
                 setting.set_value(self.config[setting.get_name()])
             elif isinstance(setting, Adw.ComboRow):
-                setting.set_selected(AVAILABLE_ALGOS.index(self.config[setting.get_name()]))
+                setting.set_selected(AVAILABLE_ALGORITHMS.index(self.config[setting.get_name()]))
         self.logger.debug("Applied preferences to UI components")
 
     def apply_arguments(self):
@@ -443,9 +443,9 @@ class Preferences(Adw.PreferencesWindow):
             if max_workers := Args.get("max-workers"):
                 self.setting_max_workers.set_value(max_workers)
             if algo := Args.get("algo"):
-                self.drop_down_algo_button.set_selected(AVAILABLE_ALGOS.index(algo))
+                self.drop_down_algo_button.set_selected(AVAILABLE_ALGORITHMS.index(algo))
             elif self.drop_down_algo_button.triggered:
-                self.drop_down_algo_button.set_selected(AVAILABLE_ALGOS.index(self.default_hashing_algorithm()))
+                self.drop_down_algo_button.set_selected(AVAILABLE_ALGORITHMS.index(self.default_hashing_algorithm()))
                 self.drop_down_algo_button.triggered = False
 
     def apply_env_variables(self):
@@ -472,7 +472,7 @@ class Preferences(Adw.PreferencesWindow):
             elif isinstance(setting, Adw.SpinRow):
                 setting.set_value(DEFAULTS[setting.get_name()])
             elif isinstance(setting, Adw.ComboRow):
-                setting.set_selected(AVAILABLE_ALGOS.index(DEFAULTS[setting.get_name()]))
+                setting.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[setting.get_name()]))
         self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
 
     def recursive(self):
@@ -789,7 +789,7 @@ class CalculateHashes:
 class HashRow(Adw.ActionRow):
     _counter = 0
     _counter_hidden = 0
-    _max_width_label = max(len(algo) for algo in AVAILABLE_ALGOS)
+    _max_width_label = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
 
     def __init__(self, path: Path, **kwargs):
         super().__init__(**kwargs)
@@ -968,7 +968,7 @@ class HashResultRow(HashRow):
         on_button_click = lambda _, state: list(s.set_active(state) for s, _ in switches)
 
         count = 0
-        for algo in AVAILABLE_ALGOS:
+        for algo in AVAILABLE_ALGORITHMS:
             if algo != self.algo:
                 if count % 5 == 0:
                     current_list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -1706,7 +1706,7 @@ class Application(Adw.Application):
 
     def do_handle_local_options(self, options):
         if options.contains("list-choices"):
-            for i, algo in enumerate(AVAILABLE_ALGOS):
+            for i, algo in enumerate(AVAILABLE_ALGORITHMS):
                 if i % 4 == 0 and i > 0:
                     print()
                 print(f"{algo:<15}", end="")
@@ -1717,7 +1717,7 @@ class Application(Adw.Application):
     def do_command_line(self, command_line):
         Args.set_args(command_line.get_options_dict().end().unpack())
         if algo := Args.get("algo"):
-            if algo not in AVAILABLE_ALGOS:
+            if algo not in AVAILABLE_ALGORITHMS:
                 command_line.printerr_literal(f"Unexpected hash algorithm: {algo}\n")
                 if hasattr(self, "main_window"):
                     self.main_window.add_toast(f"<big>❌ Unexpected hash algorithm: <b>{algo}</b></big>", timeout=5)
