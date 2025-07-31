@@ -421,8 +421,8 @@ class Preferences(Adw.PreferencesWindow):
     def default_hashing_algorithm(self):
         button = self.drop_down_algo_button
         config = self.get_config_file()
-        if config:
-            return config.get(button.get_name())
+        if hash := config.get(button.get_name()):
+            return hash
         return self.config.get(button.get_name())
 
     def apply_config(self):
