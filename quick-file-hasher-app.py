@@ -186,7 +186,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             quick_file_hasher_submenu = Nautilus.Menu()  # >
             quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)  # Quick >
 
-            for hash_name in self.hashes:
+            for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
                 item = Nautilus.MenuItem(
                     name=f"{PREFIX}_{hash_name}_{caller}",  # MD5
                     label=hash_name.upper(),
