@@ -74,7 +74,7 @@ VIEW_SWITCHER_CSS = b"""
     transition: background-color 0.5s ease;
 }
 .view-switcher button:nth-child(1):hover {
-    background-color: #3584e4;
+    background-color: #4990e7;
 }
 .view-switcher button:nth-child(1):active {
     background-color: #1c457e;
