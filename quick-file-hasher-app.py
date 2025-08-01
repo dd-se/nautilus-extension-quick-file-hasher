@@ -124,9 +124,9 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
 
-        self.logger.debug(f"With args: {cmd}")
         subprocess.Popen(cmd)
         self.logger.info(f"App {APP_ID} launched by file manager")
+        self.logger.debug(f"With args: {cmd}")
 
     def create_menu(self, files, caller, PREFIX="OpenInApp"):
         quick_file_hasher_menu = Nautilus.MenuItem(
@@ -196,35 +196,12 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return self.create_menu(files, 2)
 
 
-class Options:
-    _instance = None
-    _options = {}
-    logger = get_logger("Options")
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    @classmethod
-    def set_options(cls, command_line: Gio.ApplicationCommandLine):
-        cls._options = command_line.get_options_dict().end().unpack()
-
-    @classmethod
-    def get(cls, key, default=None):
-        return cls._options.get(key, default)
-
-    @classmethod
-    def get_options(cls) -> dict:
-        return cls._options
-
-
 class Algorithm(Adw.ComboRow):
-    default_algorithm_index = 0
+    _default_algorithm_index = 0
+    _logger = get_logger("Algorithm")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.logger = get_logger(self.__class__.__name__)
         self.set_name("algo")
         self.set_title("Hash Algorithm")
         self.set_subtitle("Select the default hashing algorithm for new jobs")
@@ -236,12 +213,13 @@ class Algorithm(Adw.ComboRow):
         obj: Gtk.StringObject = self.get_selected_item()
         return obj.get_string()
 
-    def set_default(self, index: int):
-        self.default_algorithm_index = index
-        self.logger.debug(f"Default algorithm set to index {index}: {AVAILABLE_ALGORITHMS[index]}")
+    def set_default_index(self):
+        index = self.get_selected()
+        self._default_algorithm_index = index
+        self._logger.debug(f"Default algorithm set to index {index}: {self.get_string()}")
 
-    def get_default(self, index: bool = False):
-        return self.default_algorithm_index if index else AVAILABLE_ALGORITHMS[self.default_algorithm_index]
+    def get_default_index(self):
+        return self._default_algorithm_index
 
 
 class Preferences(Adw.PreferencesWindow):
@@ -273,7 +251,6 @@ class Preferences(Adw.PreferencesWindow):
         self.load_config_file()
         self.apply_config()
         self.apply_env_variables()
-        self.apply_options()
 
         self.connect("close-request", self.on_close)
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
@@ -397,6 +374,7 @@ class Preferences(Adw.PreferencesWindow):
             hexpand=True,
         )
         button_save_preferences.connect("clicked", lambda _: self.save_preferences_to_config_file())
+        button_save_preferences.connect("clicked", lambda _: self.setting_algorithm.set_default_index())
         button_box.append(button_save_preferences)
 
         button_reset_preferences = Gtk.Button(
@@ -440,26 +418,25 @@ class Preferences(Adw.PreferencesWindow):
                     widget.set_value(value)
 
                 elif isinstance(widget, Algorithm):
-                    index = AVAILABLE_ALGORITHMS.index(value)
-                    widget.set_default(index)
-                    widget.set_selected(index)
+                    widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
+                    widget.set_default_index()
 
         self.logger.debug("Applied config to UI components")
 
-    def apply_options(self):
-        from_cli = not Options.get("DESKTOP")
+    def apply_options(self, options: dict):
+        from_cli = not options.get("DESKTOP")
         if from_cli:
-            self.setting_recursive.set_active(Options.get("recursive", False))
-            self.setting_gitignore.set_active(Options.get("gitignore", False))
+            self.setting_recursive.set_active(options.get("recursive", False))
+            self.setting_gitignore.set_active(options.get("gitignore", False))
 
-            if max_workers := Options.get("max-workers"):
+            if max_workers := options.get("max-workers"):
                 self.setting_max_workers.set_value(max_workers)
 
-            if algo := Options.get("algo"):
+            if algo := options.get("algo"):
                 self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(algo))
 
             else:
-                self.setting_algorithm.set_selected(self.setting_algorithm.get_default(True))
+                self.setting_algorithm.set_selected(self.setting_algorithm.get_default_index())
 
     def apply_env_variables(self):
         pass
@@ -469,8 +446,6 @@ class Preferences(Adw.PreferencesWindow):
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, sort_keys=True)
-
-            self.setting_algorithm.set_default(AVAILABLE_ALGORITHMS.index(self.config[self.setting_algorithm.get_name()]))
 
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
             self.logger.info(f"Preferences saved to file: {CONFIG_FILE}")
@@ -1743,32 +1718,32 @@ class Application(Adw.Application):
         return -1  # Continue
 
     def do_command_line(self, command_line):
-        Options.set_options(command_line)
-        self.logger.debug(f"Command line options: {Options.get_options()}")
+        options: dict = command_line.get_options_dict().end().unpack()
+        self.logger.debug(f"Command line options: {options}")
 
-        if algo := Options.get("algo"):
+        if algo := options.get("algo"):
             if algo not in AVAILABLE_ALGORITHMS:
                 command_line.printerr_literal(f"Unexpected hash algorithm: {algo}\n")
                 self.main_window.add_toast(f"<big>❌ Unexpected hash algorithm: <b>{algo}</b></big>", timeout=5)
                 return 1
 
-        self.main_window.pref.apply_options()
+        self.main_window.pref.apply_options(options)
 
         if paths := command_line.get_arguments()[1:]:
             os.chdir(command_line.get_cwd())
             self.open([Gio.File.new_for_path(path) for path in paths], "")
         else:
             self.do_activate()
+
+        self.main_window.present()
         return 0
 
     def do_activate(self):
         self.logger.debug(f"App {self.get_application_id()} activated")
-        self.main_window.present()
 
     def do_open(self, files, n_files, hint):
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
         self.main_window.start_job(files)
-        self.main_window.present()
 
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
