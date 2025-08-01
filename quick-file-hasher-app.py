@@ -221,6 +221,31 @@ class Args:
         return cls._args.get(key, default)
 
 
+class Algorithm(Adw.ComboRow):
+    default_algorithm_index = 0
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.logger = get_logger(self.__class__.__name__)
+        self.set_name("algo")
+        self.set_title("Hash Algorithm")
+        self.set_subtitle("Select the default hashing algorithm for new jobs")
+        self.set_model(Gtk.StringList.new(AVAILABLE_ALGORITHMS))
+        self.set_valign(Gtk.Align.CENTER)
+        self.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+
+    def get_string(self) -> str:
+        obj: Gtk.StringObject = self.get_selected_item()
+        return obj.get_string()
+
+    def set_default(self, index: int):
+        self.default_algorithm_index = index
+        self.logger.debug(f"Default algorithm set to index {index}: {AVAILABLE_ALGORITHMS[index]}")
+
+    def get_default(self, index: bool = False):
+        return self.default_algorithm_index if index else AVAILABLE_ALGORITHMS[self.default_algorithm_index]
+
+
 class Preferences(Adw.PreferencesWindow):
     _instance = None
     _notified_of_limit_breach = False
@@ -320,19 +345,11 @@ class Preferences(Adw.PreferencesWindow):
         self._settings.append(self.setting_max_workers)
         hashing_group.add(child=self.setting_max_workers)
 
-        self.drop_down_algo_button = Adw.ComboRow(
-            name="algo",
-            title="Hash Algorithm",
-            subtitle="Select the default hashing algorithm for new jobs",
-            model=Gtk.StringList.new(AVAILABLE_ALGORITHMS),
-            valign=Gtk.Align.CENTER,
-        )
-        self.drop_down_algo_button.triggered = False
-        self.drop_down_algo_button.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
-        self.drop_down_algo_button.connect("notify::selected", self.on_algo_selected)
-        self.add_reset_button(self.drop_down_algo_button)
-        self._settings.append(self.drop_down_algo_button)
-        hashing_group.add(child=self.drop_down_algo_button)
+        self.setting_algorithm = Algorithm()
+        self.setting_algorithm.connect("notify::selected", self.on_algo_selected)
+        self.add_reset_button(self.setting_algorithm)
+        self._settings.append(self.setting_algorithm)
+        hashing_group.add(child=self.setting_algorithm)
 
         hashing_group.add(child=self.create_buttons())
 
@@ -352,12 +369,16 @@ class Preferences(Adw.PreferencesWindow):
             tooltip_markup="<b>Reset</b> to default value",
             icon_name="edit-undo-symbolic",
         )
+
         if isinstance(row, Adw.SwitchRow):
             reset_button.connect("clicked", lambda _: row.set_active(DEFAULTS[row.get_name()]))
+
         elif isinstance(row, Adw.SpinRow):
             reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[row.get_name()]))
-        elif isinstance(row, Adw.ComboRow):
+
+        elif isinstance(row, Algorithm):
             reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[row.get_name()])))
+
         row.add_suffix(reset_button)
 
     def create_buttons(self):
@@ -411,21 +432,18 @@ class Preferences(Adw.PreferencesWindow):
             self.config.update(config)
             self.logger.debug(f"Loaded preferences from {CONFIG_FILE}")
 
-    def default_hashing_algorithm(self):
-        button = self.drop_down_algo_button
-        config = self.get_config_file()
-        if hash := config.get(button.get_name()):
-            return hash
-        return self.config.get(button.get_name())
-
     def apply_config(self):
         for setting in self._settings:
             if isinstance(setting, Adw.SwitchRow):
                 setting.set_active(self.config[setting.get_name()])
+
             elif isinstance(setting, Adw.SpinRow):
                 setting.set_value(self.config[setting.get_name()])
-            elif isinstance(setting, Adw.ComboRow):
-                setting.set_selected(AVAILABLE_ALGORITHMS.index(self.config[setting.get_name()]))
+
+            elif isinstance(setting, Algorithm):
+                setting.set_default(AVAILABLE_ALGORITHMS.index(self.config[setting.get_name()]))
+                setting.set_selected(setting.get_default(True))
+
         self.logger.debug("Applied preferences to UI components")
 
     def apply_arguments(self):
@@ -433,13 +451,15 @@ class Preferences(Adw.PreferencesWindow):
         if from_cli:
             self.setting_recursive.set_active(bool(Args.get("recursive")))
             self.setting_gitignore.set_active(bool(Args.get("gitignore")))
+
             if max_workers := Args.get("max-workers"):
                 self.setting_max_workers.set_value(max_workers)
+
             if algo := Args.get("algo"):
-                self.drop_down_algo_button.set_selected(AVAILABLE_ALGORITHMS.index(algo))
-            elif self.drop_down_algo_button.triggered:
-                self.drop_down_algo_button.set_selected(AVAILABLE_ALGORITHMS.index(self.default_hashing_algorithm()))
-                self.drop_down_algo_button.triggered = False
+                self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(algo))
+
+            else:
+                self.setting_algorithm.set_selected(self.setting_algorithm.get_default(True))
 
     def apply_env_variables(self):
         pass
@@ -447,9 +467,9 @@ class Preferences(Adw.PreferencesWindow):
     def save_preferences_to_config_file(self):
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, sort_keys=True)
+            self.setting_algorithm.set_default(AVAILABLE_ALGORITHMS.index(self.config[self.setting_algorithm.get_name()]))
 
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
             self.logger.info(f"Preferences saved to file: {CONFIG_FILE}")
@@ -467,6 +487,9 @@ class Preferences(Adw.PreferencesWindow):
             elif isinstance(setting, Adw.ComboRow):
                 setting.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[setting.get_name()]))
         self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
+
+    def get_algorithm(self) -> str:
+        return self.setting_algorithm.get_string()
 
     def recursive(self):
         return self.setting_recursive.get_active()
@@ -492,9 +515,6 @@ class Preferences(Adw.PreferencesWindow):
     def notified_of_limit_breach(self) -> bool:
         return self._notified_of_limit_breach
 
-    def hashing_algorithm(self) -> str:
-        return self.drop_down_algo_button.get_selected_item().get_string()
-
     def set_recursive_mode(self, action, param):
         state: bool = param.get_string() == "yes"
         self.setting_gitignore.set_active(state)
@@ -518,12 +538,11 @@ class Preferences(Adw.PreferencesWindow):
             self.config[config_key] = new_value
             self.logger.info(f"Spin Preference '{config_key}' changed to {new_value}")
 
-    def on_algo_selected(self, drop_down: Gtk.DropDown, g_param_object):
-        selected_hashing_algorithm = self.hashing_algorithm()
-        config_key = drop_down.get_name()
+    def on_algo_selected(self, algo: Algorithm, g_param_object):
+        selected_hashing_algorithm = algo.get_string()
+        config_key = algo.get_name()
         if self.config.get(config_key) != selected_hashing_algorithm:
             self.config[config_key] = selected_hashing_algorithm
-            drop_down.triggered = True
             self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
 
     def on_close(self, _):
@@ -1390,7 +1409,7 @@ class MainWindow(Adw.ApplicationWindow):
             target=self.calculate_hashes,
             args=(
                 paths,
-                hashing_algorithm or self.pref.hashing_algorithm(),
+                hashing_algorithm or self.pref.get_algorithm(),
             ),
             daemon=True,
         )
