@@ -116,25 +116,27 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         hash_algo: str = None,
         recursive_mode: bool = False,
     ):
-        self.logger.info(f"App {APP_ID} launched by file manager")
-        file_paths = [f.get_location().get_path() for f in files if f.get_location()]
-        cmd = ["python3", __file__] + file_paths
+        cmd = ["python3", __file__] + [f.get_location().get_path() for f in files]
+
         if hash_algo:
             cmd.extend(["--algo", hash_algo])
+
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
+
         self.logger.debug(f"With args: {cmd}")
         subprocess.Popen(cmd)
+        self.logger.info(f"App {APP_ID} launched by file manager")
 
     def create_menu(self, files, caller, PREFIX="OpenInApp"):
-        if any(f.is_directory() for f in files):
-            quick_file_hasher_menu = Nautilus.MenuItem(
-                name=f"{PREFIX}_Menu_{caller}",  # Quick
-                label="Quick File Hasher",
-            )
-            quick_file_hasher_submenu = Nautilus.Menu()  # >
-            quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)  # Quick >
+        quick_file_hasher_menu = Nautilus.MenuItem(
+            name=f"{PREFIX}_Menu_{caller}",
+            label="Quick File Hasher",  # Quick
+        )
+        quick_file_hasher_submenu = Nautilus.Menu()  # >
+        quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)  # Quick >
 
+        if any(f.is_directory() for f in files):
             simple_menu = Nautilus.MenuItem(
                 name=f"{PREFIX}_Simple_{caller}",  # Simple Menu
                 label="Simple",
@@ -172,13 +174,6 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
                 recursive_submenu.append_item(item_hash_recursive)  # Quick > Recursive > MD5
 
         else:
-            quick_file_hasher_menu = Nautilus.MenuItem(
-                name=f"{PREFIX}_Menu_{caller}",  # Quick
-                label="Quick File Hasher",
-            )
-            quick_file_hasher_submenu = Nautilus.Menu()  # >
-            quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)  # Quick >
-
             for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
                 label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
                 item = Nautilus.MenuItem(
@@ -201,10 +196,10 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return self.create_menu(files, 2)
 
 
-class Args:
+class Options:
     _instance = None
-    _args = {}
-    logger = get_logger("Args")
+    _options = {}
+    logger = get_logger("Options")
 
     def __new__(cls):
         if cls._instance is None:
@@ -212,13 +207,16 @@ class Args:
         return cls._instance
 
     @classmethod
-    def set_args(cls, args: dict):
-        cls._args = args
-        cls.logger.debug(args)
+    def set_options(cls, command_line: Gio.ApplicationCommandLine):
+        cls._options = command_line.get_options_dict().end().unpack()
 
     @classmethod
     def get(cls, key, default=None):
-        return cls._args.get(key, default)
+        return cls._options.get(key, default)
+
+    @classmethod
+    def get_options(cls) -> dict:
+        return cls._options
 
 
 class Algorithm(Adw.ComboRow):
@@ -264,8 +262,9 @@ class Preferences(Adw.PreferencesWindow):
         self.set_modal(True)
         self.set_hide_on_close(True)
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
+
         self.logger = get_logger(self.__class__.__name__)
-        self._settings: list[Adw.ActionRow] = []
+        self._setting_widgets: dict[str, Adw.ActionRow] = {}
 
         self.setup_processing_page()
         self.setup_saving_page()
@@ -274,7 +273,7 @@ class Preferences(Adw.PreferencesWindow):
         self.load_config_file()
         self.apply_config()
         self.apply_env_variables()
-        self.apply_arguments()
+        self.apply_options()
 
         self.connect("close-request", self.on_close)
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
@@ -329,6 +328,12 @@ class Preferences(Adw.PreferencesWindow):
         hashing_group = Adw.PreferencesGroup(description="Configure hashing behavior")
         hashing_page.add(group=hashing_group)
 
+        self.setting_algorithm = Algorithm()
+        self.setting_algorithm.connect("notify::selected", self.on_algo_selected)
+        self.add_reset_button(self.setting_algorithm)
+        self._setting_widgets[self.setting_algorithm.get_name()] = self.setting_algorithm
+        hashing_group.add(child=self.setting_algorithm)
+
         self.setting_max_workers = Adw.SpinRow(
             name="max-workers",
             title="Max Workers",
@@ -342,14 +347,8 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_max_workers.add_prefix(Gtk.Image.new_from_icon_name("process-working-symbolic"))
         self.setting_max_workers.connect("notify::value", self.on_spin_row_changed)
         self.add_reset_button(self.setting_max_workers)
-        self._settings.append(self.setting_max_workers)
+        self._setting_widgets[self.setting_max_workers.get_name()] = self.setting_max_workers
         hashing_group.add(child=self.setting_max_workers)
-
-        self.setting_algorithm = Algorithm()
-        self.setting_algorithm.connect("notify::selected", self.on_algo_selected)
-        self.add_reset_button(self.setting_algorithm)
-        self._settings.append(self.setting_algorithm)
-        hashing_group.add(child=self.setting_algorithm)
 
         hashing_group.add(child=self.create_buttons())
 
@@ -358,10 +357,10 @@ class Preferences(Adw.PreferencesWindow):
         switch_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
         switch_row.connect("notify::active", self.on_switch_row_changed)
         self.add_reset_button(switch_row)
-        self._settings.append(switch_row)
+        self._setting_widgets[name] = switch_row
         return switch_row
 
-    def add_reset_button(self, row):
+    def add_reset_button(self, row: Adw.ActionRow):
         reset_button = Gtk.Button(
             label="Reset",
             css_classes=["flat"],
@@ -369,15 +368,15 @@ class Preferences(Adw.PreferencesWindow):
             tooltip_markup="<b>Reset</b> to default value",
             icon_name="edit-undo-symbolic",
         )
-
+        key = row.get_name()
         if isinstance(row, Adw.SwitchRow):
-            reset_button.connect("clicked", lambda _: row.set_active(DEFAULTS[row.get_name()]))
+            reset_button.connect("clicked", lambda _: row.set_active(DEFAULTS[key]))
 
         elif isinstance(row, Adw.SpinRow):
-            reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[row.get_name()]))
+            reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[key]))
 
         elif isinstance(row, Algorithm):
-            reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[row.get_name()])))
+            reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[key])))
 
         row.add_suffix(reset_button)
 
@@ -427,35 +426,36 @@ class Preferences(Adw.PreferencesWindow):
 
     def load_config_file(self):
         self.config = DEFAULTS.copy()
-        config = self.get_config_file()
-        if config:
+        if config := self.get_config_file():
             self.config.update(config)
-            self.logger.debug(f"Loaded preferences from {CONFIG_FILE}")
+            self.logger.debug(f"Loaded config from {CONFIG_FILE}")
 
     def apply_config(self):
-        for setting in self._settings:
-            if isinstance(setting, Adw.SwitchRow):
-                setting.set_active(self.config[setting.get_name()])
+        for key, value in self.config.items():
+            if widget := self._setting_widgets.get(key):
+                if isinstance(widget, Adw.SwitchRow):
+                    widget.set_active(value)
 
-            elif isinstance(setting, Adw.SpinRow):
-                setting.set_value(self.config[setting.get_name()])
+                elif isinstance(widget, Adw.SpinRow):
+                    widget.set_value(value)
 
-            elif isinstance(setting, Algorithm):
-                setting.set_default(AVAILABLE_ALGORITHMS.index(self.config[setting.get_name()]))
-                setting.set_selected(setting.get_default(True))
+                elif isinstance(widget, Algorithm):
+                    index = AVAILABLE_ALGORITHMS.index(value)
+                    widget.set_default(index)
+                    widget.set_selected(index)
 
-        self.logger.debug("Applied preferences to UI components")
+        self.logger.debug("Applied config to UI components")
 
-    def apply_arguments(self):
-        from_cli = not Args.get("DESKTOP")
+    def apply_options(self):
+        from_cli = not Options.get("DESKTOP")
         if from_cli:
-            self.setting_recursive.set_active(bool(Args.get("recursive")))
-            self.setting_gitignore.set_active(bool(Args.get("gitignore")))
+            self.setting_recursive.set_active(Options.get("recursive", False))
+            self.setting_gitignore.set_active(Options.get("gitignore", False))
 
-            if max_workers := Args.get("max-workers"):
+            if max_workers := Options.get("max-workers"):
                 self.setting_max_workers.set_value(max_workers)
 
-            if algo := Args.get("algo"):
+            if algo := Options.get("algo"):
                 self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(algo))
 
             else:
@@ -469,6 +469,7 @@ class Preferences(Adw.PreferencesWindow):
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, sort_keys=True)
+
             self.setting_algorithm.set_default(AVAILABLE_ALGORITHMS.index(self.config[self.setting_algorithm.get_name()]))
 
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
@@ -479,13 +480,17 @@ class Preferences(Adw.PreferencesWindow):
             self.logger.error(f"Error saving preferences to {CONFIG_FILE}: {e}")
 
     def reset_preferences(self):
-        for setting in self._settings:
-            if isinstance(setting, Adw.SwitchRow):
-                setting.set_active(DEFAULTS[setting.get_name()])
-            elif isinstance(setting, Adw.SpinRow):
-                setting.set_value(DEFAULTS[setting.get_name()])
-            elif isinstance(setting, Adw.ComboRow):
-                setting.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[setting.get_name()]))
+        for key, value in DEFAULTS.items():
+            if widget := self._setting_widgets.get(key):
+                if isinstance(widget, Adw.SwitchRow):
+                    widget.set_active(value)
+
+                elif isinstance(widget, Adw.SpinRow):
+                    widget.set_value(value)
+
+                elif isinstance(widget, Algorithm):
+                    widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
+
         self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
 
     def get_algorithm(self) -> str:
@@ -1715,7 +1720,19 @@ class Application(Adw.Application):
         self.create_actions()
         self.create_options()
 
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        self.logger.debug("Application startup")
+        self.main_window: MainWindow = MainWindow(self)
+
+    def do_shutdown(self):
+        self.logger.debug("Application shutdown")
+        if hasattr(self, "main_window"):
+            self.main_window.cancel_event.set()
+        Adw.Application.do_shutdown(self)
+
     def do_handle_local_options(self, options):
+        self.logger.debug("Application handle local options")
         if options.contains("list-choices"):
             for i, algo in enumerate(AVAILABLE_ALGORITHMS):
                 if i % 4 == 0 and i > 0:
@@ -1726,13 +1743,16 @@ class Application(Adw.Application):
         return -1  # Continue
 
     def do_command_line(self, command_line):
-        Args.set_args(command_line.get_options_dict().end().unpack())
-        if algo := Args.get("algo"):
+        Options.set_options(command_line)
+        self.logger.debug(f"Command line options: {Options.get_options()}")
+
+        if algo := Options.get("algo"):
             if algo not in AVAILABLE_ALGORITHMS:
                 command_line.printerr_literal(f"Unexpected hash algorithm: {algo}\n")
-                if hasattr(self, "main_window"):
-                    self.main_window.add_toast(f"<big>❌ Unexpected hash algorithm: <b>{algo}</b></big>", timeout=5)
+                self.main_window.add_toast(f"<big>❌ Unexpected hash algorithm: <b>{algo}</b></big>", timeout=5)
                 return 1
+
+        self.main_window.pref.apply_options()
 
         if paths := command_line.get_arguments()[1:]:
             os.chdir(command_line.get_cwd())
@@ -1743,34 +1763,12 @@ class Application(Adw.Application):
 
     def do_activate(self):
         self.logger.debug(f"App {self.get_application_id()} activated")
-        self.main_window: MainWindow = self.get_active_window()
-        if not self.main_window:
-            self.main_window = MainWindow(self)
-        else:
-            Preferences().apply_arguments()
         self.main_window.present()
 
     def do_open(self, files, n_files, hint):
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
-        self.main_window: MainWindow = self.get_active_window()
-        if not self.main_window:
-            self.main_window = MainWindow(self, files)
-        else:
-            Preferences().apply_arguments()
-            self.main_window.start_job(files)
+        self.main_window.start_job(files)
         self.main_window.present()
-
-    def do_startup(self):
-        Adw.Application.do_startup(self)
-
-    def do_shutdown(self):
-        self.logger.debug("Shutting down...")
-        if hasattr(self, "main_window"):
-            self.main_window.cancel_event.set()
-        Adw.Application.do_shutdown(self)
-
-    def on_click_quit(self, *_):
-        self.quit()
 
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
@@ -1797,7 +1795,7 @@ class Application(Adw.Application):
         self.create_action("about", lambda *_: MainWindow().about_window.present())
 
         self.create_action("set-recursive-mode", lambda *_: Preferences().set_recursive_mode(*_), GLib.VariantType.new("s"))
-        self.create_action("quit", self.on_click_quit, shortcuts=["<Ctrl>Q"])
+        self.create_action("quit", lambda *_: self.quit(), shortcuts=["<Ctrl>Q"])
 
     def create_options(self):
         self.set_option_context_summary("Quick File Hasher - Modern Nautilus Extension and GTK4 App")
