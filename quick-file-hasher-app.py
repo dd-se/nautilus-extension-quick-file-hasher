@@ -53,7 +53,7 @@ APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.0.0"
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
-NAUTILUS_CONTEXT_MENU_ALGORITHMS = ["default"] + AVAILABLE_ALGORITHMS
+NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
 CONFIG_DIR = Path(GLib.get_user_config_dir()) / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULTS = {
@@ -132,9 +132,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         self.logger.debug(f"With args: {cmd}")
         subprocess.Popen(cmd)
 
-    def create_menu(self, files, caller):
-        PREFIX = "OpenInApp"
-
+    def create_menu(self, files, caller, PREFIX="OpenInApp"):
         if any(f.is_directory() for f in files):
             quick_file_hasher_menu = Nautilus.MenuItem(
                 name=f"{PREFIX}_Menu_{caller}",  # Quick
@@ -162,19 +160,20 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             recursive_menu.set_submenu(recursive_submenu)  # Quick > Recursive >
 
             for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
+                label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
                 item_hash_simple = Nautilus.MenuItem(
-                    name=f"{PREFIX}_{hash_name}_Simple_{caller}",  # MD5 Simple
-                    label=hash_name.replace("_", "-").upper(),
+                    name=f"{PREFIX}_{label}_Simple_{caller}",  # MD5 Simple
+                    label=label,
                 )
-                item_hash_simple.connect("activate", self.nautilus_launch_app, files, None if hash_name == "default" else hash_name, False)
+                item_hash_simple.connect("activate", self.nautilus_launch_app, files, hash_name, False)
 
                 simple_submenu.append_item(item_hash_simple)  # Quick > Simple > MD5
 
                 item_hash_recursive = Nautilus.MenuItem(
-                    name=f"{PREFIX}_{hash_name}_Recursive_{caller}",  # MD5 Recursive
-                    label=hash_name.replace("_", "-").upper(),
+                    name=f"{PREFIX}_{label}_Recursive_{caller}",  # MD5 Recursive
+                    label=label,
                 )
-                item_hash_recursive.connect("activate", self.nautilus_launch_app, files, None if hash_name == "default" else hash_name, True)
+                item_hash_recursive.connect("activate", self.nautilus_launch_app, files, hash_name, True)
 
                 recursive_submenu.append_item(item_hash_recursive)  # Quick > Recursive > MD5
 
@@ -187,11 +186,12 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)  # Quick >
 
             for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
+                label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
                 item = Nautilus.MenuItem(
-                    name=f"{PREFIX}_{hash_name}_{caller}",  # MD5
-                    label=hash_name.upper(),
+                    name=f"{PREFIX}_{label}_{caller}",  # MD5
+                    label=label,
                 )
-                item.connect("activate", self.nautilus_launch_app, files, None if hash_name == "default" else hash_name)
+                item.connect("activate", self.nautilus_launch_app, files, hash_name)
                 quick_file_hasher_submenu.append_item(item)  #  Quick > MD5
 
         return [quick_file_hasher_menu]
@@ -529,7 +529,7 @@ class Preferences(Adw.PreferencesWindow):
         config_key = drop_down.get_name()
         if self.config.get(config_key) != selected_hashing_algorithm:
             self.config[config_key] = selected_hashing_algorithm
-            self.drop_down_algo_button.triggered = True
+            drop_down.triggered = True
             self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
 
     def on_close(self, _):
@@ -659,16 +659,16 @@ class CalculateHashes:
         self.total_bytes = 0
         self.bytes_read = 0
 
+    def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
+        jobs = self.create_jobs(paths)
+        self.execute_jobs(jobs, hash_algorithm)
+
     def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list):
         hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
         max_workers = Preferences().max_workers()
         with ThreadPoolExecutor(max_workers) as executor:
             self.logger.debug(f"Starting hashing with {max_workers} workers")
             list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
-
-    def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
-        jobs = self.create_jobs(paths)
-        self.execute_jobs(jobs, hash_algorithm)
 
     def create_jobs(self, paths: list[Path] | list[Gio.File]):
         jobs = {"paths": [], "sizes": []}
@@ -706,7 +706,6 @@ class CalculateHashes:
         return jobs
 
     def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list]):
-        # self.logger.debug(f"Job started for: {hash_algorithm}:{current_path.name} with rules: {len(current_rules)}")
         if self.cancel_event.is_set():
             return
         try:
@@ -817,11 +816,6 @@ class HashRow(Adw.ActionRow):
         return cls._counter_hidden
 
     @classmethod
-    def reset_counter(cls):
-        cls._counter = 0
-        cls._counter_hidden = 0
-
-    @classmethod
     def increment_counter_hidden(cls):
         cls._counter_hidden += 1
         return cls._counter_hidden
@@ -831,6 +825,11 @@ class HashRow(Adw.ActionRow):
         if cls._counter_hidden > 0:
             cls._counter_hidden -= 1
         return cls._counter_hidden
+
+    @classmethod
+    def reset_counter(cls):
+        cls._counter = 0
+        cls._counter_hidden = 0
 
     def is_hidden_result(self):
         return self._hidden_result
@@ -1433,11 +1432,11 @@ class MainWindow(Adw.ApplicationWindow):
 
             elif kind == "result":
                 iterations += 1
-                GLib.timeout_add(500, self.ui_results.append, HashResultRow(*update[1:]))
+                GLib.timeout_add(250, self.ui_results.append, HashResultRow(*update[1:]))
 
             elif kind == "error":
                 iterations += 1
-                GLib.timeout_add(500, self.ui_errors.append, HashErrorRow(*update[1:]))
+                GLib.timeout_add(250, self.ui_errors.append, HashErrorRow(*update[1:]))
 
         return True  # Continue monitoring
 
