@@ -113,20 +113,20 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         self,
         menu_item: Nautilus.MenuItem,
         files: list[Nautilus.FileInfo],
-        hash_algo: str = None,
+        hash_algorithm: str = None,
         recursive_mode: bool = False,
     ):
-        cmd = ["python3", __file__] + [f.get_location().get_path() for f in files]
+        self.logger.info(f"App {APP_ID} launched by file manager")
 
-        if hash_algo:
-            cmd.extend(["--algo", hash_algo])
+        cmd = ["python3", __file__] + [f.get_location().get_path() for f in files]
+        if hash_algorithm:
+            cmd.extend(["--algo", hash_algorithm])
 
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
 
-        subprocess.Popen(cmd)
-        self.logger.info(f"App {APP_ID} launched by file manager")
         self.logger.debug(f"With args: {cmd}")
+        subprocess.Popen(cmd)
 
     def create_menu(self, files, caller, PREFIX="OpenInApp"):
         quick_file_hasher_menu = Nautilus.MenuItem(
@@ -196,32 +196,6 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return self.create_menu(files, 2)
 
 
-class Algorithm(Adw.ComboRow):
-    _default_algorithm_index = 0
-    _logger = get_logger("Algorithm")
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.set_name("algo")
-        self.set_title("Hash Algorithm")
-        self.set_subtitle("Select the default hashing algorithm for new jobs")
-        self.set_model(Gtk.StringList.new(AVAILABLE_ALGORITHMS))
-        self.set_valign(Gtk.Align.CENTER)
-        self.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
-
-    def get_string(self) -> str:
-        obj: Gtk.StringObject = self.get_selected_item()
-        return obj.get_string()
-
-    def set_default_index(self):
-        index = self.get_selected()
-        self._default_algorithm_index = index
-        self._logger.debug(f"Default algorithm set to index {index}: {self.get_string()}")
-
-    def get_default_index(self):
-        return self._default_algorithm_index
-
-
 class Preferences(Adw.PreferencesWindow):
     _instance = None
     _notified_of_limit_breach = False
@@ -236,7 +210,6 @@ class Preferences(Adw.PreferencesWindow):
             return
         super().__init__(**kwargs)
         self.set_title("Preferences")
-        self.set_transient_for(MainWindow())
         self.set_modal(True)
         self.set_hide_on_close(True)
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
@@ -305,10 +278,19 @@ class Preferences(Adw.PreferencesWindow):
         hashing_group = Adw.PreferencesGroup(description="Configure hashing behavior")
         hashing_page.add(group=hashing_group)
 
-        self.setting_algorithm = Algorithm()
+        self.setting_algorithm = Adw.ComboRow(
+            name="algo",
+            title="Hash Algorithm",
+            subtitle="Select the default hashing algorithm for new jobs",
+            model=Gtk.StringList.new(AVAILABLE_ALGORITHMS),
+            valign=Gtk.Align.CENTER,
+        )
+
+        self.setting_algorithm.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
         self.setting_algorithm.connect("notify::selected", self.on_algo_selected)
         self.add_reset_button(self.setting_algorithm)
         self._setting_widgets[self.setting_algorithm.get_name()] = self.setting_algorithm
+
         hashing_group.add(child=self.setting_algorithm)
 
         self.setting_max_workers = Adw.SpinRow(
@@ -352,7 +334,7 @@ class Preferences(Adw.PreferencesWindow):
         elif isinstance(row, Adw.SpinRow):
             reset_button.connect("clicked", lambda _: row.set_value(DEFAULTS[key]))
 
-        elif isinstance(row, Algorithm):
+        elif isinstance(row, Adw.ComboRow):
             reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(DEFAULTS[key])))
 
         row.add_suffix(reset_button)
@@ -373,8 +355,7 @@ class Preferences(Adw.PreferencesWindow):
             tooltip_text="Persist current preferences to config file",
             hexpand=True,
         )
-        button_save_preferences.connect("clicked", lambda _: self.save_preferences_to_config_file())
-        button_save_preferences.connect("clicked", lambda _: self.setting_algorithm.set_default_index())
+        button_save_preferences.connect("clicked", lambda _: self.save_working_config_to_file())
         button_box.append(button_save_preferences)
 
         button_reset_preferences = Gtk.Button(
@@ -403,13 +384,16 @@ class Preferences(Adw.PreferencesWindow):
             MainWindow().add_toast(f"Unexpected error loading config from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
     def load_config_file(self):
-        self.config = DEFAULTS.copy()
-        if config := self.get_config_file():
-            self.config.update(config)
+        self.persisted_config = DEFAULTS.copy()
+
+        if loaded_config := self.get_config_file():
+            self.persisted_config.update(loaded_config)
             self.logger.debug(f"Loaded config from {CONFIG_FILE}")
 
+        self.working_config = self.persisted_config.copy()
+
     def apply_config(self):
-        for key, value in self.config.items():
+        for key, value in self.working_config.items():
             if widget := self._setting_widgets.get(key):
                 if isinstance(widget, Adw.SwitchRow):
                     widget.set_active(value)
@@ -417,35 +401,36 @@ class Preferences(Adw.PreferencesWindow):
                 elif isinstance(widget, Adw.SpinRow):
                     widget.set_value(value)
 
-                elif isinstance(widget, Algorithm):
+                elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
-                    widget.set_default_index()
 
         self.logger.debug("Applied config to UI components")
 
-    def apply_options(self, options: dict):
-        from_cli = not options.get("DESKTOP")
-        if from_cli:
-            self.setting_recursive.set_active(options.get("recursive", False))
-            self.setting_gitignore.set_active(options.get("gitignore", False))
+    def apply_options_ui(self, options: dict):
+        self.setting_recursive.set_active(options.get("recursive", False))
+        self.setting_gitignore.set_active(options.get("gitignore", False))
 
-            if max_workers := options.get("max-workers"):
-                self.setting_max_workers.set_value(max_workers)
+        if max_workers := options.get("max-workers"):
+            self.setting_max_workers.set_value(max_workers)
 
-            if algo := options.get("algo"):
-                self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(algo))
+        if algo := options.get("algo"):
+            self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(algo))
 
-            else:
-                self.setting_algorithm.set_selected(self.setting_algorithm.get_default_index())
+        else:
+            self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(self.persisted_config.get("algo")))
+
+    def get_working_config(self):
+        return self.working_config
 
     def apply_env_variables(self):
         pass
 
-    def save_preferences_to_config_file(self):
+    def save_working_config_to_file(self):
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=4, sort_keys=True)
+                json.dump(self.working_config, f, indent=4, sort_keys=True)
+                self.persisted_config = self.working_config.copy()
 
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
             self.logger.info(f"Preferences saved to file: {CONFIG_FILE}")
@@ -463,22 +448,13 @@ class Preferences(Adw.PreferencesWindow):
                 elif isinstance(widget, Adw.SpinRow):
                     widget.set_value(value)
 
-                elif isinstance(widget, Algorithm):
+                elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
 
         self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
 
     def get_algorithm(self) -> str:
-        return self.setting_algorithm.get_string()
-
-    def recursive(self):
-        return self.setting_recursive.get_active()
-
-    def respect_gitignore(self):
-        return self.setting_gitignore.get_active()
-
-    def ignore_empty_files(self):
-        return self.setting_ignore_empty_files.get_active()
+        return self.setting_algorithm.get_selected_item().get_string()
 
     def save_errors(self):
         return self.setting_save_errors.get_active()
@@ -486,11 +462,8 @@ class Preferences(Adw.PreferencesWindow):
     def include_time(self):
         return self.setting_include_time.get_active()
 
-    def max_workers(self):
-        return self.setting_max_workers.get_value()
-
     def max_rows(self) -> int:
-        return self.config["max-visible-results"]
+        return self.working_config["max-visible-results"]
 
     def notified_of_limit_breach(self) -> bool:
         return self._notified_of_limit_breach
@@ -507,22 +480,22 @@ class Preferences(Adw.PreferencesWindow):
     def on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec):
         new_value = switch_row.get_active()
         config_key = switch_row.get_name()
-        if self.config.get(config_key) != new_value:
-            self.config[config_key] = new_value
+        if self.working_config.get(config_key) != new_value:
+            self.working_config[config_key] = new_value
             self.logger.info(f"Switch Preference '{config_key}' changed to '{new_value}'")
 
     def on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec):
         new_value = int(spin_row.get_value())
         config_key = spin_row.get_name()
-        if self.config.get(config_key) != new_value:
-            self.config[config_key] = new_value
+        if self.working_config.get(config_key) != new_value:
+            self.working_config[config_key] = new_value
             self.logger.info(f"Spin Preference '{config_key}' changed to {new_value}")
 
-    def on_algo_selected(self, algo: Algorithm, g_param_object):
-        selected_hashing_algorithm = algo.get_string()
+    def on_algo_selected(self, algo: Adw.ComboRow, g_param_object):
+        selected_hashing_algorithm = self.get_algorithm()
         config_key = algo.get_name()
-        if self.config.get(config_key) != selected_hashing_algorithm:
-            self.config[config_key] = selected_hashing_algorithm
+        if self.working_config.get(config_key) != selected_hashing_algorithm:
+            self.working_config[config_key] = selected_hashing_algorithm
             self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
 
     def on_close(self, _):
@@ -652,18 +625,18 @@ class CalculateHashes:
         self.total_bytes = 0
         self.bytes_read = 0
 
-    def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str):
-        jobs = self.create_jobs(paths)
-        self.execute_jobs(jobs, hash_algorithm)
+    def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str, options: dict):
+        jobs = self.create_jobs(paths, options)
+        self.execute_jobs(jobs, hash_algorithm, options)
 
-    def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list):
+    def execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list, options: dict):
         hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
-        max_workers = Preferences().max_workers()
+        max_workers = options.get("max-workers")
         with ThreadPoolExecutor(max_workers) as executor:
             self.logger.debug(f"Starting hashing with {max_workers} workers")
             list(executor.map(self.hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
 
-    def create_jobs(self, paths: list[Path] | list[Gio.File]):
+    def create_jobs(self, paths: list[Path] | list[Gio.File], options: dict):
         jobs = {"paths": [], "sizes": []}
 
         for root_path in paths:
@@ -674,7 +647,7 @@ class CalculateHashes:
                 ignore_rules = []
 
                 if root_path.is_dir():
-                    if Preferences().respect_gitignore():
+                    if options.get("gitingore"):
                         gitignore_file = root_path / ".gitignore"
 
                         if gitignore_file.exists():
@@ -685,9 +658,9 @@ class CalculateHashes:
                         if IgnoreRule.is_ignored(sub_path, ignore_rules):
                             self.logger.debug(f"Skipped early: {sub_path}")
                             continue
-                        self.process_path_n_rules(sub_path, ignore_rules, jobs)
+                        self.process_path_n_rules(sub_path, ignore_rules, jobs, options)
                 else:
-                    self.process_path_n_rules(root_path, ignore_rules, jobs)
+                    self.process_path_n_rules(root_path, ignore_rules, jobs, options)
 
             except Exception as e:
                 self.logger.debug(f"Error processing {root_path.name}: {e}")
@@ -698,7 +671,7 @@ class CalculateHashes:
 
         return jobs
 
-    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list]):
+    def process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list], options: dict):
         if self.cancel_event.is_set():
             return
         try:
@@ -713,7 +686,7 @@ class CalculateHashes:
                 file_size = current_path.stat().st_size
 
                 if file_size == 0:
-                    if not Preferences().ignore_empty_files():
+                    if not options.get("ignore-empty-files"):
                         self.queue_handler.update_error(current_path, "File is empty")
 
                 else:
@@ -721,10 +694,10 @@ class CalculateHashes:
                     jobs["paths"].append(current_path)
                     jobs["sizes"].append(file_size)
 
-            elif current_path.is_dir() and Preferences().recursive():
+            elif current_path.is_dir() and options.get("recursive"):
                 local_rules = []
 
-                if Preferences().respect_gitignore():
+                if options.get("gitignore"):
                     local_rules = current_rules.copy()
                     gitignore_file = current_path / ".gitignore"
 
@@ -733,7 +706,7 @@ class CalculateHashes:
                         self.logger.debug(f"Added rule late: {gitignore_file} ({len(local_rules)})")
 
                 for sub_path in current_path.iterdir():
-                    self.process_path_n_rules(sub_path, local_rules, jobs)
+                    self.process_path_n_rules(sub_path, local_rules, jobs, options)
 
             else:
                 current_path.stat()
@@ -765,6 +738,7 @@ class CalculateHashes:
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
             self.queue_handler.update_result(file, hash_value, algorithm)
+
         except Exception as e:
             self.logger.debug(f"Error processing {file.name}: {e}")
             self.queue_handler.update_error(file, str(e))
@@ -982,7 +956,7 @@ class HashResultRow(HashRow):
             if response_id == "compute":
                 selected_algos = [algo for switch, algo in switches if switch.get_active()]
                 paths = [self.path] * len(selected_algos)
-                MainWindow().start_job(paths, selected_algos)
+                MainWindow().start_job(paths, selected_algos, Preferences().get_working_config())
 
         dialog.connect("response", on_response)
         dialog.present(MainWindow())
@@ -1071,7 +1045,7 @@ class MainWindow(Adw.ApplicationWindow):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, app=None, paths: list[Path] | list[Gio.File] | None = None):
+    def __init__(self, app=None):
         if hasattr(self, "_initialized"):
             return
         super().__init__(application=app)
@@ -1082,12 +1056,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._initialized = True
 
         self.pref = Preferences()
+        self.pref.set_transient_for(self)
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self.calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
-
-        if paths:
-            self.start_job(paths)
 
     def build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -1328,7 +1300,7 @@ class MainWindow(Adw.ApplicationWindow):
                 action = 0
                 self.add_toast(f"Drag & Drop failed: {e}")
             else:
-                self.start_job(files)
+                self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
             finally:
                 drop.finish(action)
 
@@ -1381,16 +1353,13 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
-    def start_job(self, paths: list[Path] | list[Gio.File], hashing_algorithm: str | list | None = None):
+    def start_job(self, paths: list[Path] | list[Gio.File], hashing_algorithm: str | list, options: dict):
         self.cancel_event.clear()
         self.button_cancel.set_visible(True)
 
         self.processing_thread = threading.Thread(
             target=self.calculate_hashes,
-            args=(
-                paths,
-                hashing_algorithm or self.pref.get_algorithm(),
-            ),
+            args=(paths, hashing_algorithm, options),
             daemon=True,
         )
         self.processing_thread.start()
@@ -1576,7 +1545,7 @@ class MainWindow(Adw.ApplicationWindow):
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 files = file_dialog.open_multiple_finish(gio_task)
-                self.start_job(files)
+                self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
 
         file_dialog.open_multiple(parent=self, callback=on_files_dialog_dismissed)
 
@@ -1586,7 +1555,7 @@ class MainWindow(Adw.ApplicationWindow):
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 files = file_dialog.select_multiple_folders_finish(gio_task)
-                self.start_job(files)
+                self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
 
         file_dialog.select_multiple_folders(parent=self, callback=on_files_dialog_dismissed)
 
@@ -1692,13 +1661,12 @@ class Application(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
         self.logger = get_logger(self.__class__.__name__)
+        self.pref = Preferences()
         self.create_actions()
         self.create_options()
 
     def do_startup(self):
         Adw.Application.do_startup(self)
-        self.logger.debug("Application startup")
-        self.main_window: MainWindow = MainWindow(self)
 
     def do_shutdown(self):
         self.logger.debug("Application shutdown")
@@ -1718,32 +1686,50 @@ class Application(Adw.Application):
         return -1  # Continue
 
     def do_command_line(self, command_line):
-        options: dict = command_line.get_options_dict().end().unpack()
-        self.logger.debug(f"Command line options: {options}")
+        cli_options: dict = command_line.get_options_dict().end().unpack()
+        paths = command_line.get_arguments()[1:]
+        self.logger.debug(f"Initial CLI options: {cli_options}")
 
-        if algo := options.get("algo"):
-            if algo not in AVAILABLE_ALGORITHMS:
-                command_line.printerr_literal(f"Unexpected hash algorithm: {algo}\n")
-                self.main_window.add_toast(f"<big>❌ Unexpected hash algorithm: <b>{algo}</b></big>", timeout=5)
+        from_cli = "DESKTOP" not in cli_options
+        cli_options.pop("DESKTOP", None)
+
+        if from_cli:
+            defaults = self.pref.persisted_config
+            algo = cli_options.get("algo", defaults.get("algo"))
+
+            if algo and algo not in AVAILABLE_ALGORITHMS:
+                print(f"Unexpected hash algorithm: {algo}")
                 return 1
 
-        self.main_window.pref.apply_options(options)
+            max_workers = cli_options.get("max-workers", defaults.get("max-workers"))
+            cli_options.update({"algo": algo, "max-workers": max_workers})
 
-        if paths := command_line.get_arguments()[1:]:
+        if paths:
             os.chdir(command_line.get_cwd())
-            self.open([Gio.File.new_for_path(path) for path in paths], "")
+            paths = [Path(path).absolute() for path in paths]
+            working_config = cli_options or self.pref.get_working_config()
+            self.logger.debug(f"Effective CLI options out: {working_config}")
+            self.do_open(paths, len(paths), "", working_config.get("algo"), working_config)
         else:
+            if from_cli:
+                self.pref.apply_options_ui(cli_options)
             self.do_activate()
-
-        self.main_window.present()
         return 0
 
     def do_activate(self):
         self.logger.debug(f"App {self.get_application_id()} activated")
+        self.main_window: MainWindow = self.get_active_window()
+        if not self.main_window:
+            self.main_window: MainWindow = MainWindow(self)
+        self.main_window.present()
 
-    def do_open(self, files, n_files, hint):
+    def do_open(self, files, n_files, hint, hash_algorithm=None, options={}):
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
-        self.main_window.start_job(files)
+        self.main_window: MainWindow = self.get_active_window()
+        if not self.main_window:
+            self.main_window: MainWindow = MainWindow(self)
+        self.main_window.present()
+        self.main_window.start_job(files, hash_algorithm, options)
 
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
@@ -1756,29 +1742,29 @@ class Application(Adw.Application):
             )
 
     def create_actions(self):
-        self.create_action("show-searchbar", lambda *_: MainWindow().on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
-        self.create_action("hide-searchbar", lambda *_: MainWindow().on_hide_searchbar(), shortcuts=["Escape"])
+        self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
+        self.create_action("hide-searchbar", lambda *_: self.main_window.on_hide_searchbar(), shortcuts=["Escape"])
 
-        self.create_action("results-copy", lambda *_: MainWindow().on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
-        self.create_action("results-save", lambda *_: MainWindow().on_save_clicked(_), shortcuts=["<Ctrl>S"])
-        self.create_action("results-sort", lambda *_: MainWindow().on_sort_clicked(_), shortcuts=["<Ctrl>R"])
-        self.create_action("results-clear", lambda *_: MainWindow().on_clear_clicked(_), shortcuts=["<Ctrl>L"])
+        self.create_action("results-copy", lambda *_: self.main_window.on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
+        self.create_action("results-save", lambda *_: self.main_window.on_save_clicked(_), shortcuts=["<Ctrl>S"])
+        self.create_action("results-sort", lambda *_: self.main_window.on_sort_clicked(_), shortcuts=["<Ctrl>R"])
+        self.create_action("results-clear", lambda *_: self.main_window.on_clear_clicked(_), shortcuts=["<Ctrl>L"])
 
-        self.create_action("open-files", lambda *_: MainWindow().on_select_files_clicked(_), shortcuts=["<Ctrl>O"])
-        self.create_action("preferences", lambda *_: Preferences().present(), shortcuts=["<Ctrl>comma"])
-        self.create_action("shortcuts", lambda *_: MainWindow().shortcuts_window.present(), shortcuts=["<Ctrl>question"])
-        self.create_action("about", lambda *_: MainWindow().about_window.present())
+        self.create_action("open-files", lambda *_: self.main_window.on_select_files_clicked(_), shortcuts=["<Ctrl>O"])
+        self.create_action("preferences", lambda *_: self.pref.present(), shortcuts=["<Ctrl>comma"])
+        self.create_action("shortcuts", lambda *_: self.main_window.shortcuts_window.present(), shortcuts=["<Ctrl>question"])
+        self.create_action("about", lambda *_: self.main_window.about_window.present())
 
-        self.create_action("set-recursive-mode", lambda *_: Preferences().set_recursive_mode(*_), GLib.VariantType.new("s"))
+        self.create_action("set-recursive-mode", lambda *_: self.pref.set_recursive_mode(*_), GLib.VariantType.new("s"))
         self.create_action("quit", lambda *_: self.quit(), shortcuts=["<Ctrl>Q"])
 
     def create_options(self):
         self.set_option_context_summary("Quick File Hasher - Modern Nautilus Extension and GTK4 App")
-        self.set_option_context_parameter_string("[file] [folder] ... [--recursive] [--gitignore] [--max-workers 4] [--algo sha256]")
+        self.set_option_context_parameter_string("[FILE|FOLDER...] [--recursive] [--gitignore] [--max-workers 4] [--algo sha256]")
+        self.add_main_option("algo", ord("a"), GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Default hashing algorithm", "ALGORITHM")
         self.add_main_option("recursive", ord("r"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Process files within subdirectories", None)
         self.add_main_option("gitignore", ord("g"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Skip files/folders listed in .gitignore", None)
         self.add_main_option("max-workers", ord("w"), GLib.OptionFlags.NONE, GLib.OptionArg.INT, "Maximum number of parallel hashing operations", "N")
-        self.add_main_option("algo", ord("a"), GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Default hash algorithm for new jobs.", "ALGORITHM")
         self.add_main_option("list-choices", ord("l"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "List available hash algorithms", None)
         self.add_main_option("DESKTOP", 0, GLib.OptionFlags.HIDDEN, GLib.OptionArg.NONE, "Invoked from the Desktop Environment", None)
 
