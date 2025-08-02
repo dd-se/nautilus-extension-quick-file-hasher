@@ -22,7 +22,7 @@ shortcut:
 	@echo "Name=$(NAME)" >> $(SHORTCUT_NAME)
 	@echo "Comment=Python-based file hashing utility for Nautilus" >> $(SHORTCUT_NAME)
 	@echo "Icon=document-properties-symbolic" >> $(SHORTCUT_NAME)
-	@echo "Exec=$(INSTALL_DIR)/$(APP) --DESKTOP %U"  >> $(SHORTCUT_NAME)
+	@echo "Exec=python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U"  >> $(SHORTCUT_NAME)
 	@echo "Type=Application" >> $(SHORTCUT_NAME)
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)

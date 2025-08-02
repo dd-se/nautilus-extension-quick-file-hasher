@@ -27,9 +27,11 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
@@ -38,6 +40,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Callable, Literal
 
+signal.signal(signal.SIGINT, lambda s, f: exit(print("Interrupted by user (Ctrl+C)")))
 os.environ["LANG"] = "en_US.UTF-8"
 import gi  # type: ignore
 
@@ -46,8 +49,6 @@ gi.require_version(namespace="Adw", version="1")
 gi.require_version(namespace="Nautilus", version="4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
-
-Adw.init()
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.0.0"
@@ -87,13 +88,10 @@ VIEW_SWITCHER_CSS = b"""
 }
 """
 
-css_provider = Gtk.CssProvider()
-css_provider.load_from_data(VIEW_SWITCHER_CSS)
-Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
 
 def get_logger(name: str) -> logging.Logger:
     loglevel_str = os.getenv("LOGLEVEL", "INFO").upper()
+    warnings.filterwarnings("ignore" if loglevel_str == "INFO" else "default", category=DeprecationWarning)
     loglevel = getattr(logging, loglevel_str, logging.INFO)
     logger = logging.getLogger(name)
     logger.setLevel(loglevel)
@@ -103,6 +101,12 @@ def get_logger(name: str) -> logging.Logger:
     logger.addHandler(handler)
     logger.propagate = False
     return logger
+
+
+Adw.init()
+css_provider = Gtk.CssProvider()
+css_provider.load_from_data(VIEW_SWITCHER_CSS)
+Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -116,7 +120,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         hash_algorithm: str = None,
         recursive_mode: bool = False,
     ):
-        self.logger.info(f"App {APP_ID} launched by file manager")
+        self.logger.debug(f"App {APP_ID} launched by file manager")
 
         cmd = ["python3", __file__] + [f.get_location().get_path() for f in files]
         if hash_algorithm:
@@ -433,7 +437,7 @@ class Preferences(Adw.PreferencesWindow):
                 self.persisted_config = self.working_config.copy()
 
             self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
-            self.logger.info(f"Preferences saved to file: {CONFIG_FILE}")
+            self.logger.debug(f"Preferences saved to file: {CONFIG_FILE}")
 
         except Exception as e:
             self.add_toast(Adw.Toast(title=str(e)))
@@ -472,7 +476,7 @@ class Preferences(Adw.PreferencesWindow):
         state: bool = param.get_string() == "yes"
         self.setting_gitignore.set_active(state)
         self.setting_recursive.set_active(state)
-        self.logger.info(f"Recursive mode set to {state} via action")
+        self.logger.debug(f"Recursive mode set to {state} via action")
 
     def set_notified_of_limit_breach(self, state: bool):
         self._notified_of_limit_breach = state
@@ -878,7 +882,7 @@ class HashResultRow(HashRow):
 
         self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
-        self.hash_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        self.hash_icon = Gtk.Image.new_from_icon_name("dialog-password-symbolic")
         self.hash_icon_name = self.hash_icon.get_icon_name()
         self.prefix_hash_box.append(self.hash_icon)
         self.hash_name = Gtk.Label(label=self.algo.upper(), width_chars=self._max_width_label)
@@ -1687,33 +1691,36 @@ class Application(Adw.Application):
 
     def do_command_line(self, command_line):
         cli_options: dict = command_line.get_options_dict().end().unpack()
-        paths = command_line.get_arguments()[1:]
         self.logger.debug(f"Initial CLI options: {cli_options}")
 
         from_cli = "DESKTOP" not in cli_options
         cli_options.pop("DESKTOP", None)
+        _config_ = None
 
         if from_cli:
-            defaults = self.pref.persisted_config
-            algo = cli_options.get("algo", defaults.get("algo"))
+            _config_ = self.pref.persisted_config
+            algo = cli_options.get("algo", _config_.get("algo"))
+            max_workers = cli_options.get("max-workers", _config_.get("max-workers"))
 
             if algo and algo not in AVAILABLE_ALGORITHMS:
                 print(f"Unexpected hash algorithm: {algo}")
                 return 1
 
-            max_workers = cli_options.get("max-workers", defaults.get("max-workers"))
             cli_options.update({"algo": algo, "max-workers": max_workers})
 
-        if paths:
+        if paths := command_line.get_arguments()[1:]:
+            _config_ = cli_options or self.pref.get_working_config()
             os.chdir(command_line.get_cwd())
             paths = [Path(path).absolute() for path in paths]
-            working_config = cli_options or self.pref.get_working_config()
-            self.logger.debug(f"Effective CLI options out: {working_config}")
-            self.do_open(paths, len(paths), "", working_config.get("algo"), working_config)
+            self.do_open(paths, len(paths), "", _config_.get("algo"), _config_)
+
         else:
             if from_cli:
-                self.pref.apply_options_ui(cli_options)
+                _config_ = cli_options
+                self.pref.apply_options_ui(_config_)
             self.do_activate()
+
+        self.logger.debug(f"Effective CLI options out: {_config_}")
         return 0
 
     def do_activate(self):
@@ -1770,8 +1777,5 @@ class Application(Adw.Application):
 
 
 if __name__ == "__main__":
-    try:
-        app = Application()
-        app.run(sys.argv)
-    except KeyboardInterrupt:
-        app.logger.info("App interrupted by user")
+    app = Application()
+    app.run(sys.argv)
