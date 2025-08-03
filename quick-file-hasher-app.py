@@ -1698,13 +1698,18 @@ class Application(Adw.Application):
         _config_ = None
 
         if from_cli:
-            _config_ = self.pref.persisted_config
+            _config_ = self.pref.persisted_config.copy()
             algo = cli_options.get("algo") or _config_.get("algo")
 
             if algo not in AVAILABLE_ALGORITHMS:
                 print(f"Unexpected hash algorithm: {algo}")
                 return 1
-            _config_.update(**cli_options)
+
+            _config_.update(
+                recursive=cli_options.pop("recursive", False),
+                gitignore=cli_options.pop("gitignore", False),
+                **cli_options,
+            )
 
         if paths := command_line.get_arguments()[1:]:
             _config_ = _config_ or self.pref.get_working_config()

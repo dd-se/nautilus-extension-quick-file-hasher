@@ -22,13 +22,17 @@ shortcut:
 	@echo "Name=$(NAME)" >> $(SHORTCUT_NAME)
 	@echo "Comment=Python-based file hashing utility for Nautilus" >> $(SHORTCUT_NAME)
 	@echo "Icon=document-properties-symbolic" >> $(SHORTCUT_NAME)
-	@echo "Exec=python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U"  >> $(SHORTCUT_NAME)
+	@echo "Exec=python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U" >> $(SHORTCUT_NAME)
 	@echo "Type=Application" >> $(SHORTCUT_NAME)
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
 	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
+	@echo "Actions=Debug;" >> $(SHORTCUT_NAME)
+	@echo "" >> $(SHORTCUT_NAME)
+	@echo "[Desktop Action Debug]" >> $(SHORTCUT_NAME)
+	@echo "Name=Run in Debug Mode" >> $(SHORTCUT_NAME)
+	@echo "Exec=LOGLEVEL=DEBUG python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U" >> $(SHORTCUT_NAME)
 	@echo "$(SHORTCUT_NAME) file created in current directory"
-
 
 install: makedir shortcut
 	@install -m 755 $(APP) $(INSTALL_DIR)
