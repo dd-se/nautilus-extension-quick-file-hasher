@@ -651,7 +651,7 @@ class CalculateHashes:
                 ignore_rules = []
 
                 if root_path.is_dir():
-                    if options.get("gitingore"):
+                    if options.get("gitignore"):
                         gitignore_file = root_path / ".gitignore"
 
                         if gitignore_file.exists():
@@ -1699,24 +1699,21 @@ class Application(Adw.Application):
 
         if from_cli:
             _config_ = self.pref.persisted_config
-            algo = cli_options.get("algo", _config_.get("algo"))
-            max_workers = cli_options.get("max-workers", _config_.get("max-workers"))
+            algo = cli_options.get("algo") or _config_.get("algo")
 
-            if algo and algo not in AVAILABLE_ALGORITHMS:
+            if algo not in AVAILABLE_ALGORITHMS:
                 print(f"Unexpected hash algorithm: {algo}")
                 return 1
-
-            cli_options.update({"algo": algo, "max-workers": max_workers})
+            _config_.update(**cli_options)
 
         if paths := command_line.get_arguments()[1:]:
-            _config_ = cli_options or self.pref.get_working_config()
+            _config_ = _config_ or self.pref.get_working_config()
             os.chdir(command_line.get_cwd())
             paths = [Path(path).absolute() for path in paths]
             self.do_open(paths, len(paths), "", _config_.get("algo"), _config_)
 
         else:
             if from_cli:
-                _config_ = cli_options
                 self.pref.apply_options_ui(_config_)
             self.do_activate()
 
