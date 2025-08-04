@@ -88,14 +88,17 @@ CSS = b"""
 listview.custom-style-list {
     background-color: @surface; /* Use theme background */
 }
+
 .custom-success {
     color: #57EB72;
 }
 .custom-error {
     color: #FF938C;
 }
+
 .drag-overlay {
-    background-color: rgba(30, 144, 255, 0.25);
+    background-color: alpha(@accent_bg_color, 0.5);
+    color: @accent_fg_color;
 }
 """
 
@@ -933,7 +936,7 @@ class HashResultRow(HashRow):
 
                 switch = Adw.SwitchRow.new()
                 switch.connect("notify::active", can_compute)
-                switch.add_prefix(Gtk.Label(label=algo.upper()))
+                switch.add_prefix(Gtk.Label(label=algo.replace("_", "-").upper()))
                 switch.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
 
                 switches.append((switch, algo))
@@ -1067,11 +1070,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_window_overlay = Gtk.Overlay()
         self.set_content(self.main_window_overlay)
 
+        self.setup_drag_and_drop()
+        self.main_window_overlay.add_overlay(self.dnd_revealer)
+
         self.toast_overlay = Adw.ToastOverlay()
         self.main_window_overlay.set_child(self.toast_overlay)
-
-        self.setup_drag_and_drop()
-        self.main_window_overlay.add_overlay(self.drag_overlay)
 
         self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         self.toast_overlay.set_child(self.toolbar_view)
@@ -1274,28 +1277,32 @@ class MainWindow(Adw.ApplicationWindow):
         self.progress_bar = Gtk.ProgressBar(opacity=0)
 
     def setup_drag_and_drop(self):
-        self.drag_overlay = Adw.StatusPage(
+        self.dnd_status_page = Adw.StatusPage(
             title="Drop Files Here",
-            icon_name="folder-open-symbolic",
+            icon_name="document-send-symbolic",
             css_classes=["drag-overlay"],
-            visible=False,
         )
+        self.dnd_revealer = Gtk.Revealer(
+            transition_type=Gtk.RevealerTransitionType.CROSSFADE,
+            reveal_child=False,
+            can_target=False,
+            child=self.dnd_status_page,
+        )
+
         self.drop = Gtk.DropTargetAsync.new(None, Gdk.DragAction.COPY)
         self.drop.connect(
             "drag-enter",
             lambda *_: (
-                self.drag_overlay.set_visible(True),
-                self.empty_placeholder.set_visible(False),
+                self.dnd_revealer.set_reveal_child(True),
                 Gdk.DragAction.COPY,
-            )[2],
+            )[1],
         )
         self.drop.connect(
             "drag-leave",
             lambda *_: (
-                self.drag_overlay.set_visible(False),
-                self.has_results(),
+                self.dnd_revealer.set_reveal_child(False),
                 Gdk.DragAction.COPY,
-            )[2],
+            )[1],
         )
 
         def on_read_value(drop: Gdk.Drop, result):
@@ -1314,8 +1321,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop.connect(
             "drop",
             lambda ctrl, drop, x, y: (
-                self.drag_overlay.set_visible(False),
-                self.has_results(),
+                self.dnd_revealer.set_reveal_child(False),
                 drop.read_value_async(
                     Gdk.FileList,
                     GLib.PRIORITY_DEFAULT,
@@ -1361,11 +1367,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         return button
 
-    def modify_placeholder(self, title: str, description: str, icon_name: str, opacity: float | None = None):
+    def modify_placeholder(self, title: str, description: str, icon_name: str):
         current_title = self.empty_placeholder.get_title()
         if current_title == title:
             return False
-        self.empty_placeholder.set_opacity(opacity or 1)
         self.empty_placeholder.set_title(title)
         self.empty_placeholder.set_description(description)
         self.empty_placeholder.set_icon_name(icon_name)
@@ -1655,7 +1660,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.add_toast("<big>✅ Done</big>")
             self.sort_enabled = False
         else:
-            self.add_toast("<big>❌ Nothing to sort</big>")
+            self.add_toast("<big>❌ Nothing to sort.</big>")
 
     def filter_func(self, row: ResultRowData | ErrorRowData):
         if not self.search_query:
