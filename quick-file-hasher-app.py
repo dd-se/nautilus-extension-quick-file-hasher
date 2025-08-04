@@ -1169,25 +1169,27 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_content_overlay = Gtk.Overlay()
 
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
 
         self.main_content_overlay.add_overlay(self.empty_placeholder)
         self.main_content_overlay.add_overlay(self.main_box)
 
-        self.view_stack = Adw.ViewStack(vexpand=True, hexpand=True)
+        self.view_stack = Adw.ViewStack(vexpand=True, visible_child_name="results")
+        self.view_stack.connect("notify::visible-child", self.has_results)
+        self.main_box.append(self.view_stack)
         self.view_switcher.set_stack(self.view_stack)
 
         self.results_model = Gio.ListStore.new(ResultRowData)
         self.results_model.connect("items-changed", self.on_items_changed)
 
-        self.results_custom_filter = Gtk.CustomFilter.new(self.filter_func)
-        self.results_model_filtered = Gtk.FilterListModel.new(self.results_model, self.results_custom_filter)
-
         self.sort_enabled = False
         self.results_custom_sorter = Gtk.CustomSorter.new(self.sort_by_hierarchy)
-        self.results_sorted_model = Gtk.SortListModel.new(self.results_model_filtered, self.results_custom_sorter)
+        self.results_model_sorted = Gtk.SortListModel.new(self.results_model, self.results_custom_sorter)
 
-        self.results_model_selection = Gtk.NoSelection.new(self.results_sorted_model)
+        self.results_custom_filter = Gtk.CustomFilter.new(self.filter_func)
+        self.results_model_filtered = Gtk.FilterListModel.new(self.results_model_sorted, self.results_custom_filter)
+
+        self.results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
         self.results_model_selection.connect("selection-changed", self.on_selection_changed)
 
         self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["custom-style-list", "rich-list"])
@@ -1201,7 +1203,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_custom_filter = Gtk.CustomFilter.new(self.filter_func)
         self.errors_model_filtered = Gtk.FilterListModel.new(self.errors_model, self.errors_custom_filter)
 
-        self.errors_selection_model = Gtk.MultiSelection(model=self.errors_model_filtered)
+        self.errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
         self.errors_selection_model.connect("selection-changed", self.on_selection_changed)
 
         self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["custom-style-list", "rich-list"])
@@ -1210,14 +1212,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
-        self.view_stack.set_visible_child_name("results")
-        self.view_stack.connect("notify::visible-child", self.has_results)
-        self.main_box.append(self.view_stack)
-
         self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
-        for c_filter in (self.results_custom_filter, self.errors_custom_filter):
-            self.search_entry.connect("search-changed", self.on_search_changed, c_filter)
         self.search_query = ""
+        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
+        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
         self.main_box.append(self.search_entry)
 
     def setup_menu(self):
@@ -1295,47 +1293,21 @@ class MainWindow(Adw.ApplicationWindow):
             child=self.dnd_status_page,
         )
 
-        self.drop = Gtk.DropTargetAsync.new(None, Gdk.DragAction.COPY)
-        self.drop.connect(
-            "drag-enter",
-            lambda *_: (
-                self.dnd_revealer.set_reveal_child(True),
-                Gdk.DragAction.COPY,
-            )[1],
-        )
-        self.drop.connect(
-            "drag-leave",
-            lambda *_: (
-                self.dnd_revealer.set_reveal_child(False),
-                Gdk.DragAction.COPY,
-            )[1],
-        )
+        self.drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        self.drop.connect("enter", lambda *_: (self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[1])
+        self.drop.connect("leave", lambda *_: self.dnd_revealer.set_reveal_child(False))
 
-        def on_read_value(drop: Gdk.Drop, result):
+        def on_drop(ctrl, drop: Gdk.FileList, x, y, user_data=None):
+            self.dnd_revealer.set_reveal_child(False)
             try:
-                files: Gdk.FileList = drop.read_value_finish(result)
-                action = Gdk.DragAction.COPY
-            except Exception as e:
-                action = 0
-                self.add_toast(f"Drag & Drop failed: {e}")
-            else:
+                files: Gdk.FileList = drop.get_files()
                 self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
-            finally:
-                drop.finish(action)
-                return action
+                return True
+            except Exception as e:
+                self.add_toast(f"Drag & Drop failed: {e}")
+                return False
 
-        self.drop.connect(
-            "drop",
-            lambda ctrl, drop, x, y: (
-                self.dnd_revealer.set_reveal_child(False),
-                drop.read_value_async(
-                    Gdk.FileList,
-                    GLib.PRIORITY_DEFAULT,
-                    None,
-                    on_read_value,
-                ),
-            ),
-        )
+        self.drop.connect("drop", on_drop)
         self.add_controller(self.drop)
 
     def setup_about_window(self):
@@ -1509,7 +1481,7 @@ class MainWindow(Adw.ApplicationWindow):
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         op = False
         if show_empty:
-            op = self.modify_placeholder(
+            target_modified = self.modify_placeholder(
                 title="No Results" if current_page_name == "results" else "No Errors",
                 description="Select files or folders to calculate their hashes." if current_page_name == "results" else " ",
                 icon_name="text-x-generic-symbolic" if current_page_name == "results" else "object-select-symbolic",
@@ -1518,12 +1490,12 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             target = self.main_box
 
-        if not target.is_visible() or signal_from_view_stack or (target.is_visible() and op):
+        if not target.is_visible() or signal_from_view_stack or (target.is_visible() and target_modified):
             Adw.TimedAnimation(
                 widget=self,
                 value_from=0.3,
                 value_to=1.0,
-                duration=250,
+                duration=500,
                 target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
             ).play()
 
@@ -1652,7 +1624,6 @@ class MainWindow(Adw.ApplicationWindow):
         if self.button_clear.is_sensitive():
             self.results_model.remove_all()
             self.errors_model.remove_all()
-            self.view_stack.set_visible_child_name("results")
             self.add_toast("<big>✅ Results cleared</big>")
 
     def on_search_changed(self, entry: Gtk.SearchEntry, filter: Gtk.Filter):
