@@ -88,12 +88,14 @@ CSS = b"""
 listview.custom-style-list {
     background-color: @surface; /* Use theme background */
 }
-
 .custom-success {
     color: #57EB72;
 }
 .custom-error {
     color: #FF938C;
+}
+.drag-overlay {
+    background-color: rgba(30, 144, 255, 0.25);
 }
 """
 
@@ -1055,7 +1057,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.build_ui()
         self._initialized = True
-
         self.pref = Preferences()
         self.pref.set_transient_for(self)
         self.queue_handler = QueueUpdateHandler()
@@ -1063,10 +1064,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
     def build_ui(self):
-        self.toast_overlay = Adw.ToastOverlay()
-        self.set_content(self.toast_overlay)
+        self.main_window_overlay = Gtk.Overlay()
+        self.set_content(self.main_window_overlay)
 
-        self.setup_toolbar_view()
+        self.toast_overlay = Adw.ToastOverlay()
+        self.main_window_overlay.set_child(self.toast_overlay)
+
+        self.setup_drag_and_drop()
+        self.main_window_overlay.add_overlay(self.drag_overlay)
+
+        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         self.toast_overlay.set_child(self.toolbar_view)
 
         self.setup_first_top_bar()
@@ -1080,8 +1087,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.setup_progress_bar()
         self.toolbar_view.add_bottom_bar(self.progress_bar)
-
-        self.setup_drag_and_drop()
 
         self.setup_about_window()
 
@@ -1269,18 +1274,29 @@ class MainWindow(Adw.ApplicationWindow):
         self.progress_bar = Gtk.ProgressBar(opacity=0)
 
     def setup_drag_and_drop(self):
-        title = "Drop Files Here"
-        icon_name = "folder-open-symbolic"
+        self.drag_overlay = Adw.StatusPage(
+            title="Drop Files Here",
+            icon_name="folder-open-symbolic",
+            css_classes=["drag-overlay"],
+            visible=False,
+        )
         self.drop = Gtk.DropTargetAsync.new(None, Gdk.DragAction.COPY)
         self.drop.connect(
             "drag-enter",
             lambda *_: (
-                self.modify_placeholder(title, "", icon_name, 0.9),
-                self.empty_placeholder.set_visible(True),
+                self.drag_overlay.set_visible(True),
+                self.empty_placeholder.set_visible(False),
                 Gdk.DragAction.COPY,
             )[2],
         )
-        self.drop.connect("drag-leave", lambda *_: (self.has_results(), Gdk.DragAction.COPY)[1])
+        self.drop.connect(
+            "drag-leave",
+            lambda *_: (
+                self.drag_overlay.set_visible(False),
+                self.has_results(),
+                Gdk.DragAction.COPY,
+            )[2],
+        )
 
         def on_read_value(drop: Gdk.Drop, result):
             try:
@@ -1293,10 +1309,12 @@ class MainWindow(Adw.ApplicationWindow):
                 self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
             finally:
                 drop.finish(action)
+                return action
 
         self.drop.connect(
             "drop",
             lambda ctrl, drop, x, y: (
+                self.drag_overlay.set_visible(False),
                 self.has_results(),
                 drop.read_value_async(
                     Gdk.FileList,
@@ -1480,10 +1498,11 @@ class MainWindow(Adw.ApplicationWindow):
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         op = False
         if show_empty:
-            title = "No Results" if current_page_name == "results" else "No Errors"
-            description = "Select files or folders to calculate their hashes." if current_page_name == "results" else " "
-            icon_name = "text-x-generic-symbolic" if current_page_name == "results" else "object-select-symbolic"
-            op = self.modify_placeholder(title, description, icon_name)
+            op = self.modify_placeholder(
+                title="No Results" if current_page_name == "results" else "No Errors",
+                description="Select files or folders to calculate their hashes." if current_page_name == "results" else " ",
+                icon_name="text-x-generic-symbolic" if current_page_name == "results" else "object-select-symbolic",
+            )
             target = self.empty_placeholder
         else:
             target = self.main_box
