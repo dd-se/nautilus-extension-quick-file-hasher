@@ -100,6 +100,12 @@ listview.custom-style-list {
     background-color: alpha(@accent_bg_color, 0.5);
     color: @accent_fg_color;
 }
+
+scrolledwindow undershoot, scrolledwindow overshoot {
+    background-image: none;
+    border: none;
+    box-shadow: none;
+}
 """
 
 
@@ -120,7 +126,7 @@ def get_logger(name: str) -> logging.Logger:
 Adw.init()
 css_provider = Gtk.CssProvider()
 css_provider.load_from_data(CSS)
-Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -1007,7 +1013,7 @@ class HashResultRow(HashRow):
         self.algo = row_data.algo
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.hash_value)
-        self.hash_name.set_label(row_data.algo.upper())
+        self.hash_name.set_label(row_data.algo.upper().replace("_", "-"))
         handler_id = self.button_delete.connect("clicked", self.on_click_delete, list_item, model)
         list_item.handler_id = handler_id
         self.button_delete.set_sensitive(True)
