@@ -67,7 +67,7 @@ DEFAULTS = {
     "absolute-paths": True,
     "include-time": True,
 }
-VIEW_SWITCHER_CSS = b"""
+CSS = b"""
 .view-switcher button {
     background-color: #404040;
     color: white;
@@ -114,7 +114,7 @@ def get_logger(name: str) -> logging.Logger:
 
 Adw.init()
 css_provider = Gtk.CssProvider()
-css_provider.load_from_data(VIEW_SWITCHER_CSS)
+css_provider.load_from_data(CSS)
 Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
@@ -770,6 +770,9 @@ class ResultRowData(GObject.Object):
         self.hash_value = hash_value
         self.algo = algo
 
+    def get_fields(self):
+        return (self.path.as_posix().lower(), self.hash_value, self.algo)
+
     def __str__(self):
         return f"{self.path if Preferences().setting_abs_path.get_active() else self.path.name}:{self.hash_value}:{self.algo}"
 
@@ -784,6 +787,9 @@ class ErrorRowData(GObject.Object):
         self.path = path
         self.error_message = error_message
 
+    def get_fields(self):
+        return (self.path.as_posix().lower(), self.error_message)
+
     def __str__(self) -> str:
         return f"{self.path if Preferences().setting_abs_path.get_active() else self.path.name}:ERROR:{self.error_message}"
 
@@ -794,22 +800,26 @@ class HashRow(Adw.ActionRow):
     path: Path
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.set_subtitle_lines(1)
-        self.set_title_lines(1)
-        self.add_css_class("card")
-        self.set_can_focus(False)
-        self.set_selectable(False)
-        self.set_activatable(False)
-        self.set_focusable(False)
+        super().__init__(
+            subtitle_lines=1,
+            title_lines=1,
+            css_classes=["card"],
+            selectable=False,
+            activatable=False,
+            focusable=False,
+            can_focus=False,
+            **kwargs,
+        )
 
-    def create_button(self, icon_name: str | None, tooltip_text: str, callback: Callable = None, *args) -> Gtk.Button:
+    def create_button(self, icon_name: str | None, tooltip_text: str, callback: Callable, *args) -> Gtk.Button:
         if icon_name is None:
             button = Gtk.Button()
         else:
             button = Gtk.Button.new_from_icon_name(icon_name)
+
         button.set_valign(Gtk.Align.CENTER)
         button.set_tooltip_text(tooltip_text)
+
         if callback:
             button.connect("clicked", callback, *args)
         return button
@@ -943,18 +953,18 @@ class HashResultRow(HashRow):
     def on_click_compare(self, button: Gtk.Button):
         button.disconnect_by_func(self.on_click_compare)
 
-        def handle_clipboard_comparison(clipboard, result):
+        def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
             try:
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
 
                 if clipboard_text == self.hash_value:
-                    self.set_icon_("object-select-symbolic")
                     self.set_css_("custom-success")
+                    self.set_icon_("object-select-symbolic")
                     MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
 
                 else:
-                    self.set_icon_("dialog-error-symbolic")
                     self.set_css_("custom-error")
+                    self.set_icon_("dialog-error-symbolic")
                     MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
 
             except Exception as e:
@@ -1000,11 +1010,10 @@ class HashResultRow(HashRow):
 
 class HashErrorRow(HashRow):
     __gtype_name__ = "HashErrorRow"
+    error_message: str
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.error_message = ""
-
         self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
         self.hash_icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
@@ -1012,7 +1021,7 @@ class HashErrorRow(HashRow):
         self.add_prefix(self.prefix_hash_box)
 
         self.button_copy_error = self.create_button("edit-copy-symbolic", "Copy error message", self.on_click_copy)
-        self.button_delete = self.create_button("user-trash-symbolic", "Remove this error", self.on_click_delete)
+        self.button_delete = self.create_button("user-trash-symbolic", "Remove this error", None)
         self.add_suffix(self.button_copy_error)
         self.add_suffix(self.button_delete)
         self.add_css_class("custom-error")
@@ -1078,34 +1087,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.setup_shortcuts()
 
-    def setup_toolbar_view(self):
-        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
-
-    def create_button(
-        self,
-        label: str,
-        icon_name: str,
-        tooltip_text: str,
-        css_class: str,
-        callback: Callable,
-        *args,
-    ) -> Gtk.Button:
-        button = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text=tooltip_text)
-        if css_class:
-            button.add_css_class(css_class)
-
-        if callback:
-            button.connect("clicked", callback, *args)
-
-        if icon_name:
-            button_content = Adw.ButtonContent(icon_name=icon_name, label=label)
-            button.set_child(button_content)
-
-        else:
-            button.set_label(label)
-
-        return button
-
     def setup_first_top_bar(self):
         self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
 
@@ -1135,16 +1116,10 @@ class MainWindow(Adw.ApplicationWindow):
     def setup_second_top_bar(self):
         self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=4)
 
-        self.view_switcher = Adw.ViewSwitcher(hexpand=True, policy=Adw.ViewSwitcherPolicy.WIDE)
-        self.view_switcher.add_css_class("view-switcher")
+        self.view_switcher = Adw.ViewSwitcher(hexpand=True, policy=Adw.ViewSwitcherPolicy.WIDE, css_classes=["view-switcher"])
         self.second_top_bar_box.append(self.view_switcher)
 
-        self.hidden_row_counter = self.create_button("Hidden: 0", "help-about-symbolic", "Number of hidden results. Use search to reveal them.", None, None)
-        self.hidden_row_counter.set_visible(False)
-        self.second_top_bar_box.append(self.hidden_row_counter)
-
-        spacer_1 = Gtk.Box()
-        spacer_1.set_hexpand(True)
+        spacer_1 = Gtk.Box(hexpand=True)
         self.second_top_bar_box.append(spacer_1)
 
         self.button_copy_all = self.create_button("Copy", None, "Copy results to clipboard", "suggested-action", self.on_copy_all_clicked)
@@ -1201,14 +1176,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_model_selection = Gtk.NoSelection.new(self.results_sorted_model)
         self.results_model_selection.connect("selection-changed", self.on_selection_changed)
 
-        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory)
-        self.results_list_view.add_css_class("custom-style-list")
-        self.results_list_view.add_css_class("rich-list")
+        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["custom-style-list", "rich-list"])
 
-        self.results_scrolled_window = Gtk.ScrolledWindow()
-        self.results_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        self.results_scrolled_window.set_child(self.results_list_view)
-
+        self.results_scrolled_window = Gtk.ScrolledWindow(child=self.results_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
 
         self.errors_model = Gio.ListStore.new(ErrorRowData)
@@ -1220,13 +1190,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_selection_model = Gtk.MultiSelection(model=self.errors_model_filtered)
         self.errors_selection_model.connect("selection-changed", self.on_selection_changed)
 
-        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err)
-        self.errors_list_view.add_css_class("custom-style-list")
-        self.errors_list_view.add_css_class("rich-list")
+        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["custom-style-list", "rich-list"])
 
-        self.errors_scrolled_window = Gtk.ScrolledWindow()
-        self.errors_scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        self.errors_scrolled_window.set_child(self.errors_list_view)
+        self.errors_scrolled_window = Gtk.ScrolledWindow(child=self.errors_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
 
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
@@ -1309,7 +1275,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop.connect(
             "drag-enter",
             lambda *_: (
-                self.modify_placeholder(title, "", icon_name, 0.7),
+                self.modify_placeholder(title, "", icon_name, 0.9),
                 self.empty_placeholder.set_visible(True),
                 Gdk.DragAction.COPY,
             )[2],
@@ -1359,6 +1325,23 @@ class MainWindow(Adw.ApplicationWindow):
             developers=["dd-se https://github.com/dd-se"],
             designers=["dd-se https://github.com/dd-se"],
         )
+
+    def create_button(self, label: str, icon_name: str, tooltip_text: str, css_class: str, callback: Callable, *args) -> Gtk.Button:
+        button = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text=tooltip_text)
+        if css_class:
+            button.add_css_class(css_class)
+
+        if callback:
+            button.connect("clicked", callback, *args)
+
+        if icon_name:
+            button_content = Adw.ButtonContent(icon_name=icon_name, label=label)
+            button.set_child(button_content)
+
+        else:
+            button.set_label(label)
+
+        return button
 
     def modify_placeholder(self, title: str, description: str, icon_name: str, opacity: float | None = None):
         current_title = self.empty_placeholder.get_title()
@@ -1537,7 +1520,7 @@ class MainWindow(Adw.ApplicationWindow):
         if parts:
             output = "\n\n".join(parts)
         else:
-            self.add_toast("<big>❌ Nothing to copy</big>")
+            self.add_toast("<big>❌ Nothing to copy.</big>")
             output = None
 
         return output
@@ -1592,7 +1575,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
-                files_or_folders = file_dialog.select_multiple_folders_finish(gio_task)
+                if files:
+                    files_or_folders = file_dialog.open_multiple_finish(gio_task)
+                else:
+                    files_or_folders = file_dialog.select_multiple_folders_finish(gio_task)
+
                 self.start_job(files_or_folders, self.pref.get_algorithm(), self.pref.get_working_config())
 
         if files:
@@ -1602,8 +1589,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_copy_all_clicked(self, button: Gtk.Button):
         if output := self.results_to_txt():
-            clipboard = self.get_clipboard()
-            clipboard.set(output)
+            cp = Gdk.ContentProvider.new_for_bytes(
+                "text/plain;charset=utf-8",
+                GLib.Bytes.new(output.encode("utf-8")),
+            )
+            self.get_clipboard().set_content(cp)
             self.add_toast("<big>✅ Results copied to clipboard</big>")
 
     def on_save_clicked(self, _):
@@ -1654,7 +1644,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         terms = self.search_query.split()
 
-        fields = (row.path.as_posix().lower(), row.hash_value, row.algo) if hasattr(row, "hash_value") else (row.path.as_posix().lower(), row.error_message)
+        fields = row.get_fields()
         has_term = all(any(term in field for field in fields) for term in terms)
 
         return has_term
