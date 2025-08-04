@@ -5,5 +5,7 @@ description = "Nautilus extension for calculating file hashes."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "pycairo>=1.28.0",
+    "pygobject>=3.52.3",
     "pygobject-stubs>=2.13.0",
 ]
