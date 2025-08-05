@@ -72,7 +72,7 @@ CSS = b"""
 .view-switcher button {
     background-color: #404040;
     color: white;
-    transition: background-color 0.5s ease;
+    transition: background-color 0.3s ease;
 }
 .view-switcher button:nth-child(1):hover {
     background-color: #3074cf;
@@ -86,33 +86,36 @@ CSS = b"""
 .view-switcher button:nth-child(2):checked {
     background-color: #c7162b;
 }
-listview.custom-style-list {
+.custom-style-list {
     background-color: @surface;
 }
-
+.custom-style-row {
+  background-color: #3D3D3D;
+  border-radius: 2px;
+}
+.custom-style-row:hover {
+  background-color: #454545;
+}
+.drag-overlay {
+    background-color: alpha(@accent_bg_color, 0.5);
+    color: @accent_fg_color;
+}
 .custom-success {
     color: #57EB72;
 }
 .custom-error {
     color: #FF938C;
 }
-
-.drag-overlay {
-    background-color: alpha(@accent_bg_color, 0.5);
-    color: @accent_fg_color;
-}
-
-scrolledwindow undershoot, scrolledwindow overshoot {
-    background-image: none;
-    border: none;
-    box-shadow: none;
-}
 """
+
+css_provider = Gtk.CssProvider()
+css_provider.load_from_data(CSS)
+Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
 def get_logger(name: str) -> logging.Logger:
     loglevel_str = os.getenv("LOGLEVEL", "INFO").upper()
-    warnings.filterwarnings("ignore" if loglevel_str == "INFO" else "default", category=DeprecationWarning)
+    # warnings.filterwarnings("ignore" if loglevel_str == "INFO" else "default", category=DeprecationWarning)
     loglevel = getattr(logging, loglevel_str, logging.INFO)
     logger = logging.getLogger(name)
     logger.setLevel(loglevel)
@@ -125,9 +128,7 @@ def get_logger(name: str) -> logging.Logger:
 
 
 Adw.init()
-css_provider = Gtk.CssProvider()
-css_provider.load_from_data(CSS)
-Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -815,7 +816,7 @@ class HashRow(Adw.ActionRow):
         super().__init__(
             subtitle_lines=1,
             title_lines=1,
-            css_classes=["card"],
+            css_classes=["custom-style-row"],
             selectable=False,
             activatable=False,
             focusable=False,
@@ -1129,7 +1130,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.first_top_bar_box.append(self.header_bar)
 
     def setup_second_top_bar(self):
-        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=4)
+        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=8)
 
         self.view_switcher = Adw.ViewSwitcher(hexpand=True, policy=Adw.ViewSwitcherPolicy.WIDE, css_classes=["view-switcher"])
         self.second_top_bar_box.append(self.view_switcher)
@@ -1192,7 +1193,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
         self.results_model_selection.connect("selection-changed", self.on_selection_changed)
 
-        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["custom-style-list", "rich-list"])
+        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["custom-style-list"])
 
         self.results_scrolled_window = Gtk.ScrolledWindow(child=self.results_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
@@ -1206,7 +1207,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
         self.errors_selection_model.connect("selection-changed", self.on_selection_changed)
 
-        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["custom-style-list", "rich-list"])
+        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["custom-style-list"])
 
         self.errors_scrolled_window = Gtk.ScrolledWindow(child=self.errors_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
 
