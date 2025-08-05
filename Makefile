@@ -27,11 +27,7 @@ shortcut:
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
 	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
-	@echo "Actions=Debug;" >> $(SHORTCUT_NAME)
-	@echo "" >> $(SHORTCUT_NAME)
-	@echo "[Desktop Action Debug]" >> $(SHORTCUT_NAME)
-	@echo "Name=Run in Debug Mode" >> $(SHORTCUT_NAME)
-	@echo "Exec=LOGLEVEL=DEBUG python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U" >> $(SHORTCUT_NAME)
+	@echo "StartupNotify=true" >> $(SHORTCUT_NAME)
 	@echo "$(SHORTCUT_NAME) file created in current directory"
 
 install: makedir shortcut

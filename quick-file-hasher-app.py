@@ -616,8 +616,7 @@ class QueueUpdateHandler:
         self.q = Queue()
         self.logger = get_logger(self.__class__.__name__)
 
-    def update_progress(self, bytes_read: int, total_bytes: int):
-        progress = min(bytes_read / total_bytes, 1.0)
+    def update_progress(self, progress: float):
         self.q.put(("progress", progress))
 
     def update_result(self, file: Path, hash_value: str, algo: str):
@@ -642,7 +641,7 @@ class CalculateHashes:
         self.queue_handler = queue
         self.cancel_event = event
         self.total_bytes = 0
-        self.bytes_read = 0
+        self.total_bytes_read = 0
 
     def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str, options: dict):
         jobs = self.create_jobs(paths, options)
@@ -686,7 +685,7 @@ class CalculateHashes:
                 self.queue_handler.update_error(root_path, str(e))
 
         if self.total_bytes == 0:
-            self.queue_handler.update_progress(1, 1)
+            self.queue_handler.update_progress(1)
 
         return jobs
 
@@ -745,6 +744,7 @@ class CalculateHashes:
             else:
                 chunk_size = 1024 * 1024
 
+            hash_task_bytes_read = 0
             hash_obj = hashlib.new(algorithm)
             with open(file, "rb") as f:
                 while chunk := f.read(chunk_size):
@@ -752,22 +752,24 @@ class CalculateHashes:
                         return
 
                     hash_obj.update(chunk)
-                    self.bytes_read += len(chunk)
-                    self.queue_handler.update_progress(self.bytes_read, self.total_bytes)
+                    self.total_bytes_read += len(chunk)
+                    hash_task_bytes_read += len(chunk)
+                    self.queue_handler.update_progress(min(self.total_bytes_read / self.total_bytes, 1.0))
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
             self.queue_handler.update_result(file, hash_value, algorithm)
 
         except Exception as e:
-            self.logger.debug(f"Error processing {file.name}: {e}")
-            self.queue_handler.update_progress(file_size, self.total_bytes)
+            self.total_bytes_read += file_size - hash_task_bytes_read
+            self.queue_handler.update_progress(min(self.total_bytes_read / self.total_bytes, 1.0))
             self.queue_handler.update_error(file, str(e))
+            self.logger.debug(f"Error processing {file.name}: {e}")
 
     def add_file_size(self, bytes_: int):
         self.total_bytes += bytes_
 
     def reset_counters(self):
-        self.bytes_read = 0
+        self.total_bytes_read = 0
         self.total_bytes = 0
 
 
