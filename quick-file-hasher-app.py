@@ -21,6 +21,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+
 import hashlib
 import json
 import logging
@@ -86,7 +87,7 @@ CSS = b"""
     background-color: #c7162b;
 }
 listview.custom-style-list {
-    background-color: @surface; /* Use theme background */
+    background-color: @surface;
 }
 
 .custom-success {
@@ -909,52 +910,51 @@ class HashResultRow(HashRow):
         dialog.set_response_enabled("compute", False)
         dialog.set_close_response("cancel")
 
-        main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         dialog.set_extra_child(main_container)
 
-        horizontal_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        horizontal_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         main_container.append(horizontal_container)
 
         horizontal_container_2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         horizontal_container_2.set_halign(Gtk.Align.END)
         main_container.append(horizontal_container_2)
 
-        select_all_button = Gtk.Button(label="Select All")
-        select_all_button.add_css_class("flat")
+        select_all_button = Gtk.Button(label="Select All", css_classes=["flat"])
         horizontal_container_2.append(select_all_button)
 
-        deselect_all_button = Gtk.Button(label="Deselect All")
-        deselect_all_button.add_css_class("flat")
+        deselect_all_button = Gtk.Button(label="Deselect All", css_classes=["flat"])
         horizontal_container_2.append(deselect_all_button)
 
-        switches: list[tuple[Adw.SwitchRow, str]] = []
-        can_compute = lambda *_: dialog.set_response_enabled("compute", any(s.get_active() for s, _ in switches))
-        on_button_click = lambda _, state: list(s.set_active(state) for s, _ in switches)
+        switches: list[Adw.SwitchRow] = []
+        can_compute = lambda *_: dialog.set_response_enabled("compute", any(s.get_active() for s in switches))
+        on_button_click = lambda _, state: list(s.set_active(state) for s in switches)
 
         count = 0
         for algo in AVAILABLE_ALGORITHMS:
-            if algo != self.algo:
-                if count % 5 == 0:
-                    current_list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-                    current_list_box.add_css_class("boxed-list")
+            if algo == self.algo:
+                continue
 
-                    horizontal_container.append(current_list_box)
+            if count % 5 == 0:
+                current_switch_box_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                horizontal_container.append(current_switch_box_container)
 
-                switch = Adw.SwitchRow.new()
-                switch.connect("notify::active", can_compute)
-                switch.add_prefix(Gtk.Label(label=algo.replace("_", "-").upper()))
-                switch.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+            switch = Adw.SwitchRow(css_classes=["card"], can_focus=False)
+            switch.algo = algo
+            switch.add_prefix(Gtk.Label(label=algo.replace("_", "-").upper()))
+            switch.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+            switch.connect("notify::active", can_compute)
 
-                switches.append((switch, algo))
-                current_list_box.append(switch)
-                count += 1
+            switches.append(switch)
+            current_switch_box_container.append(switch)
+            count += 1
 
         select_all_button.connect("clicked", on_button_click, True)
         deselect_all_button.connect("clicked", on_button_click, False)
 
         def on_response(_, response_id):
             if response_id == "compute":
-                selected_algos = [algo for switch, algo in switches if switch.get_active()]
+                selected_algos = [switch.algo for switch in switches if switch.get_active()]
                 paths = [self.path] * len(selected_algos)
                 MainWindow().start_job(paths, selected_algos, Preferences().get_working_config())
 
@@ -1094,7 +1094,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.setup_main_content()
         self.toolbar_view.set_content(self.main_content_overlay)
 
-        self.setup_progress_bar()
+        self.setup_bottom_bar()
+        self.toolbar_view.add_bottom_bar(self.search_entry)
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
         self.setup_about_window()
@@ -1174,8 +1175,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.main_content_overlay.add_overlay(self.empty_placeholder)
         self.main_content_overlay.add_overlay(self.main_box)
 
-        self.view_stack = Adw.ViewStack(vexpand=True, visible_child_name="results")
-        self.view_stack.connect("notify::visible-child", self.has_results)
+        self.view_stack = Adw.ViewStack(vexpand=True)
         self.main_box.append(self.view_stack)
         self.view_switcher.set_stack(self.view_stack)
 
@@ -1212,11 +1212,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
-        self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
-        self.search_query = ""
-        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
-        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
-        self.main_box.append(self.search_entry)
+        self.view_stack.connect("notify::visible-child", self.has_results)
 
     def setup_menu(self):
         menu = Gio.Menu()
@@ -1277,8 +1273,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.shortcuts_window.add_section(shortcuts_section)
 
-    def setup_progress_bar(self):
+    def setup_bottom_bar(self):
         self.progress_bar = Gtk.ProgressBar(opacity=0)
+        self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
+        self.search_query = ""
+        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
+        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
 
     def setup_drag_and_drop(self):
         self.dnd_status_page = Adw.StatusPage(
@@ -1449,7 +1449,7 @@ class MainWindow(Adw.ApplicationWindow):
             widget=self,
             value_from=current_value,
             value_to=target_value,
-            duration=500,
+            duration=250,
             target=Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value)),
         ).play()
 
@@ -1479,7 +1479,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.update_badge_numbers()
 
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
-        op = False
+        target_modified = False
         if show_empty:
             target_modified = self.modify_placeholder(
                 title="No Results" if current_page_name == "results" else "No Errors",
@@ -1495,7 +1495,7 @@ class MainWindow(Adw.ApplicationWindow):
                 widget=self,
                 value_from=0.3,
                 value_to=1.0,
-                duration=500,
+                duration=250,
                 target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
             ).play()
 
