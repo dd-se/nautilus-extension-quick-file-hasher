@@ -91,7 +91,7 @@ CSS = b"""
 }
 .custom-style-row {
   background-color: #3D3D3D;
-  border-radius: 2px;
+  border-radius: 6px;
 }
 .custom-style-row:hover {
   background-color: #454545;
@@ -760,6 +760,7 @@ class CalculateHashes:
 
         except Exception as e:
             self.logger.debug(f"Error processing {file.name}: {e}")
+            self.queue_handler.update_progress(file_size, self.total_bytes)
             self.queue_handler.update_error(file, str(e))
 
     def add_file_size(self, bytes_: int):
@@ -851,19 +852,19 @@ class HashRow(Adw.ActionRow):
         anim.connect("done", lambda _: model.remove(position))
         anim.play()
 
-    def on_click_copy(self, button: Gtk.Button, add_css: bool = False):
+    def on_click_copy(self, button: Gtk.Button, css: str | None = None):
         button.disconnect_by_func(self.on_click_copy)
         button.get_clipboard().set(self.get_subtitle())
         icon_name = button.get_icon_name()
         button.set_icon_name("object-select-symbolic")
-        if add_css:
-            button.add_css_class("success")
+        if css:
+            button.add_css_class(css)
         GLib.timeout_add(
             1500,
             lambda: (
                 button.set_icon_name(icon_name),
                 button.remove_css_class("success"),
-                button.connect("clicked", self.on_click_copy, add_css),
+                button.connect("clicked", self.on_click_copy, css),
             ),
         )
 
@@ -893,7 +894,7 @@ class HashResultRow(HashRow):
 
         self.button_make_hashes = self.create_button(None, "Select and compute multiple hash algorithms for this file", self.on_click_make_hashes)
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
-        self.button_copy_hash = self.create_button("edit-copy-symbolic", "Copy hash", self.on_click_copy, True)
+        self.button_copy_hash = self.create_button("edit-copy-symbolic", "Copy hash", self.on_click_copy, "success")
         self.button_compare = self.create_button("edit-paste-symbolic", "Compare with clipboard", self.on_click_compare)
         self.button_delete = self.create_button("user-trash-symbolic", "Remove this result", None)
 
@@ -970,12 +971,12 @@ class HashResultRow(HashRow):
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
 
                 if clipboard_text == self.hash_value:
-                    self.set_css_("custom-success")
+                    self.add_css_class("custom-success")
                     self.set_icon_("object-select-symbolic")
                     MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
 
                 else:
-                    self.set_css_("custom-error")
+                    self.add_css_class("custom-error")
                     self.set_icon_("dialog-error-symbolic")
                     MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
 
@@ -1000,9 +1001,6 @@ class HashResultRow(HashRow):
 
     def reset_icon(self):
         self.set_icon_(self.hash_icon_name)
-
-    def set_css_(self, css_class: Literal["custom-success", "error"]):
-        self.add_css_class(css_class)
 
     def reset_css(self):
         self.remove_css_class("custom-success")
@@ -1096,7 +1094,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.set_content(self.main_content_overlay)
 
         self.setup_bottom_bar()
-        self.toolbar_view.add_bottom_bar(self.search_entry)
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
         self.setup_about_window()
@@ -1155,7 +1152,7 @@ class MainWindow(Adw.ApplicationWindow):
             title_widget=Gtk.Label(label="<big><b>Quick File Hasher</b></big>", use_markup=True),
         )
         self.setup_menu()
-        self.setup_search()
+        self.setup_search_button()
 
     def setup_main_content(self):
         factory = Gtk.SignalListItemFactory()
@@ -1213,6 +1210,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
+        self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
+        self.search_query = ""
+        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
+        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
+        self.main_box.append(self.search_entry)
+
         self.view_stack.connect("notify::visible-child", self.has_results)
 
     def setup_menu(self):
@@ -1224,13 +1227,13 @@ class MainWindow(Adw.ApplicationWindow):
         button_menu = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         self.header_bar.pack_end(button_menu)
 
-    def setup_search(self):
-        self.button_show_searchbar = Gtk.ToggleButton(
+    def setup_search_button(self):
+        self.button_show_searchbar = Gtk.Button(
             tooltip_text="Show search bar to filter results and errors",
             sensitive=False,
             icon_name="system-search-symbolic",
         )
-        self.button_show_searchbar.connect("clicked", self.on_click_show_searchbar)
+        self.button_show_searchbar.connect("clicked", self.on_click_show_searchbar, True)
         self.header_bar.pack_end(self.button_show_searchbar)
 
     def setup_shortcuts(self):
@@ -1276,10 +1279,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def setup_bottom_bar(self):
         self.progress_bar = Gtk.ProgressBar(opacity=0)
-        self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
-        self.search_query = ""
-        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
-        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
 
     def setup_drag_and_drop(self):
         self.dnd_status_page = Adw.StatusPage(
@@ -1561,16 +1560,14 @@ class MainWindow(Adw.ApplicationWindow):
         for item in selected_items:
             print(item)
 
-    def on_click_show_searchbar(self, *_):
+    def on_click_show_searchbar(self, _, show: bool):
         if self.button_show_searchbar.is_sensitive():
-            self.search_entry.set_visible(True)
+            self.search_entry.set_visible(show)
             self.search_entry.grab_focus()
+            if not show:
+                self.search_entry.set_text("")
         else:
             self.add_toast("<big>🔍 No Results. Search is unavailable.</big>")
-
-    def on_hide_searchbar(self):
-        self.search_entry.set_text("")
-        self.search_entry.set_visible(False)
 
     def on_select_files_or_folders_clicked(self, _, files: bool):
         title = "Select Files" if files else "Select Folders"
@@ -1759,8 +1756,8 @@ class Application(Adw.Application):
             )
 
     def create_actions(self):
-        self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(), shortcuts=["<Ctrl>F"])
-        self.create_action("hide-searchbar", lambda *_: self.main_window.on_hide_searchbar(), shortcuts=["Escape"])
+        self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(_, show=True), shortcuts=["<Ctrl>F"])
+        self.create_action("hide-searchbar", lambda *_: self.main_window.on_click_show_searchbar(_, show=False), shortcuts=["Escape"])
 
         self.create_action("results-copy", lambda *_: self.main_window.on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
         self.create_action("results-save", lambda *_: self.main_window.on_save_clicked(_), shortcuts=["<Ctrl>S"])
