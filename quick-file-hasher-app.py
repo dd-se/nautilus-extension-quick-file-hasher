@@ -86,8 +86,11 @@ CSS = b"""
 .view-switcher button:nth-child(2):checked {
     background-color: #c7162b;
 }
-.custom-style-list {
-    background-color: @surface;
+.theme-bg-color {
+    background-color: @theme_bg_color;
+}
+.search-bg-color {
+    background-color: shade(@theme_bg_color, 0.8);
 }
 .custom-style-row {
   background-color: #3D3D3D;
@@ -739,7 +742,8 @@ class CalculateHashes:
 
         except Exception as e:
             self.total_bytes_read += file_size - hash_task_bytes_read
-            self.queue_handler.update_progress(min(self.total_bytes_read / self.total_bytes, 1.0))
+            if self.total_bytes > 0:
+                self.queue_handler.update_progress(min(self.total_bytes_read / self.total_bytes, 1.0))
             self.queue_handler.update_error(file, str(e))
             self.logger.exception(f"Error processing {file.name}: {e}", stack_info=True)
 
@@ -990,7 +994,7 @@ class HashResultRow(HashRow):
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
 
-        self.hash_name.set_label(row_data.algo.upper().replace("_", "-"))
+        self.hash_name.set_label(row_data.algo.upper())
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.hash_value)
 
@@ -1056,17 +1060,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
     def build_ui(self):
-        self.main_window_overlay = Gtk.Overlay()
-        self.set_content(self.main_window_overlay)
+        self.toast_overlay = Adw.ToastOverlay()
+        self.set_content(self.toast_overlay)
+
+        self.overlay = Gtk.Overlay()
+        self.toast_overlay.set_child(self.overlay)
+
+        self.setup_search()
+        self.overlay.add_overlay(self.search_entry)
 
         self.setup_drag_and_drop()
-        self.main_window_overlay.add_overlay(self.dnd_revealer)
-
-        self.toast_overlay = Adw.ToastOverlay()
-        self.main_window_overlay.set_child(self.toast_overlay)
+        self.overlay.add_overlay(self.dnd_revealer)
 
         self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
-        self.toast_overlay.set_child(self.toolbar_view)
+        self.overlay.set_child(self.toolbar_view)
 
         self.setup_first_top_bar()
         self.toolbar_view.add_top_bar(self.first_top_bar_box)
@@ -1074,8 +1081,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.setup_second_top_bar()
         self.toolbar_view.add_top_bar(self.second_top_bar_box)
 
-        self.setup_main_content()
-        self.toolbar_view.set_content(self.main_content_overlay)
+        self.setup_content()
+        self.toolbar_view.set_content(self.content_overlay)
 
         self.setup_bottom_bar()
         self.toolbar_view.add_bottom_bar(self.progress_bar)
@@ -1083,6 +1090,48 @@ class MainWindow(Adw.ApplicationWindow):
         self.setup_about_window()
 
         self.setup_shortcuts()
+
+    def setup_search(self):
+        self.search_query = ""
+        self.search_entry = Gtk.SearchEntry(
+            placeholder_text="Type to filter & ESC to clear",
+            margin_start=10,
+            margin_end=10,
+            margin_bottom=20,
+            valign=Gtk.Align.END,
+            visible=False,
+            css_classes=["search-bg-color"],
+        )
+
+    def setup_drag_and_drop(self):
+        self.dnd_status_page = Adw.StatusPage(
+            title="Drop Files Here",
+            icon_name="document-send-symbolic",
+            css_classes=["drag-overlay"],
+        )
+        self.dnd_revealer = Gtk.Revealer(
+            transition_type=Gtk.RevealerTransitionType.CROSSFADE,
+            reveal_child=False,
+            can_target=False,
+            child=self.dnd_status_page,
+        )
+
+        self.drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        self.drop.connect("enter", lambda *_: (self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[1])
+        self.drop.connect("leave", lambda *_: self.dnd_revealer.set_reveal_child(False))
+
+        def on_drop(ctrl, drop: Gdk.FileList, x, y, user_data=None):
+            self.dnd_revealer.set_reveal_child(False)
+            try:
+                files: Gdk.FileList = drop.get_files()
+                self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
+                return True
+            except Exception as e:
+                self.add_toast(f"Drag & Drop failed: {e}")
+                return False
+
+        self.drop.connect("drop", on_drop)
+        self.add_controller(self.drop)
 
     def setup_first_top_bar(self):
         self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
@@ -1138,29 +1187,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.setup_menu()
         self.setup_search_button()
 
-    def setup_main_content(self):
-        factory = Gtk.SignalListItemFactory()
-        factory.connect("setup", self.on_factory_setup, "result")
-        factory.connect("bind", self.on_factory_bind)
-        factory.connect("unbind", self.on_factory_unbind)
-
-        factory_err = Gtk.SignalListItemFactory()
-        factory_err.connect("setup", self.on_factory_setup, "error")
-        factory_err.connect("bind", self.on_factory_bind)
-        factory_err.connect("unbind", self.on_factory_unbind)
-
-        self.main_content_overlay = Gtk.Overlay()
-
-        self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
-
-        self.main_content_overlay.add_overlay(self.empty_placeholder)
-        self.main_content_overlay.add_overlay(self.main_box)
-
-        self.view_stack = Adw.ViewStack(vexpand=True)
-        self.main_box.append(self.view_stack)
-        self.view_switcher.set_stack(self.view_stack)
-
+    def setup_results_view(self):
         self.results_model = Gio.ListStore.new(ResultRowData)
         self.results_model.connect("items-changed", self.on_items_changed)
 
@@ -1170,35 +1197,55 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.results_custom_filter = Gtk.CustomFilter.new(self.filter_func)
         self.results_model_filtered = Gtk.FilterListModel.new(self.results_model_sorted, self.results_custom_filter)
+        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
 
         self.results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
         self.results_model_selection.connect("selection-changed", self.on_selection_changed)
 
-        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["custom-style-list"])
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self.on_factory_setup, "result")
+        factory.connect("bind", self.on_factory_bind)
+        factory.connect("unbind", self.on_factory_unbind)
+        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["theme-bg-color"])
 
         self.results_scrolled_window = Gtk.ScrolledWindow(child=self.results_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
-        self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
 
+    def setup_errors_view(self):
         self.errors_model = Gio.ListStore.new(ErrorRowData)
         self.errors_model.connect("items-changed", self.on_items_changed)
 
         self.errors_custom_filter = Gtk.CustomFilter.new(self.filter_func)
         self.errors_model_filtered = Gtk.FilterListModel.new(self.errors_model, self.errors_custom_filter)
+        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
 
         self.errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
         self.errors_selection_model.connect("selection-changed", self.on_selection_changed)
 
-        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["custom-style-list"])
+        factory_err = Gtk.SignalListItemFactory()
+        factory_err.connect("setup", self.on_factory_setup, "error")
+        factory_err.connect("bind", self.on_factory_bind)
+        factory_err.connect("unbind", self.on_factory_unbind)
+        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["theme-bg-color"])
 
         self.errors_scrolled_window = Gtk.ScrolledWindow(child=self.errors_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
 
-        self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
+    def setup_content(self):
+        self.content_overlay = Gtk.Overlay()
 
-        self.search_entry = Gtk.SearchEntry(placeholder_text="Type to filter & ESC to clear", margin_bottom=2, visible=False)
-        self.search_query = ""
-        self.search_entry.connect("search-changed", self.on_search_changed, self.results_custom_filter)
-        self.search_entry.connect("search-changed", self.on_search_changed, self.errors_custom_filter)
-        self.main_box.append(self.search_entry)
+        self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
+        self.view_stack = Adw.ViewStack(vexpand=True)
+        self.view_switcher.set_stack(self.view_stack)
+        self.main_box.append(self.view_stack)
+
+        self.content_overlay.add_overlay(self.main_box)
+        self.content_overlay.add_overlay(self.empty_placeholder)
+
+        self.setup_results_view()
+        self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
+
+        self.setup_errors_view()
+        self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
         self.view_stack.connect("notify::visible-child", self.has_results)
 
@@ -1262,37 +1309,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.shortcuts_window.add_section(shortcuts_section)
 
     def setup_bottom_bar(self):
-        self.progress_bar = Gtk.ProgressBar(opacity=0)
-
-    def setup_drag_and_drop(self):
-        self.dnd_status_page = Adw.StatusPage(
-            title="Drop Files Here",
-            icon_name="document-send-symbolic",
-            css_classes=["drag-overlay"],
-        )
-        self.dnd_revealer = Gtk.Revealer(
-            transition_type=Gtk.RevealerTransitionType.CROSSFADE,
-            reveal_child=False,
-            can_target=False,
-            child=self.dnd_status_page,
-        )
-
-        self.drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
-        self.drop.connect("enter", lambda *_: (self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[1])
-        self.drop.connect("leave", lambda *_: self.dnd_revealer.set_reveal_child(False))
-
-        def on_drop(ctrl, drop: Gdk.FileList, x, y, user_data=None):
-            self.dnd_revealer.set_reveal_child(False)
-            try:
-                files: Gdk.FileList = drop.get_files()
-                self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
-                return True
-            except Exception as e:
-                self.add_toast(f"Drag & Drop failed: {e}")
-                return False
-
-        self.drop.connect("drop", on_drop)
-        self.add_controller(self.drop)
+        self.progress_bar = Gtk.ProgressBar(opacity=0, margin_top=2)
 
     def setup_about_window(self):
         self.about_window = Adw.AboutWindow(
@@ -1547,8 +1564,9 @@ class MainWindow(Adw.ApplicationWindow):
     def on_click_show_searchbar(self, show: bool):
         if self.button_show_searchbar.is_sensitive():
             self.search_entry.set_visible(show)
-            self.search_entry.grab_focus()
-            if not show:
+            if show:
+                self.search_entry.grab_focus()
+            else:
                 self.search_entry.set_text("")
         else:
             self.add_toast("<big>🔍 No Results. Search is unavailable.</big>")
@@ -1626,7 +1644,6 @@ class MainWindow(Adw.ApplicationWindow):
             return True
 
         terms = self.search_query.split()
-
         fields = row.get_fields()
         has_term = all(any(term in field for field in fields) for term in terms)
 
