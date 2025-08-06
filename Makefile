@@ -1,6 +1,5 @@
 NAME = "Quick File Hasher"
 APP = quick-file-hasher-app.py
-
 VERSION = $(shell grep -Po '^APP_VERSION\s*=\s*\K[^\s#]+' $(APP))
 SHORTCUT_NAME = $(shell grep -Po '^APP_ID\s*=\s*\K[^\s#]+' $(APP)).desktop
 
@@ -8,12 +7,20 @@ INSTALL_DIR = $(HOME)/.local/bin
 EXTENSION_DIR = $(HOME)/.local/share/nautilus-python/extensions
 SHORTCUT_DIR = $(HOME)/.local/share/applications
 
-.PHONY: shortcut install uninstall symlink makedir
+.PHONY: help shortcut install uninstall symlink makedir
+
+help:
+	@echo "Makefile for Quick File Hasher"
+	@echo "Available commands:"
+	@echo "  help       - Show this help message"
+	@echo "  install    - Install the application"
+	@echo "  uninstall  - Remove the application"
 
 makedir:
 	@mkdir -p $(INSTALL_DIR)
 	@mkdir -p $(EXTENSION_DIR)
 	@mkdir -p $(SHORTCUT_DIR)
+
 	@echo "Created directories: $(INSTALL_DIR), $(EXTENSION_DIR), $(SHORTCUT_DIR)"
 
 shortcut:
@@ -28,6 +35,13 @@ shortcut:
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
 	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
 	@echo "StartupNotify=true" >> $(SHORTCUT_NAME)
+	@echo "Actions=Debug;" >> $(SHORTCUT_NAME)
+	@echo "" >> $(SHORTCUT_NAME)
+
+	@echo "[Desktop Action Debug]" >> $(SHORTCUT_NAME)
+	@echo "Name=Run in Debug Mode" >> $(SHORTCUT_NAME)
+	@echo "Exec=env LOGLEVEL=DEBUG python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U" >> $(SHORTCUT_NAME)
+
 	@echo "$(SHORTCUT_NAME) file created in current directory"
 
 install: makedir shortcut
@@ -42,6 +56,7 @@ install: makedir shortcut
 
 	@rm -f $(SHORTCUT_NAME)
 	@echo "Removed temporary .desktop file $(SHORTCUT_NAME)"
+
 	@echo "Installation completed successfully"
 
 uninstall:
