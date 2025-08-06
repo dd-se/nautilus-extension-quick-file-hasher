@@ -233,10 +233,7 @@ class Preferences(Adw.PreferencesWindow):
     def __init__(self, **kwargs):
         if hasattr(self, "_initialized"):
             return
-        super().__init__(**kwargs)
-        self.set_title("Preferences")
-        self.set_modal(True)
-        self.set_hide_on_close(True)
+        super().__init__(title="Preferences", modal=True, hide_on_close=True, **kwargs)
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
 
         self.logger = get_logger(self.__class__.__name__)
@@ -245,10 +242,6 @@ class Preferences(Adw.PreferencesWindow):
         self.setup_processing_page()
         self.setup_saving_page()
         self.setup_hashing_page()
-
-        self.load_config_file()
-        self.apply_config()
-        self.apply_env_variables()
 
         self.connect("close-request", self.on_close)
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
@@ -402,11 +395,9 @@ class Preferences(Adw.PreferencesWindow):
 
         except json.JSONDecodeError as e:
             self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
-            MainWindow().add_toast(f"Error decoding JSON from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
         except Exception as e:
             self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
-            MainWindow().add_toast(f"Unexpected error loading config from {CONFIG_FILE}. Using defaults.", priority=Adw.ToastPriority.HIGH)
 
     def load_config_file(self):
         self.persisted_config = DEFAULTS.copy()
@@ -417,8 +408,8 @@ class Preferences(Adw.PreferencesWindow):
 
         self.working_config = self.persisted_config.copy()
 
-    def apply_config(self):
-        for key, value in self.working_config.items():
+    def apply_config(self, config: dict):
+        for key, value in config.items():
             if widget := self._setting_widgets.get(key):
                 if isinstance(widget, Adw.SwitchRow):
                     widget.set_active(value)
@@ -431,24 +422,11 @@ class Preferences(Adw.PreferencesWindow):
 
         self.logger.debug("Applied config to UI components")
 
-    def apply_options_ui(self, options: dict):
-        self.setting_recursive.set_active(options.get("recursive", False))
-        self.setting_gitignore.set_active(options.get("gitignore", False))
-
-        if max_workers := options.get("max-workers"):
-            self.setting_max_workers.set_value(max_workers)
-
-        if algo := options.get("algo"):
-            self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(algo))
-
-        else:
-            self.setting_algorithm.set_selected(AVAILABLE_ALGORITHMS.index(self.persisted_config.get("algo")))
+    def get_persisted_config(self):
+        return self.persisted_config
 
     def get_working_config(self):
         return self.working_config
-
-    def apply_env_variables(self):
-        pass
 
     def save_working_config_to_file(self):
         try:
@@ -763,7 +741,7 @@ class CalculateHashes:
             self.total_bytes_read += file_size - hash_task_bytes_read
             self.queue_handler.update_progress(min(self.total_bytes_read / self.total_bytes, 1.0))
             self.queue_handler.update_error(file, str(e))
-            self.logger.debug(f"Error processing {file.name}: {e}")
+            self.logger.exception(f"Error processing {file.name}: {e}", stack_info=True)
 
     def add_file_size(self, bytes_: int):
         self.total_bytes += bytes_
@@ -776,15 +754,12 @@ class CalculateHashes:
 class ResultRowData(GObject.Object):
     __gtype_name__ = "ResultRowData"
 
-    path = GObject.Property()
-    hash_value = GObject.Property(type=str)
-    algo = GObject.Property(type=str)
+    path: Path = GObject.Property()
+    hash_value: str = GObject.Property(type=str)
+    algo: str = GObject.Property(type=str)
 
     def __init__(self, path: Path, hash_value: str, algo: str, **kwargs):
-        super().__init__(**kwargs)
-        self.path = path
-        self.hash_value = hash_value
-        self.algo = algo
+        super().__init__(path=path, hash_value=hash_value, algo=algo, **kwargs)
 
     def get_fields(self):
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
@@ -795,13 +770,11 @@ class ResultRowData(GObject.Object):
 
 class ErrorRowData(GObject.Object):
     __gtype_name__ = "ErrorRowData"
-    path = GObject.Property()
-    error_message = GObject.Property(type=str)
+    path: Path = GObject.Property()
+    error_message: str = GObject.Property(type=str)
 
     def __init__(self, path: Path, error_message: str, **kwargs):
-        super().__init__(**kwargs)
-        self.path = path
-        self.error_message = error_message
+        super().__init__(path=path, error_message=error_message, **kwargs)
 
     def get_fields(self):
         return (self.path.as_posix().lower(), self.error_message)
@@ -840,9 +813,13 @@ class HashRow(Adw.ActionRow):
             button.connect("clicked", callback, *args)
         return button
 
-    def on_click_delete(self, button: Gtk.Button, list_item: Gtk.ListItem, model: Gtk.ListStore):
+    def on_click_delete(self, button: Gtk.Button, list_item: Gtk.ListItem, model: Gio.ListStore):
         button.set_sensitive(False)
-        position = list_item.get_position()
+        row_data = list_item.get_item()
+
+        found, position = model.find(row_data)
+        if not found:
+            raise ValueError("Item not found in original model")
 
         anim = Adw.TimedAnimation(
             widget=self,
@@ -1008,13 +985,15 @@ class HashResultRow(HashRow):
         self.remove_css_class("custom-success")
         self.remove_css_class("custom-error")
 
-    def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gtk.ListStore):
+    def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
         self.path = row_data.path
-        self.hash_value = row_data.hash_value
         self.algo = row_data.algo
+        self.hash_value = row_data.hash_value
+
+        self.hash_name.set_label(row_data.algo.upper().replace("_", "-"))
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.hash_value)
-        self.hash_name.set_label(row_data.algo.upper().replace("_", "-"))
+
         handler_id = self.button_delete.connect("clicked", self.on_click_delete, list_item, model)
         list_item.handler_id = handler_id
         self.button_delete.set_sensitive(True)
@@ -1038,7 +1017,8 @@ class HashErrorRow(HashRow):
         self.add_suffix(self.button_delete)
         self.add_css_class("custom-error")
 
-    def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gtk.ListStore):
+    def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
+        self.row_data = row_data
         self.path = row_data.path
         self.error_message = row_data.error_message
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
@@ -1049,9 +1029,10 @@ class HashErrorRow(HashRow):
 
 
 class MainWindow(Adw.ApplicationWindow):
+    __gtype_name__ = "MainWindow"
+    _instance = None
     DEFAULT_WIDTH = 970
     DEFAULT_HEIGHT = 650
-    _instance = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -1067,6 +1048,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.build_ui()
         self._initialized = True
+
         self.pref = Preferences()
         self.pref.set_transient_for(self)
         self.queue_handler = QueueUpdateHandler()
@@ -1235,7 +1217,7 @@ class MainWindow(Adw.ApplicationWindow):
             sensitive=False,
             icon_name="system-search-symbolic",
         )
-        self.button_show_searchbar.connect("clicked", self.on_click_show_searchbar, True)
+        self.button_show_searchbar.connect("clicked", lambda _: self.on_click_show_searchbar(True))
         self.header_bar.pack_end(self.button_show_searchbar)
 
     def setup_shortcuts(self):
@@ -1562,7 +1544,7 @@ class MainWindow(Adw.ApplicationWindow):
         for item in selected_items:
             print(item)
 
-    def on_click_show_searchbar(self, _, show: bool):
+    def on_click_show_searchbar(self, show: bool):
         if self.button_show_searchbar.is_sensitive():
             self.search_entry.set_visible(show)
             self.search_entry.grab_focus()
@@ -1669,10 +1651,13 @@ class MainWindow(Adw.ApplicationWindow):
 
 
 class Application(Adw.Application):
+    __gtype_name__ = "Application"
+
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
         self.logger = get_logger(self.__class__.__name__)
         self.pref = Preferences()
+        self.pref.load_config_file()
         self.create_actions()
         self.create_options()
 
@@ -1701,11 +1686,10 @@ class Application(Adw.Application):
         self.logger.debug(f"Initial CLI options: {cli_options}")
 
         from_cli = "DESKTOP" not in cli_options
-        cli_options.pop("DESKTOP", None)
-        _config_ = None
+        paths = command_line.get_arguments()[1:]
 
         if from_cli:
-            _config_ = self.pref.persisted_config.copy()
+            _config_ = self.pref.get_persisted_config().copy()
             algo = cli_options.get("algo") or _config_.get("algo")
 
             if algo not in AVAILABLE_ALGORITHMS:
@@ -1718,15 +1702,19 @@ class Application(Adw.Application):
                 **cli_options,
             )
 
-        if paths := command_line.get_arguments()[1:]:
-            _config_ = _config_ or self.pref.get_working_config()
+            if not paths:
+                self.pref.apply_config(_config_)
+
+        else:
+            _config_ = self.pref.get_working_config()
+            self.pref.apply_config(_config_)
+
+        if paths:
             os.chdir(command_line.get_cwd())
             paths = [Path(path).absolute() for path in paths]
             self.do_open(paths, len(paths), "", _config_.get("algo"), _config_)
 
         else:
-            if from_cli:
-                self.pref.apply_options_ui(_config_)
             self.do_activate()
 
         self.logger.debug(f"Effective CLI options out: {_config_}")
@@ -1758,8 +1746,8 @@ class Application(Adw.Application):
             )
 
     def create_actions(self):
-        self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(_, show=True), shortcuts=["<Ctrl>F"])
-        self.create_action("hide-searchbar", lambda *_: self.main_window.on_click_show_searchbar(_, show=False), shortcuts=["Escape"])
+        self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(True), shortcuts=["<Ctrl>F"])
+        self.create_action("hide-searchbar", lambda *_: self.main_window.on_click_show_searchbar(False), shortcuts=["Escape"])
 
         self.create_action("results-copy", lambda *_: self.main_window.on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
         self.create_action("results-save", lambda *_: self.main_window.on_save_clicked(_), shortcuts=["<Ctrl>S"])
