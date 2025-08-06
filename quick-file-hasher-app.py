@@ -257,7 +257,6 @@ class Preferences(Adw.PreferencesWindow):
         self._setup_saving_page()
         self._setup_hashing_page()
 
-        self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         self._initialized = True
 
     def _setup_processing_page(self):
@@ -291,7 +290,7 @@ class Preferences(Adw.PreferencesWindow):
         saving_page.add(group=saving_group)
 
         self.setting_save_errors = self._create_switch_row("save-errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
-
+        self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         saving_group.add(child=self.setting_save_errors)
 
         self.setting_abs_path = self._create_switch_row("absolute-paths", "view-list-symbolic", "Absolute Paths", "Include absolute paths in results")
@@ -1049,7 +1048,7 @@ class MainWindow(Adw.ApplicationWindow):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, app=None):
+    def __init__(self, app: "Application" = None):
         if hasattr(self, "_initialized"):
             return
         super().__init__(application=app)
@@ -1059,8 +1058,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._build_ui()
         self._initialized = True
 
-        self.pref = Preferences()
-        self.pref.set_transient_for(self)
+        self.pref = app.pref
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
@@ -1681,6 +1679,21 @@ class Application(Adw.Application):
         self.logger = get_logger(self.__class__.__name__)
         self.pref = Preferences()
         self.pref.load_config_file()
+        self.about = Adw.AboutWindow(
+            hide_on_close=True,
+            modal=True,
+            application_name="Quick File Hasher",
+            application_icon="document-properties",
+            version=APP_VERSION,
+            developer_name="Doğukan Doğru (dd-se)",
+            license_type=Gtk.License(Gtk.License.MIT_X11),
+            comments="A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.",
+            website="https://github.com/dd-se/nautilus-extension-quick-file-hasher",
+            issue_url="https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues",
+            copyright="© 2025 Doğukan Doğru (dd-se)",
+            developers=["dd-se https://github.com/dd-se"],
+            designers=["dd-se https://github.com/dd-se"],
+        )
         self._create_actions()
         self._create_options()
 
@@ -1758,6 +1771,18 @@ class Application(Adw.Application):
         self.main_window.present()
         self.main_window.start_job(files, hash_algorithm, options)
 
+    def on_preferences(self, action, param):
+        active_window = self.get_active_window()
+        if active_window:
+            self.pref.set_transient_for(active_window)
+        self.pref.present()
+
+    def on_about(self, action, param):
+        active_window = self.get_active_window()
+        if active_window:
+            self.about.set_transient_for(active_window)
+        self.about.present()
+
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
         action.connect("activate", callback)
@@ -1772,18 +1797,18 @@ class Application(Adw.Application):
         self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(True), shortcuts=["<Ctrl>F"])
         self.create_action("hide-searchbar", lambda *_: self.main_window.on_click_show_searchbar(False), shortcuts=["Escape"])
 
+        self.create_action("open-files", lambda *_: self.main_window.on_select_files_or_folders_clicked(_, files=True), shortcuts=["<Ctrl>O"])
         self.create_action("results-copy", lambda *_: self.main_window.on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
         self.create_action("results-save", lambda *_: self.main_window.on_save_clicked(_), shortcuts=["<Ctrl>S"])
         self.create_action("results-sort", lambda *_: self.main_window._on_sort_clicked(_), shortcuts=["<Ctrl>R"])
         self.create_action("results-clear", lambda *_: self.main_window.on_clear_clicked(_), shortcuts=["<Ctrl>L"])
 
-        self.create_action("open-files", lambda *_: self.main_window.on_select_files_or_folders_clicked(_, files=True), shortcuts=["<Ctrl>O"])
-        self.create_action("preferences", lambda *_: self.pref.present(), shortcuts=["<Ctrl>comma"])
+        self.create_action("preferences", self.on_preferences, shortcuts=["<Ctrl>comma"])
         self.create_action("shortcuts", lambda *_: self.main_window.shortcuts_window.present(), shortcuts=["<Ctrl>question"])
-        self.create_action("about", lambda *_: self.main_window.about_window.present())
+        self.create_action("about", self.on_about)
+        self.create_action("quit", lambda *_: self.quit(), shortcuts=["<Ctrl>Q"])
 
         self.create_action("set-recursive-mode", lambda *_: self.pref.set_recursive_mode(*_), GLib.VariantType.new("s"))
-        self.create_action("quit", lambda *_: self.quit(), shortcuts=["<Ctrl>Q"])
 
     def _create_options(self):
         self.set_option_context_summary("Quick File Hasher - Modern Nautilus Extension and GTK4 App")
