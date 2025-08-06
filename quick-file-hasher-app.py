@@ -1091,8 +1091,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._setup_bottom_bar()
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
-        self._setup_about_window()
-
         self._setup_shortcuts()
 
     def _setup_search(self):
@@ -1237,17 +1235,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.content_overlay = Gtk.Overlay()
 
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
         self.view_stack = Adw.ViewStack(vexpand=True)
         self.view_switcher.set_stack(self.view_stack)
-        self.main_box.append(self.view_stack)
 
-        self.content_overlay.add_overlay(self.main_box)
+        self.content_overlay.add_overlay(self.view_stack)
         self.content_overlay.add_overlay(self.empty_placeholder)
 
         self._setup_results_view()
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
-
         self._setup_errors_view()
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
@@ -1314,24 +1309,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_bottom_bar(self):
         self.progress_bar = Gtk.ProgressBar(opacity=0, margin_top=2)
-
-    def _setup_about_window(self):
-        self.about_window = Adw.AboutWindow(
-            modal=True,
-            hide_on_close=True,
-            transient_for=self,
-            application_name="Quick File Hasher",
-            application_icon="document-properties",
-            version=APP_VERSION,
-            developer_name="Doğukan Doğru (dd-se)",
-            license_type=Gtk.License(Gtk.License.MIT_X11),
-            comments="A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.",
-            website="https://github.com/dd-se/nautilus-extension-quick-file-hasher",
-            issue_url="https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues",
-            copyright="© 2025 Doğukan Doğru (dd-se)",
-            developers=["dd-se https://github.com/dd-se"],
-            designers=["dd-se https://github.com/dd-se"],
-        )
 
     def _create_button(self, label: str, icon_name: str, tooltip_text: str, css_class: str, callback: Callable, *args) -> Gtk.Button:
         button = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text=tooltip_text)
@@ -1493,7 +1470,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             target = self.empty_placeholder
         else:
-            target = self.main_box
+            target = self.view_stack
 
         if not target.is_visible() or signal_from_view_stack or (target.is_visible() and target_modified):
             Adw.TimedAnimation(
@@ -1504,7 +1481,7 @@ class MainWindow(Adw.ApplicationWindow):
                 target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
             ).play()
 
-        self.main_box.set_visible(not show_empty)
+        self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
     def _results_to_txt(self):
@@ -1626,6 +1603,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_clear_clicked(self, _):
         if self.button_clear.is_sensitive():
+            self.on_click_show_searchbar(False)
             self.results_model.remove_all()
             self.errors_model.remove_all()
             self.add_toast("<big>✅ Results cleared</big>")
