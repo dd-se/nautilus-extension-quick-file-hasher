@@ -1235,7 +1235,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.content_overlay = Gtk.Overlay()
 
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
-        self.view_stack = Adw.ViewStack(vexpand=True)
+        self.view_stack = Adw.ViewStack(visible=False)
         self.view_switcher.set_stack(self.view_stack)
 
         self.content_overlay.add_overlay(self.view_stack)
@@ -1661,7 +1661,7 @@ class Application(Adw.Application):
             hide_on_close=True,
             modal=True,
             application_name="Quick File Hasher",
-            application_icon="document-properties",
+            application_icon=APP_ID,
             version=APP_VERSION,
             developer_name="Doğukan Doğru (dd-se)",
             license_type=Gtk.License(Gtk.License.MIT_X11),

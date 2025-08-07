@@ -81,7 +81,7 @@ The **Preferences** dialog allows you to customize the application's behavior.
 
 ## Screenshot
 
-![demo](<demo.png>)
+![demo](<resources/demo.png>)
 
 ## Uninstall
 
