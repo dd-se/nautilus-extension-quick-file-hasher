@@ -440,6 +440,9 @@ class Preferences(Adw.PreferencesWindow):
     def get_working_config(self):
         return self.working_config
 
+    def set_working_config(self, config):
+        self.working_config = config
+
     def _save_working_config_to_file(self):
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1663,12 +1666,12 @@ class Application(Adw.Application):
             application_name="Quick File Hasher",
             application_icon=APP_ID,
             version=APP_VERSION,
-            developer_name="Doğukan Doğru (dd-se)",
+            developer_name="Doğukan Doğru",
             license_type=Gtk.License(Gtk.License.MIT_X11),
             comments="A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.",
             website="https://github.com/dd-se/nautilus-extension-quick-file-hasher",
             issue_url="https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues",
-            copyright="© 2025 Doğukan Doğru (dd-se)",
+            copyright="© 2025 Doğukan Doğru",
             developers=["dd-se https://github.com/dd-se"],
             designers=["dd-se https://github.com/dd-se"],
         )
@@ -1717,6 +1720,7 @@ class Application(Adw.Application):
             )
 
             if not paths:
+                self.pref.set_working_config(_config_)
                 self.pref.apply_config_ui(_config_)
 
         else:
