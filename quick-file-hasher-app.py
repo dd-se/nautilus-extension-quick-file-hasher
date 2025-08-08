@@ -384,7 +384,7 @@ class Preferences(Adw.PreferencesWindow):
 
         group = Adw.PreferencesGroup()
         toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked", "custom-linked-btn"])
-        self.checksum_format_example_label = Gtk.Label(css_classes=["monospace", "dim-label"], margin_bottom=10, margin_top=10)
+        self.checksum_format_example_label = Gtk.Label(css_classes=["monospace", "dim-label", "caption"], margin_bottom=10, margin_top=10)
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
 
         self._setting_widgets[name] = self.setting_checksum_format_toggle_group
