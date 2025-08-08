@@ -384,7 +384,7 @@ class Preferences(Adw.PreferencesWindow):
 
         group = Adw.PreferencesGroup()
         toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked", "custom-linked-btn"])
-        self.checksum_format_example_label = Gtk.Label(css_classes=["monospace", "dim-label", "caption"], margin_bottom=10, margin_top=10)
+        self.checksum_format_example_label = Adw.ActionRow(css_classes=["monospace"], halign=Gtk.Align.CENTER, title_lines=1)
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
 
         self._setting_widgets[name] = self.setting_checksum_format_toggle_group
@@ -568,7 +568,7 @@ class Preferences(Adw.PreferencesWindow):
         example_algo = "SHA256"
 
         example_text = format_style.format(hash=example_hash, filename=example_file, algo=example_algo)
-        self.checksum_format_example_label.set_label(example_text)
+        self.checksum_format_example_label.set_title(example_text)
 
     def _on_format_selected(self, button: Gtk.ToggleButton, format_style: str):
         if not button.get_active():
