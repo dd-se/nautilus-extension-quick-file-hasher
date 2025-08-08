@@ -32,13 +32,14 @@ import subprocess
 import sys
 import threading
 import warnings
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
 from itertools import repeat
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Callable, Literal
+from typing import Literal
 
 signal.signal(signal.SIGINT, lambda s, f: exit(print("Interrupted by user (Ctrl+C)")))
 os.environ["LANG"] = "en_US.UTF-8"
@@ -65,9 +66,27 @@ DEFAULTS = {
     "gitignore": False,
     "ignore-empty-files": False,
     "save-errors": False,
-    "absolute-paths": True,
+    "relative-paths": False,
     "include-time": True,
+    "output-style": 0,
 }
+CHECKSUM_FORMATS: list[dict[str, str]] = [
+    {
+        "name": "default",
+        "description": "Uses the application's default checksum output format",
+        "style": "{filename}:{hash}:{algo}",
+    },
+    {
+        "name": "sha256sum",
+        "description": "GNU coreutils style: '<hash>  <filename>'",
+        "style": "{hash}  {filename}",
+    },
+    {
+        "name": "BSD-style",
+        "description": "BSD style: '<algorithm> (<filename>) = <hash>'",
+        "style": "{algo} ({filename}) = {hash}",
+    },
+]
 CSS = b"""
 .view-switcher button {
     background-color: #404040;
@@ -108,6 +127,9 @@ CSS = b"""
 }
 .custom-error {
     color: #FF938C;
+}
+.custom-linked-btn > button:checked {
+    background: shade(@theme_selected_bg_color,0.9);
 }
 """
 
@@ -293,13 +315,19 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         saving_group.add(child=self.setting_save_errors)
 
-        self.setting_abs_path = self._create_switch_row("absolute-paths", "view-list-symbolic", "Absolute Paths", "Include absolute paths in results")
-        saving_group.add(child=self.setting_abs_path)
-
         self.setting_include_time = self._create_switch_row("include-time", "edit-find-symbolic", "Include Timestamp", "Include timestamp in results")
         saving_group.add(child=self.setting_include_time)
 
-        saving_group.add(child=self._create_buttons())
+        self.setting_relative_path = self._create_switch_row(
+            "relative-paths",
+            "view-list-symbolic",
+            "Relative Paths",
+            "Display results using paths relative to the current working directory",
+        )
+        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_format_label(self.get_format_style()))
+        saving_group.add(child=self.setting_relative_path)
+
+        self._create_checksum_format_toggle_group(saving_page)
 
     def _setup_hashing_page(self):
         hashing_page = Adw.PreferencesPage(title="Hashing", icon_name="dialog-password-symbolic")
@@ -348,6 +376,35 @@ class Preferences(Adw.PreferencesWindow):
         self._add_reset_button(switch_row)
         self._setting_widgets[name] = switch_row
         return switch_row
+
+    def _create_checksum_format_toggle_group(self, page: Adw.PreferencesPage):
+        # TODO: Change this to Adw.ToggleGroup when made available for Ubuntu LTS
+        name = "output-style"
+        self.format_style = ""
+
+        group = Adw.PreferencesGroup()
+        toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked", "custom-linked-btn"])
+        self.checksum_format_example_label = Adw.ActionRow(css_classes=["monospace"], halign=Gtk.Align.CENTER, title_lines=1)
+        self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
+
+        self._setting_widgets[name] = self.setting_checksum_format_toggle_group
+
+        for fmt in CHECKSUM_FORMATS:
+            toggle = Gtk.ToggleButton(name=name, label=fmt["name"], tooltip_text=fmt["description"])
+            toggle.connect("toggled", self._on_format_selected, fmt["style"])
+            toggle_container.append(toggle)
+            self.setting_checksum_format_toggle_group.append(toggle)
+
+        expander_row = Adw.ExpanderRow(title="Output Format", tooltip_text="Choose checksum output format", expanded=True)
+        expander_row.connect("notify::expanded", lambda *_: expander_row.set_expanded(True))
+        expander_row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
+        expander_row.add_suffix(toggle_container)
+        expander_row.add_row(self.checksum_format_example_label)
+
+        group.add(expander_row)
+        group.add(self._create_buttons())
+
+        page.add(group)
 
     def _add_reset_button(self, row: Adw.ActionRow):
         reset_button = Gtk.Button(
@@ -398,6 +455,34 @@ class Preferences(Adw.PreferencesWindow):
         button_box.append(button_reset_preferences)
         return main_box
 
+    def get_format_style(self):
+        """{path}:hash:algo"""
+        return self.format_style
+
+    def get_persisted_config(self):
+        return self.persisted_config
+
+    def get_working_config(self):
+        return self.working_config
+
+    def get_algorithm(self) -> str:
+        return self.setting_algorithm.get_selected_item().get_string()
+
+    def set_working_config(self, config):
+        self.working_config = config
+
+    def use_relative_paths(self):
+        return self.setting_relative_path.get_active()
+
+    def save_errors(self):
+        return self.setting_save_errors.get_active()
+
+    def include_time(self):
+        return self.setting_include_time.get_active()
+
+    def max_rows(self) -> int:
+        return self.working_config["max-visible-results"]
+
     def _get_config_file(self):
         try:
             if CONFIG_FILE.exists():
@@ -419,6 +504,7 @@ class Preferences(Adw.PreferencesWindow):
             self.logger.debug(f"Loaded config from {CONFIG_FILE}")
 
         self.working_config = self.persisted_config.copy()
+        self.apply_config_ui(self.working_config)
 
     def apply_config_ui(self, config: dict):
         for key, value in config.items():
@@ -432,16 +518,11 @@ class Preferences(Adw.PreferencesWindow):
                 elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
 
+                elif isinstance(widget, list) and isinstance(widget[value], Gtk.ToggleButton):
+                    toggle: Gtk.ToggleButton = widget[value]
+                    toggle.set_active(True)
+
         self.logger.debug("Applied config to UI components")
-
-    def get_persisted_config(self):
-        return self.persisted_config
-
-    def get_working_config(self):
-        return self.working_config
-
-    def set_working_config(self, config):
-        self.working_config = config
 
     def _save_working_config_to_file(self):
         try:
@@ -450,7 +531,7 @@ class Preferences(Adw.PreferencesWindow):
                 json.dump(self.working_config, f, indent=4, sort_keys=True)
                 self.persisted_config = self.working_config.copy()
 
-            self.add_toast(Adw.Toast(title="<big>Success!</big>", use_markup=True, timeout=1))
+            self.add_toast(Adw.Toast(title="Success", use_markup=True, timeout=1))
             self.logger.debug(f"Preferences saved to file: {CONFIG_FILE}")
 
         except Exception as e:
@@ -469,25 +550,42 @@ class Preferences(Adw.PreferencesWindow):
                 elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
 
-        self.add_toast(Adw.Toast(title="<big>Reset!</big>", use_markup=True, timeout=1))
+                elif isinstance(widget, list) and isinstance(widget[value], Gtk.ToggleButton):
+                    toggle: Gtk.ToggleButton = widget[value]
+                    toggle.set_active(True)
 
-    def get_algorithm(self) -> str:
-        return self.setting_algorithm.get_selected_item().get_string()
-
-    def save_errors(self):
-        return self.setting_save_errors.get_active()
-
-    def include_time(self):
-        return self.setting_include_time.get_active()
-
-    def max_rows(self) -> int:
-        return self.working_config["max-visible-results"]
+        self.add_toast(Adw.Toast(title="Reset", use_markup=True, timeout=1))
 
     def set_recursive_mode(self, action, param):
         state: bool = param.get_string() == "yes"
         self.setting_gitignore.set_active(state)
         self.setting_recursive.set_active(state)
         self.logger.debug(f"Recursive mode set to {state} via action")
+
+    def _set_example_format_label(self, format_style: str):
+        example_file = "example.txt" if self.setting_relative_path.get_active() else "/folder/example.txt"
+        example_hash = "fdfba9fc68f1f150a4"
+        example_algo = "SHA256"
+
+        example_text = format_style.format(hash=example_hash, filename=example_file, algo=example_algo)
+        self.checksum_format_example_label.set_title(example_text)
+
+    def _on_format_selected(self, button: Gtk.ToggleButton, format_style: str):
+        if not button.get_active():
+            return
+
+        for b in self.setting_checksum_format_toggle_group:
+            if b is not button:
+                b.set_active(False)
+
+        self.format_style = format_style
+        self._set_example_format_label(self.format_style)
+
+        button_index = self.setting_checksum_format_toggle_group.index(button)
+        config_key = button.get_name()
+        if self.working_config.get(config_key) != button_index:
+            self.working_config[config_key] = button_index
+            self.logger.info(f"Toggle Preference '{config_key}' changed to index '{button_index}': '{button.get_label()}'")
 
     def _on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec):
         new_value = switch_row.get_active()
@@ -608,8 +706,8 @@ class QueueUpdateHandler:
     def update_progress(self, progress: float):
         self.q.put(("progress", progress))
 
-    def update_result(self, file: Path, hash_value: str, algo: str):
-        self.q.put(("result", file, hash_value, algo))
+    def update_result(self, base_path: Path, file: Path, hash_value: str, algo: str):
+        self.q.put(("result", base_path, file, hash_value, algo))
 
     def update_error(self, file: Path, error: str):
         self.q.put(("error", file, error))
@@ -641,15 +739,19 @@ class CalculateHashes:
         max_workers = options.get("max-workers")
         with ThreadPoolExecutor(max_workers) as executor:
             self.logger.debug(f"Starting hashing with {max_workers} workers")
-            list(executor.map(self._hash_task, jobs["paths"], hash_algorithms, jobs["sizes"]))
+            list(executor.map(self._hash_task, jobs["base_paths"], jobs["paths"], hash_algorithms, jobs["sizes"]))
 
     def _create_jobs(self, paths: list[Path] | list[Gio.File], options: dict):
-        jobs = {"paths": [], "sizes": []}
+        jobs = {"base_paths": [], "paths": [], "sizes": []}
 
         for root_path in paths:
             try:
                 if issubclass(type(root_path), Gio.File):
                     root_path = Path(root_path.get_path())
+
+                if not root_path.exists():
+                    self.queue_handler.update_error(root_path, "File or directory not found.")
+                    continue
 
                 ignore_rules = []
 
@@ -659,15 +761,16 @@ class CalculateHashes:
 
                         if gitignore_file.exists():
                             ignore_rules = IgnoreRule.parse_gitignore(gitignore_file)
-                            self.logger.debug(f"Added rule early: {gitignore_file} ({len(ignore_rules)})")
+                            self.logger.debug(f"Added rules early: {gitignore_file} ({len(ignore_rules)})")
 
                     for sub_path in root_path.iterdir():
                         if IgnoreRule.is_ignored(sub_path, ignore_rules):
                             self.logger.debug(f"Skipped early: {sub_path}")
                             continue
-                        self._process_path_n_rules(sub_path, ignore_rules, jobs, options)
-                else:
-                    self._process_path_n_rules(root_path, ignore_rules, jobs, options)
+                        self._process_path_n_rules(root_path, sub_path, ignore_rules, jobs, options)
+
+                elif root_path.is_file():
+                    self._process_path_n_rules(root_path, root_path, ignore_rules, jobs, options)
 
             except Exception as e:
                 self.logger.debug(f"Error processing {root_path.name}: {e}")
@@ -678,7 +781,7 @@ class CalculateHashes:
 
         return jobs
 
-    def _process_path_n_rules(self, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list], options: dict):
+    def _process_path_n_rules(self, base_path: Path, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list], options: dict):
         if self.cancel_event.is_set():
             return
         try:
@@ -698,6 +801,7 @@ class CalculateHashes:
 
                 else:
                     self._add_file_size(file_size)
+                    jobs["base_paths"].append(base_path)
                     jobs["paths"].append(current_path)
                     jobs["sizes"].append(file_size)
 
@@ -713,7 +817,7 @@ class CalculateHashes:
                         self.logger.debug(f"Added rule late: {gitignore_file} ({len(local_rules)})")
 
                 for sub_path in current_path.iterdir():
-                    self._process_path_n_rules(sub_path, local_rules, jobs, options)
+                    self._process_path_n_rules(base_path, sub_path, local_rules, jobs, options)
 
             else:
                 current_path.stat()
@@ -722,7 +826,11 @@ class CalculateHashes:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
             self.queue_handler.update_error(current_path, str(e))
 
-    def _hash_task(self, file: Path, algorithm: str, file_size: int | None = None, shake_length: int = 32):
+    @property
+    def _current_progress(self):
+        return min(self._total_bytes_read / self._total_bytes, 1.0)
+
+    def _hash_task(self, base_path: Path, file: Path, algorithm: str, file_size: int | None = None, shake_length: int = 32):
         if self.cancel_event.is_set():
             return
         try:
@@ -743,15 +851,17 @@ class CalculateHashes:
                     hash_obj.update(chunk)
                     self._total_bytes_read += len(chunk)
                     hash_task_bytes_read += len(chunk)
-                    self.queue_handler.update_progress(min(self._total_bytes_read / self._total_bytes, 1.0))
+                    self.queue_handler.update_progress(self._current_progress)
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
-            self.queue_handler.update_result(file, hash_value, algorithm)
+            self.queue_handler.update_result(base_path, file, hash_value, algorithm)
 
         except Exception as e:
             self._total_bytes_read += file_size - hash_task_bytes_read
+
             if self._total_bytes > 0:
-                self.queue_handler.update_progress(min(self._total_bytes_read / self._total_bytes, 1.0))
+                self.queue_handler.update_progress(self._current_progress)
+
             self.queue_handler.update_error(file, str(e))
             self.logger.exception(f"Error processing {file.name}: {e}", stack_info=True)
 
@@ -765,23 +875,30 @@ class CalculateHashes:
 
 class ResultRowData(GObject.Object):
     __gtype_name__ = "ResultRowData"
-
+    base_path: Path = GObject.Property()
     path: Path = GObject.Property()
     hash_value: str = GObject.Property(type=str)
     algo: str = GObject.Property(type=str)
 
-    def __init__(self, path: Path, hash_value: str, algo: str, **kwargs):
-        super().__init__(path=path, hash_value=hash_value, algo=algo, **kwargs)
+    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
+        super().__init__(base_path=base_path, path=path, hash_value=hash_value, algo=algo, **kwargs)
 
     def get_fields(self):
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
     def __str__(self):
-        return f"{self.path if Preferences().setting_abs_path.get_active() else self.path.name}:{self.hash_value}:{self.algo}"
+        pref = Preferences()
+        format_style = pref.get_format_style()
+        if pref.use_relative_paths():
+            display_path = self.base_path.name / self.path.relative_to(self.base_path)
+        else:
+            display_path = self.path
+        return format_style.format(hash=self.hash_value, filename=display_path, algo=self.algo)
 
 
 class ErrorRowData(GObject.Object):
     __gtype_name__ = "ErrorRowData"
+
     path: Path = GObject.Property()
     error_message: str = GObject.Property(type=str)
 
@@ -792,13 +909,15 @@ class ErrorRowData(GObject.Object):
         return (self.path.as_posix().lower(), self.error_message)
 
     def __str__(self) -> str:
-        return f"{self.path if Preferences().setting_abs_path.get_active() else self.path.name}:ERROR:{self.error_message}"
+        return f"{self.path}:ERROR:{self.error_message}"
 
 
 class HashRow(Adw.ActionRow):
     __gtype_name__ = "HashRow"
     _max_width_label = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
+    base_path: Path
     path: Path
+    button_delete: Gtk.Button
 
     def __init__(self, **kwargs):
         super().__init__(
@@ -859,6 +978,13 @@ class HashRow(Adw.ActionRow):
             ),
         )
 
+    def bind(self, row_data: ResultRowData | ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
+        self.path = row_data.path
+
+        handler_id = self.button_delete.connect("clicked", self._on_click_delete, list_item, model)
+        list_item.handler_id = handler_id
+        self.button_delete.set_sensitive(True)
+
     def unbind(self, list_item):
         if hasattr(list_item, "handler_id") and list_item.handler_id > 0:
             self.button_delete.disconnect(list_item.handler_id)
@@ -868,6 +994,7 @@ class HashRow(Adw.ActionRow):
 
 class HashResultRow(HashRow):
     __gtype_name__ = "HashResultRow"
+    base_path: Path
     hash_value: str
     algo: str
 
@@ -998,17 +1125,14 @@ class HashResultRow(HashRow):
         self.remove_css_class("custom-error")
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
-        self.path = row_data.path
+        super().bind(row_data, list_item, model)
+        self.base_path = row_data.base_path
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
 
         self.hash_name.set_label(row_data.algo.upper())
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.hash_value)
-
-        handler_id = self.button_delete.connect("clicked", self._on_click_delete, list_item, model)
-        list_item.handler_id = handler_id
-        self.button_delete.set_sensitive(True)
 
 
 class HashErrorRow(HashRow):
@@ -1030,14 +1154,10 @@ class HashErrorRow(HashRow):
         self.add_css_class("custom-error")
 
     def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
-        self.row_data = row_data
-        self.path = row_data.path
+        super().bind(row_data, list_item, model)
         self.error_message = row_data.error_message
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.error_message)
-        handler_id = self.button_delete.connect("clicked", self._on_click_delete, list_item, model)
-        list_item.handler_id = handler_id
-        self.button_delete.set_sensitive(True)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1720,12 +1840,10 @@ class Application(Adw.Application):
             )
 
             if not paths:
-                self.pref.set_working_config(_config_)
                 self.pref.apply_config_ui(_config_)
 
         else:
             _config_ = self.pref.get_working_config()
-            self.pref.apply_config_ui(_config_)
 
         if paths:
             os.chdir(command_line.get_cwd())
