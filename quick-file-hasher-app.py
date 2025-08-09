@@ -1792,28 +1792,26 @@ class MainWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(toast)
 
     def _create_actions(self):
-        self._create_win_action("show-searchbar", lambda *_: self._on_click_show_searchbar(True))
-        self._create_win_action("hide-searchbar", lambda *_: self._on_click_show_searchbar(False))
-        self._create_win_action("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True))
-        self._create_win_action("results-copy", lambda *_: self._on_copy_all_clicked(_))
-        self._create_win_action("results-save", lambda *_: self._on_save_clicked(_))
-        self._create_win_action("results-sort", lambda *_: self._on_sort_clicked(_))
-        self._create_win_action("results-clear", lambda *_: self._on_clear_clicked(_))
-        self._create_win_action("shortcuts", lambda *_: self.shortcuts_window.present())
+        actions = {
+            "show-searchbar": (lambda *_: self._on_click_show_searchbar(True), ["<Ctrl>F"]),
+            "hide-searchbar": (lambda *_: self._on_click_show_searchbar(False), ["Escape"]),
+            "open-files": (lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
+            "results-copy": (lambda *_: self._on_copy_all_clicked(_), ["<Ctrl>C"]),
+            "results-save": (lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
+            "results-sort": (lambda *_: self._on_sort_clicked(_), ["<Ctrl>R"]),
+            "results-clear": (lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
+            "shortcuts": (lambda *_: self.shortcuts_window.present(), ["<Ctrl>question"]),
+        }
 
-        self.app.set_accels_for_action("win.show-searchbar", ["<Ctrl>F"])
-        self.app.set_accels_for_action("win.hide-searchbar", ["Escape"])
-        self.app.set_accels_for_action("win.open-files", ["<Ctrl>O"])
-        self.app.set_accels_for_action("win.results-copy", ["<Ctrl>C"])
-        self.app.set_accels_for_action("win.results-save", ["<Ctrl>S"])
-        self.app.set_accels_for_action("win.results-sort", ["<Ctrl>R"])
-        self.app.set_accels_for_action("win.results-clear", ["<Ctrl>L"])
-        self.app.set_accels_for_action("win.shortcuts", ["<Ctrl>question"])
+        for name, (callback, accels) in actions.items():
+            self._create_win_action(name, callback, accels)
 
-    def _create_win_action(self, name, callback):
+    def _create_win_action(self, name, callback, accels=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=None)
         action.connect("activate", callback)
         self.add_action(action=action)
+        if accels:
+            self.app.set_accels_for_action(f"win.{name}", accels)
 
 
 class QuickFileHasher(Adw.Application):
