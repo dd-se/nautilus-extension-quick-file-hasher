@@ -1175,16 +1175,19 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_initialized"):
             return
         super().__init__(application=app)
-        self.logger = get_logger(self.__class__.__name__)
+        self.app = app
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
+
+        self.logger = get_logger(self.__class__.__name__)
+        self._create_actions()
         self._build_ui()
-        self._initialized = True
 
         self.pref = app.pref
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
+        self._initialized = True
 
     def _build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -1374,7 +1377,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _setup_menu(self):
         menu = Gio.Menu()
         menu.append("Preferences", "app.preferences")
-        menu.append("Keyboard Shortcuts", "app.shortcuts")
+        menu.append("Keyboard Shortcuts", "win.shortcuts")
         menu.append("About", "app.about")
         menu.append("Quit", "app.quit")
         button_menu = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
@@ -1788,6 +1791,25 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.toast_overlay.add_toast(toast)
 
+    def _create_actions(self):
+        self._create_win_action("show-searchbar", lambda *_: self._on_click_show_searchbar(True))
+        self._create_win_action("hide-searchbar", lambda *_: self._on_click_show_searchbar(False))
+        self._create_win_action("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True))
+        self._create_win_action("results-copy", lambda *_: self._on_copy_all_clicked(_))
+        self._create_win_action("results-save", lambda *_: self._on_save_clicked(_))
+        self._create_win_action("results-sort", lambda *_: self._on_sort_clicked(_))
+        self._create_win_action("results-clear", lambda *_: self._on_clear_clicked(_))
+        self._create_win_action("shortcuts", lambda *_: self.shortcuts_window.present())
+
+        self.app.set_accels_for_action("win.show-searchbar", ["<Ctrl>F"])
+        self.app.set_accels_for_action("win.hide-searchbar", ["Escape"])
+        self.app.set_accels_for_action("win.open-files", ["<Ctrl>O"])
+        self.app.set_accels_for_action("win.results-copy", ["<Ctrl>C"])
+        self.app.set_accels_for_action("win.results-save", ["<Ctrl>S"])
+        self.app.set_accels_for_action("win.results-sort", ["<Ctrl>R"])
+        self.app.set_accels_for_action("win.results-clear", ["<Ctrl>L"])
+        self.app.set_accels_for_action("win.shortcuts", ["<Ctrl>question"])
+
     def _create_win_action(self, name, callback):
         action = Gio.SimpleAction.new(name=name, parameter_type=None)
         action.connect("activate", callback)
@@ -1923,20 +1945,9 @@ class QuickFileHasher(Adw.Application):
             )
 
     def _create_actions(self):
-        self.create_action("show-searchbar", lambda *_: self.main_window._on_click_show_searchbar(True), shortcuts=["<Ctrl>F"])
-        self.create_action("hide-searchbar", lambda *_: self.main_window._on_click_show_searchbar(False), shortcuts=["Escape"])
-
-        self.create_action("open-files", lambda *_: self.main_window._on_select_files_or_folders_clicked(_, files=True), shortcuts=["<Ctrl>O"])
-        self.create_action("results-copy", lambda *_: self.main_window._on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
-        self.create_action("results-save", lambda *_: self.main_window._on_save_clicked(_), shortcuts=["<Ctrl>S"])
-        self.create_action("results-sort", lambda *_: self.main_window._on_sort_clicked(_), shortcuts=["<Ctrl>R"])
-        self.create_action("results-clear", lambda *_: self.main_window._on_clear_clicked(_), shortcuts=["<Ctrl>L"])
-
         self.create_action("preferences", self.on_preferences, shortcuts=["<Ctrl>comma"])
-        self.create_action("shortcuts", lambda *_: self.main_window.shortcuts_window.present(), shortcuts=["<Ctrl>question"])
         self.create_action("about", self.on_about)
         self.create_action("quit", lambda *_: self.quit(), shortcuts=["<Ctrl>Q"])
-
         self.create_action("set-recursive-mode", lambda *_: self.pref.set_recursive_mode(*_), GLib.VariantType.new("s"))
 
     def _create_options(self):
