@@ -39,7 +39,7 @@ from functools import lru_cache
 from itertools import repeat
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Literal
+from typing import Iterable, Literal
 
 signal.signal(signal.SIGINT, lambda s, f: exit(print("Interrupted by user (Ctrl+C)")))
 os.environ["LANG"] = "en_US.UTF-8"
@@ -72,7 +72,7 @@ DEFAULTS = {
 }
 CHECKSUM_FORMATS: list[dict[str, str]] = [
     {
-        "name": "default",
+        "name": "Default",
         "description": "Uses the application's default checksum output format",
         "style": "{filename}:{hash}:{algo}",
     },
@@ -730,51 +730,47 @@ class CalculateHashes:
         self._total_bytes = 0
         self._total_bytes_read = 0
 
-    def __call__(self, paths: list[Path] | list[Gio.File], hash_algorithm: list | str, options: dict):
-        jobs = self._create_jobs(paths, options)
-        self._execute_jobs(jobs, hash_algorithm, options)
+    def __call__(self, base_paths: Iterable[Path], paths: Iterable[Path], hash_algorithms: Iterable[str], options: dict):
+        jobs = self._create_jobs(base_paths, paths, options)
+        self._execute_jobs(jobs, hash_algorithms, options)
 
-    def _execute_jobs(self, jobs: dict[str, list], hash_algorithms: str | list, options: dict):
-        hash_algorithms = repeat(hash_algorithms) if isinstance(hash_algorithms, str) else hash_algorithms
+    def _execute_jobs(self, jobs: dict[str, list], hash_algorithms: Iterable[str], options: dict):
         max_workers = options.get("max-workers")
         with ThreadPoolExecutor(max_workers) as executor:
             self.logger.debug(f"Starting hashing with {max_workers} workers")
             list(executor.map(self._hash_task, jobs["base_paths"], jobs["paths"], hash_algorithms, jobs["sizes"]))
 
-    def _create_jobs(self, paths: list[Path] | list[Gio.File], options: dict):
+    def _create_jobs(self, base_paths: Iterable[Path], paths: Iterable[Path], options: dict):
         jobs = {"base_paths": [], "paths": [], "sizes": []}
 
-        for root_path in paths:
+        for base_path, path in zip(base_paths, paths):
             try:
-                if issubclass(type(root_path), Gio.File):
-                    root_path = Path(root_path.get_path())
-
-                if not root_path.exists():
-                    self.queue_handler.update_error(root_path, "File or directory not found.")
+                if not path.exists():
+                    self.queue_handler.update_error(path, "File or directory not found.")
                     continue
 
                 ignore_rules = []
 
-                if root_path.is_dir():
+                if path.is_dir():
                     if options.get("gitignore"):
-                        gitignore_file = root_path / ".gitignore"
+                        gitignore_file = path / ".gitignore"
 
                         if gitignore_file.exists():
                             ignore_rules = IgnoreRule.parse_gitignore(gitignore_file)
                             self.logger.debug(f"Added rules early: {gitignore_file} ({len(ignore_rules)})")
 
-                    for sub_path in root_path.iterdir():
+                    for sub_path in path.iterdir():
                         if IgnoreRule.is_ignored(sub_path, ignore_rules):
                             self.logger.debug(f"Skipped early: {sub_path}")
                             continue
-                        self._process_path_n_rules(root_path, sub_path, ignore_rules, jobs, options)
+                        self._process_path_n_rules(base_path, sub_path, ignore_rules, jobs, options)
 
-                elif root_path.is_file():
-                    self._process_path_n_rules(root_path, root_path, ignore_rules, jobs, options)
+                elif path.is_file():
+                    self._process_path_n_rules(base_path, path, ignore_rules, jobs, options)
 
             except Exception as e:
-                self.logger.debug(f"Error processing {root_path.name}: {e}")
-                self.queue_handler.update_error(root_path, str(e))
+                self.logger.debug(f"Error processing {path.name}: {e}")
+                self.queue_handler.update_error(path, str(e))
 
         if self._total_bytes == 0:
             self.queue_handler.update_progress(1)
@@ -830,11 +826,10 @@ class CalculateHashes:
     def _current_progress(self):
         return min(self._total_bytes_read / self._total_bytes, 1.0)
 
-    def _hash_task(self, base_path: Path, file: Path, algorithm: str, file_size: int | None = None, shake_length: int = 32):
+    def _hash_task(self, base_path: Path, file: Path, algorithm: str, file_size: int, shake_length: int = 32):
         if self.cancel_event.is_set():
             return
         try:
-            file_size = file_size or file.stat().st_size
             if file_size > 1024 * 1024 * 100:
                 chunk_size = 1024 * 1024 * 4
 
@@ -1075,8 +1070,13 @@ class HashResultRow(HashRow):
         def on_response(_, response_id):
             if response_id == "compute":
                 selected_algos = [switch.algo for switch in switches if switch.get_active()]
-                paths = [self.path] * len(selected_algos)
-                MainWindow().start_job(paths, selected_algos, Preferences().get_working_config())
+                repeat_n_times = len(selected_algos)
+                MainWindow().start_job(
+                    repeat(self.base_path, repeat_n_times),
+                    repeat(self.path, repeat_n_times),
+                    selected_algos,
+                    Preferences().get_working_config(),
+                )
 
         dialog.connect("response", on_response)
         dialog.present(MainWindow())
@@ -1248,8 +1248,8 @@ class MainWindow(Adw.ApplicationWindow):
         def on_drop(ctrl, drop: Gdk.FileList, x, y, user_data=None):
             self.dnd_revealer.set_reveal_child(False)
             try:
-                files: Gdk.FileList = drop.get_files()
-                self.start_job(files, self.pref.get_algorithm(), self.pref.get_working_config())
+                files = [Path(file.get_path()) for file in drop.get_files()]
+                self.start_job(None, files, repeat(self.pref.get_algorithm()), self.pref.get_working_config())
                 return True
             except Exception as e:
                 self.add_toast(f"Drag & Drop failed: {e}")
@@ -1386,7 +1386,7 @@ class MainWindow(Adw.ApplicationWindow):
             sensitive=False,
             icon_name="system-search-symbolic",
         )
-        self.button_show_searchbar.connect("clicked", lambda _: self.on_click_show_searchbar(True))
+        self.button_show_searchbar.connect("clicked", lambda _: self.on_click_show_searchbar(not self.search_entry.is_visible()))
         self.header_bar.pack_end(self.button_show_searchbar)
 
     def _setup_shortcuts(self):
@@ -1479,13 +1479,19 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
-    def start_job(self, paths: list[Path] | list[Gio.File], hashing_algorithm: str | list, options: dict):
+    def start_job(
+        self,
+        base_paths: Iterable[Path] | None,
+        paths: Iterable[Path],
+        hashing_algorithm: Iterable[str],
+        options: dict,
+    ):
         self.cancel_event.clear()
         self.button_cancel.set_visible(True)
 
         self.processing_thread = threading.Thread(
             target=self._calculate_hashes,
-            args=(paths, hashing_algorithm, options),
+            args=(base_paths or paths, paths, hashing_algorithm, options),
             daemon=True,
         )
         self.processing_thread.start()
@@ -1682,11 +1688,16 @@ class MainWindow(Adw.ApplicationWindow):
         def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
             if not gio_task.had_error():
                 if files:
-                    files_or_folders = file_dialog.open_multiple_finish(gio_task)
+                    files_or_folders: list[Gio.File] = file_dialog.open_multiple_finish(gio_task)
                 else:
-                    files_or_folders = file_dialog.select_multiple_folders_finish(gio_task)
+                    files_or_folders: list[Gio.File] = file_dialog.select_multiple_folders_finish(gio_task)
 
-                self.start_job(files_or_folders, self.pref.get_algorithm(), self.pref.get_working_config())
+                self.start_job(
+                    None,
+                    [Path(file.get_path()) for file in files_or_folders],
+                    repeat(self.pref.get_algorithm()),
+                    self.pref.get_working_config(),
+                )
 
         if files:
             file_dialog.open_multiple(parent=self, callback=on_files_dialog_dismissed)
@@ -1742,7 +1753,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.add_toast("<big>✅ Done</big>")
             self.sort_enabled = False
         else:
-            self.add_toast("<big>❌ Nothing to sort.</big>")
+            self.add_toast("<big>❌ Nothing to sort</big>")
 
     def _filter_func(self, row: ResultRowData | ErrorRowData):
         if not self.search_query:
@@ -1846,8 +1857,8 @@ class Application(Adw.Application):
             _config_ = self.pref.get_working_config()
 
         if paths:
-            os.chdir(command_line.get_cwd())
-            paths = [Path(path).absolute() for path in paths]
+            cwd = command_line.get_cwd()
+            paths = [Path(cwd) / path for path in paths]
             self.do_open(paths, len(paths), "", _config_.get("algo"), _config_)
 
         else:
@@ -1863,13 +1874,20 @@ class Application(Adw.Application):
             self.main_window: MainWindow = MainWindow(self)
         self.main_window.present()
 
-    def do_open(self, files, n_files, hint, hash_algorithm=None, options={}):
+    def do_open(
+        self,
+        paths: Iterable[Path],
+        n_files: int,
+        hint: str,
+        hash_algorithm: str,
+        options: dict,
+    ):
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
         self.main_window: MainWindow = self.get_active_window()
         if not self.main_window:
             self.main_window: MainWindow = MainWindow(self)
         self.main_window.present()
-        self.main_window.start_job(files, hash_algorithm, options)
+        self.main_window.start_job(None, paths, repeat(hash_algorithm), options)
 
     def on_preferences(self, action, param):
         active_window = self.get_active_window()
