@@ -1792,18 +1792,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(toast)
 
     def _create_actions(self):
-        actions = {
-            "show-searchbar": (lambda *_: self._on_click_show_searchbar(True), ["<Ctrl>F"]),
-            "hide-searchbar": (lambda *_: self._on_click_show_searchbar(False), ["Escape"]),
-            "open-files": (lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
-            "results-copy": (lambda *_: self._on_copy_all_clicked(_), ["<Ctrl>C"]),
-            "results-save": (lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
-            "results-sort": (lambda *_: self._on_sort_clicked(_), ["<Ctrl>R"]),
-            "results-clear": (lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
-            "shortcuts": (lambda *_: self.shortcuts_window.present(), ["<Ctrl>question"]),
-        }
+        actions = (
+            ("show-searchbar", lambda *_: self._on_click_show_searchbar(True), ["<Ctrl>F"]),
+            ("hide-searchbar", lambda *_: self._on_click_show_searchbar(False), ["Escape"]),
+            ("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
+            ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl>C"]),
+            ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
+            ("results-sort", lambda *_: self._on_sort_clicked(_), ["<Ctrl>R"]),
+            ("results-clear", lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
+            ("shortcuts", lambda *_: self.shortcuts_window.present(), ["<Ctrl>question"]),
+        )
 
-        for name, (callback, accels) in actions.items():
+        for name, callback, accels in actions:
             self._create_win_action(name, callback, accels)
 
     def _create_win_action(self, name, callback, accels=None):

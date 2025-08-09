@@ -13,7 +13,7 @@ ICON_DIR = $(HOME)/.local/share/icons/hicolor/scalable/apps
 .PHONY: help makedir shortcut icon install uninstall symlink
 
 help:
-	@echo "Makefile for Quick File Hasher"
+	@echo "Makefile for $(NAME)"
 	@echo "Available commands:"
 	@echo "  help       - Show this help message"
 	@echo "  install    - Install the application"
@@ -25,7 +25,7 @@ makedir:
 	@mkdir -p $(SHORTCUT_DIR)
 	@mkdir -p $(ICON_DIR)
 
-	@echo "Created directories: $(INSTALL_DIR), $(EXTENSION_DIR), $(SHORTCUT_DIR)"
+	@echo "Created directories: $(INSTALL_DIR), $(EXTENSION_DIR), $(SHORTCUT_DIR), $(ICON_DIR)"
 
 shortcut:
 	@echo "[Desktop Entry]" > $(SHORTCUT_NAME)
