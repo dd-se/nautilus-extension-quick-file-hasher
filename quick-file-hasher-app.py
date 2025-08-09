@@ -1171,7 +1171,7 @@ class MainWindow(Adw.ApplicationWindow):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, app: "Application" = None):
+    def __init__(self, app: "QuickFileHasher" = None):
         if hasattr(self, "_initialized"):
             return
         super().__init__(application=app)
@@ -1261,13 +1261,13 @@ class MainWindow(Adw.ApplicationWindow):
     def _setup_first_top_bar(self):
         self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
 
-        self.button_select_files = self._create_button("Select Files", "document-open-symbolic", "Select files to add", "suggested-action", self.on_select_files_or_folders_clicked, True)
+        self.button_select_files = self._create_button("Select Files", "document-open-symbolic", "Select files to add", "suggested-action", self._on_select_files_or_folders_clicked, True)
         self.first_top_bar_box.append(self.button_select_files)
 
-        self.button_select_folders = self._create_button("Select Folders", "folder-open-symbolic", "Select folders to add", "suggested-action", self.on_select_files_or_folders_clicked, False)
+        self.button_select_folders = self._create_button("Select Folders", "folder-open-symbolic", "Select folders to add", "suggested-action", self._on_select_files_or_folders_clicked, False)
         self.first_top_bar_box.append(self.button_select_folders)
 
-        self.button_save = self._create_button("Save", "document-save-symbolic", "Save results to file", "suggested-action", self.on_save_clicked)
+        self.button_save = self._create_button("Save", "document-save-symbolic", "Save results to file", "suggested-action", self._on_save_clicked)
         self.button_save.set_sensitive(False)
 
         self.first_top_bar_box.append(self.button_save)
@@ -1293,7 +1293,7 @@ class MainWindow(Adw.ApplicationWindow):
         spacer_1 = Gtk.Box(hexpand=True)
         self.second_top_bar_box.append(spacer_1)
 
-        self.button_copy_all = self._create_button("Copy", None, "Copy results to clipboard", "suggested-action", self.on_copy_all_clicked)
+        self.button_copy_all = self._create_button("Copy", None, "Copy results to clipboard", "suggested-action", self._on_copy_all_clicked)
         self.button_copy_all.set_sensitive(False)
         self.second_top_bar_box.append(self.button_copy_all)
 
@@ -1301,7 +1301,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_sort.set_sensitive(False)
         self.second_top_bar_box.append(self.button_sort)
 
-        self.button_clear = self._create_button("Clear", None, "Clear all results", "destructive-action", self.on_clear_clicked)
+        self.button_clear = self._create_button("Clear", None, "Clear all results", "destructive-action", self._on_clear_clicked)
         self.button_clear.set_sensitive(False)
         self.second_top_bar_box.append(self.button_clear)
 
@@ -1386,7 +1386,7 @@ class MainWindow(Adw.ApplicationWindow):
             sensitive=False,
             icon_name="system-search-symbolic",
         )
-        self.button_show_searchbar.connect("clicked", lambda _: self.on_click_show_searchbar(not self.search_entry.is_visible()))
+        self.button_show_searchbar.connect("clicked", lambda _: self._on_click_show_searchbar(not self.search_entry.is_visible()))
         self.header_bar.pack_end(self.button_show_searchbar)
 
     def _setup_shortcuts(self):
@@ -1613,30 +1613,66 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
-    def _results_to_txt(self):
-        parts = []
-        total_results = self.results_model_filtered.get_n_items()
-        total_errors = self.errors_model_filtered.get_n_items()
+    def _txt_to_file(self, output: str | None):
+        if output is None:
+            self.add_toast("<big>❌ Nothing to save</big>")
+            return
+        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
 
-        if total_results > 0:
-            results_text = "\n".join(str(r) for r in self.results_model_filtered)
-            parts.append(f"Results ({total_results}):\n\n{results_text}")
+        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
+            if not gio_task.had_error():
+                try:
+                    local_file = file_dialog.save_finish(gio_task)
+                    path: str = local_file.get_path()
 
-        if self.pref.save_errors() and total_errors > 0:
-            errors_text = "\n".join(str(r) for r in self.errors_model_filtered)
-            parts.append(f"Errors ({total_errors}):\n\n{errors_text}")
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(output)
 
-        if self.pref.include_time() and parts:
-            now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
-            parts.append(f"Generated on {now}")
+                    self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
 
-        if parts:
-            output = "\n\n".join(parts)
+                except Exception as e:
+                    self.logger.error(f"Unexcepted error occured for {path}: {e}")
+                    self.add_toast(f"<big>❌ Failed to save: {e}</big>")
+
+        file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
+
+    def _txt_to_clipboard(self, output: str | None):
+        if output:
+            cp = Gdk.ContentProvider.new_for_bytes(
+                "text/plain;charset=utf-8",
+                GLib.Bytes.new(output.encode("utf-8")),
+            )
+            self.get_clipboard().set_content(cp)
+            self.add_toast("<big>✅ Results copied to clipboard</big>")
         else:
-            self.add_toast("<big>❌ Nothing to copy.</big>")
-            output = None
+            self.add_toast("<big>❌ Nothing to copy</big>")
 
-        return output
+    def _results_to_txt(self, callback: Callable[[str], None]):
+        def worker():
+            parts = []
+            total_results = self.results_model_filtered.get_n_items()
+            total_errors = self.errors_model_filtered.get_n_items()
+
+            if total_results > 0:
+                results_text = "\n".join(str(r) for r in self.results_model_filtered)
+                parts.append(f"Results ({total_results}):\n\n{results_text}")
+
+            if self.pref.save_errors() and total_errors > 0:
+                errors_text = "\n".join(str(r) for r in self.errors_model_filtered)
+                parts.append(f"Errors ({total_errors}):\n\n{errors_text}")
+
+            if self.pref.include_time() and parts:
+                now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
+                parts.append(f"Generated on {now}")
+
+            if parts:
+                output = "\n\n".join(parts)
+            else:
+                output = None
+
+            GLib.idle_add(callback, output)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_factory_setup(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem, kind: str):
         row_widget = HashResultRow() if kind == "result" else HashErrorRow()
@@ -1671,7 +1707,7 @@ class MainWindow(Adw.ApplicationWindow):
         for item in selected_items:
             print(item)
 
-    def on_click_show_searchbar(self, show: bool):
+    def _on_click_show_searchbar(self, show: bool):
         if self.button_show_searchbar.is_sensitive():
             self.search_entry.set_visible(show)
             if show:
@@ -1681,7 +1717,7 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.add_toast("<big>🔍 No Results. Search is unavailable.</big>")
 
-    def on_select_files_or_folders_clicked(self, _, files: bool):
+    def _on_select_files_or_folders_clicked(self, _, files: bool):
         title = "Select Files" if files else "Select Folders"
         file_dialog = Gtk.FileDialog(title=title)
 
@@ -1704,40 +1740,15 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             file_dialog.select_multiple_folders(parent=self, callback=on_files_dialog_dismissed)
 
-    def on_copy_all_clicked(self, button: Gtk.Button):
-        if output := self._results_to_txt():
-            cp = Gdk.ContentProvider.new_for_bytes(
-                "text/plain;charset=utf-8",
-                GLib.Bytes.new(output.encode("utf-8")),
-            )
-            self.get_clipboard().set_content(cp)
-            self.add_toast("<big>✅ Results copied to clipboard</big>")
+    def _on_copy_all_clicked(self, _):
+        self._results_to_txt(self._txt_to_clipboard)
 
-    def on_save_clicked(self, _):
-        if (output := self._results_to_txt()) is None:
-            return
-        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
+    def _on_save_clicked(self, _):
+        self._results_to_txt(self._txt_to_file)
 
-        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task):
-            if not gio_task.had_error():
-                try:
-                    local_file = file_dialog.save_finish(gio_task)
-                    path: str = local_file.get_path()
-
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(output)
-
-                    self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
-
-                except Exception as e:
-                    self.logger.error(f"Unexcepted error occured for {path}: {e}")
-                    self.add_toast(f"<big>❌ Failed to save: {e}</big>")
-
-        file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
-
-    def on_clear_clicked(self, _):
+    def _on_clear_clicked(self, _):
         if self.button_clear.is_sensitive():
-            self.on_click_show_searchbar(False)
+            self._on_click_show_searchbar(False)
             self.results_model.remove_all()
             self.errors_model.remove_all()
             self.add_toast("<big>✅ Results cleared</big>")
@@ -1783,8 +1794,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_action(action=action)
 
 
-class Application(Adw.Application):
-    __gtype_name__ = "Application"
+class QuickFileHasher(Adw.Application):
+    __gtype_name__ = "QuickFileHasher"
 
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
@@ -1912,14 +1923,14 @@ class Application(Adw.Application):
             )
 
     def _create_actions(self):
-        self.create_action("show-searchbar", lambda *_: self.main_window.on_click_show_searchbar(True), shortcuts=["<Ctrl>F"])
-        self.create_action("hide-searchbar", lambda *_: self.main_window.on_click_show_searchbar(False), shortcuts=["Escape"])
+        self.create_action("show-searchbar", lambda *_: self.main_window._on_click_show_searchbar(True), shortcuts=["<Ctrl>F"])
+        self.create_action("hide-searchbar", lambda *_: self.main_window._on_click_show_searchbar(False), shortcuts=["Escape"])
 
-        self.create_action("open-files", lambda *_: self.main_window.on_select_files_or_folders_clicked(_, files=True), shortcuts=["<Ctrl>O"])
-        self.create_action("results-copy", lambda *_: self.main_window.on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
-        self.create_action("results-save", lambda *_: self.main_window.on_save_clicked(_), shortcuts=["<Ctrl>S"])
+        self.create_action("open-files", lambda *_: self.main_window._on_select_files_or_folders_clicked(_, files=True), shortcuts=["<Ctrl>O"])
+        self.create_action("results-copy", lambda *_: self.main_window._on_copy_all_clicked(_), shortcuts=["<Ctrl>C"])
+        self.create_action("results-save", lambda *_: self.main_window._on_save_clicked(_), shortcuts=["<Ctrl>S"])
         self.create_action("results-sort", lambda *_: self.main_window._on_sort_clicked(_), shortcuts=["<Ctrl>R"])
-        self.create_action("results-clear", lambda *_: self.main_window.on_clear_clicked(_), shortcuts=["<Ctrl>L"])
+        self.create_action("results-clear", lambda *_: self.main_window._on_clear_clicked(_), shortcuts=["<Ctrl>L"])
 
         self.create_action("preferences", self.on_preferences, shortcuts=["<Ctrl>comma"])
         self.create_action("shortcuts", lambda *_: self.main_window.shortcuts_window.present(), shortcuts=["<Ctrl>question"])
@@ -1940,5 +1951,5 @@ class Application(Adw.Application):
 
 
 if __name__ == "__main__":
-    app = Application()
+    app = QuickFileHasher()
     app.run(sys.argv)
