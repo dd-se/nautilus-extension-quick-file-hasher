@@ -35,7 +35,7 @@ import warnings
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from functools import lru_cache, wraps
+from functools import lru_cache
 from itertools import repeat
 from pathlib import Path
 from queue import Empty, Queue
@@ -1428,10 +1428,10 @@ class MainWindow(Adw.ApplicationWindow):
             {
                 "title": "View & Search",
                 "shortcuts": [
-                    {"title": "Search Results", "accelerator": "<Ctrl>F"},
-                    {"title": "Hide Searchbar", "accelerator": "Escape"},
-                    {"title": "Sort Results", "accelerator": "<Ctrl>R"},
-                    {"title": "Clear Results", "accelerator": "<Ctrl>L"},
+                    {"title": "Show Search Bar", "accelerator": "<Ctrl>F"},
+                    {"title": "Hide Search Bar", "accelerator": "Escape"},
+                    {"title": "Toggle Sort", "accelerator": "<Ctrl>R"},
+                    {"title": "Clear All Results", "accelerator": "<Ctrl>L"},
                 ],
             },
             {
