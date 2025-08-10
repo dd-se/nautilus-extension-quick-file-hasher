@@ -52,7 +52,7 @@ gi.require_version(namespace="Nautilus", version="4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.8.5"
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
 MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
