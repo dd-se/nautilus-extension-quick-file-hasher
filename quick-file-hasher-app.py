@@ -35,7 +35,7 @@ import warnings
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from functools import lru_cache
+from functools import lru_cache, wraps
 from itertools import repeat
 from pathlib import Path
 from queue import Empty, Queue
@@ -55,6 +55,7 @@ APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.5.0"
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
+MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
 NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
 CONFIG_DIR = Path(GLib.get_user_config_dir()) / APP_ID
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -105,18 +106,22 @@ CSS = b"""
 .view-switcher button:nth-child(2):checked {
     background-color: #c7162b;
 }
-.theme-bg-color {
+.no-background {
     background-color: @theme_bg_color;
 }
 .search-bg-color {
     background-color: shade(@theme_bg_color, 0.8);
 }
 .custom-style-row {
-  background-color: #3D3D3D;
-  border-radius: 6px;
+    background-color: #3D3D3D;
+    border-radius: 6px;
+    padding-top: 8px;
+    padding-left : 8px;
+    padding-right : 8px;
+    padding-bottom: 8px;
 }
 .custom-style-row:hover {
-  background-color: #454545;
+    background-color: #454545;
 }
 .drag-overlay {
     background-color: alpha(@accent_bg_color, 0.5);
@@ -128,7 +133,7 @@ CSS = b"""
 .custom-error {
     color: #FF938C;
 }
-.custom-linked-btn > button:checked {
+.custom-toggle-btn:checked {
     background: shade(@theme_selected_bg_color,0.9);
 }
 """
@@ -383,14 +388,14 @@ class Preferences(Adw.PreferencesWindow):
         self.format_style = ""
 
         group = Adw.PreferencesGroup()
-        toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked", "custom-linked-btn"])
+        toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
         self.checksum_format_example_label = Adw.ActionRow(css_classes=["monospace"], halign=Gtk.Align.CENTER, title_lines=1)
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
 
         self._setting_widgets[name] = self.setting_checksum_format_toggle_group
 
         for fmt in CHECKSUM_FORMATS:
-            toggle = Gtk.ToggleButton(name=name, label=fmt["name"], tooltip_text=fmt["description"])
+            toggle = Gtk.ToggleButton(name=name, label=fmt["name"], tooltip_text=fmt["description"], css_classes=["custom-toggle-btn"])
             toggle.connect("toggled", self._on_format_selected, fmt["style"])
             toggle_container.append(toggle)
             self.setting_checksum_format_toggle_group.append(toggle)
@@ -907,24 +912,37 @@ class ErrorRowData(GObject.Object):
         return f"{self.path}:ERROR:{self.error_message}"
 
 
-class HashRow(Adw.ActionRow):
+class HashRow(Gtk.Box):
     __gtype_name__ = "HashRow"
-    _max_width_label = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
     base_path: Path
     path: Path
     button_delete: Gtk.Button
+    noop_copy = False
+    noop_cmp = False
 
     def __init__(self, **kwargs):
         super().__init__(
-            subtitle_lines=1,
-            title_lines=1,
+            orientation=Gtk.Orientation.HORIZONTAL,
             css_classes=["custom-style-row"],
-            selectable=False,
-            activatable=False,
-            focusable=False,
-            can_focus=False,
+            spacing=12,
             **kwargs,
         )
+        self.prefix_icon = Gtk.Image(margin_start=4)
+        self.prefix_label = Gtk.Label(width_chars=MAX_WIDTH)
+        self.prefix_label.add_css_class("dim-label")
+        self.append(self.prefix_icon)
+        self.append(self.prefix_label)
+
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        self.append(content_box)
+
+        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.subtitle = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["dim-label", "caption"], margin_top=2)
+        content_box.append(self.title)
+        content_box.append(self.subtitle)
+
+        self.suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
+        self.append(self.suffix_box)
 
     def _create_button(self, icon_name: str | None, tooltip_text: str, callback: Callable, *args) -> Gtk.Button:
         if icon_name is None:
@@ -932,11 +950,12 @@ class HashRow(Adw.ActionRow):
         else:
             button = Gtk.Button.new_from_icon_name(icon_name)
 
-        button.set_valign(Gtk.Align.CENTER)
-        button.set_tooltip_text(tooltip_text)
-
         if callback:
             button.connect("clicked", callback, *args)
+
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_tooltip_text(tooltip_text)
+        self.suffix_box.append(button)
         return button
 
     def _on_click_delete(self, button: Gtk.Button, list_item: Gtk.ListItem, model: Gio.ListStore):
@@ -950,7 +969,7 @@ class HashRow(Adw.ActionRow):
         anim = Adw.TimedAnimation(
             widget=self,
             value_from=1.0,
-            value_to=0.5,
+            value_to=0.3,
             duration=100,
             target=Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity)),
         )
@@ -958,20 +977,22 @@ class HashRow(Adw.ActionRow):
         anim.play()
 
     def _on_click_copy(self, button: Gtk.Button, css: str | None = None):
-        button.disconnect_by_func(self._on_click_copy)
-        button.get_clipboard().set(self.get_subtitle())
+        if self.noop_copy:
+            return
+        self.noop_copy = True
+        button.get_clipboard().set(self.subtitle.get_text())
         icon_name = button.get_icon_name()
         button.set_icon_name("object-select-symbolic")
+
         if css:
             button.add_css_class(css)
-        GLib.timeout_add(
-            1500,
-            lambda: (
-                button.set_icon_name(icon_name),
-                button.remove_css_class("success"),
-                button.connect("clicked", self._on_click_copy, css),
-            ),
-        )
+
+        def reset():
+            button.set_icon_name(icon_name)
+            button.remove_css_class("success")
+            self.noop_copy = False
+
+        GLib.timeout_add(1500, reset)
 
     def bind(self, row_data: ResultRowData | ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
         self.path = row_data.path
@@ -994,25 +1015,14 @@ class HashResultRow(HashRow):
 
     def __init__(self):
         super().__init__()
-
-        self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
-        self.hash_icon = Gtk.Image.new_from_icon_name("dialog-password-symbolic")
-        self.hash_icon_name = self.hash_icon.get_icon_name()
-        self.prefix_hash_box.append(self.hash_icon)
-        self.hash_name = Gtk.Label(width_chars=self._max_width_label)
-        self.prefix_hash_box.append(self.hash_name)
-        self.add_prefix(self.prefix_hash_box)
+        self.prefix_icon.set_from_icon_name("dialog-password-symbolic")
+        self.hash_icon_name = self.prefix_icon.get_icon_name()
 
         self.button_make_hashes = self._create_button(None, "Select and compute multiple hash algorithms for this file", None)
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_copy_hash = self._create_button("edit-copy-symbolic", "Copy hash", None)
         self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
-
-        self.add_suffix(self.button_make_hashes)
-        self.add_suffix(self.button_copy_hash)
-        self.add_suffix(self.button_compare)
-        self.add_suffix(self.button_delete)
 
     def _on_click_make_hashes(self, button: Gtk.Button):
         dialog = Adw.AlertDialog(body="<big><b>Select Hash Algorithms</b></big>", body_use_markup=True)
@@ -1080,7 +1090,9 @@ class HashResultRow(HashRow):
         dialog.present(MainWindow())
 
     def _on_click_compare(self, button: Gtk.Button):
-        button.disconnect_by_func(self._on_click_compare)
+        if self.noop_cmp:
+            return
+        self.noop_cmp = True
 
         def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
             try:
@@ -1089,31 +1101,30 @@ class HashResultRow(HashRow):
                 if clipboard_text == self.hash_value:
                     self.add_css_class("custom-success")
                     self._set_icon_("object-select-symbolic")
-                    MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.get_title()}</b>!</big>")
+                    MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.title.get_text()}</b>!</big>")
 
                 else:
                     self.add_css_class("custom-error")
                     self._set_icon_("dialog-error-symbolic")
-                    MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.get_title()}</b>!</big>")
+                    MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.title.get_text()}</b>!</big>")
 
             except Exception as e:
                 MainWindow().add_toast(f"<big>❌ Clipboard read error: {e}</big>")
 
             finally:
-                GLib.timeout_add(
-                    3000,
-                    lambda: (
-                        self._reset_css(),
-                        self._reset_icon(),
-                        button.connect("clicked", self._on_click_compare),
-                    ),
-                )
+
+                def reset():
+                    self._reset_css()
+                    self._reset_icon()
+                    self.noop_cmp = False
+
+                GLib.timeout_add(3000, reset)
 
         clipboard = button.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
     def _set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
-        self.hash_icon.set_from_icon_name(icon_name)
+        self.prefix_icon.set_from_icon_name(icon_name)
 
     def _reset_icon(self):
         self._set_icon_(self.hash_icon_name)
@@ -1128,19 +1139,19 @@ class HashResultRow(HashRow):
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
 
-        self.hash_name.set_label(row_data.algo.upper())
-        self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
-        self.set_subtitle(row_data.hash_value)
+        self.prefix_label.set_label(row_data.algo.upper())
+        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
+        self.subtitle.set_text(self.hash_value)
 
-        list_item.make_hashes_handler = self.button_make_hashes.connect("clicked", self._on_click_make_hashes)
-        list_item.copy_hash_handler = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
-        list_item.compare_handler = self.button_compare.connect("clicked", self._on_click_compare)
+        list_item.make_hashes_handler_id = self.button_make_hashes.connect("clicked", self._on_click_make_hashes)
+        list_item.copy_handler_id = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
+        list_item.compare_handler_id = self.button_compare.connect("clicked", self._on_click_compare)
 
     def unbind(self, list_item):
         super().unbind(list_item)
-        self.button_make_hashes.disconnect(list_item.make_hashes_handler)
-        self.button_copy_hash.disconnect(list_item.copy_hash_handler)
-        self.button_compare.disconnect(list_item.compare_handler)
+        self.button_make_hashes.disconnect(list_item.make_hashes_handler_id)
+        self.button_copy_hash.disconnect(list_item.copy_handler_id)
+        self.button_compare.disconnect(list_item.compare_handler_id)
 
 
 class HashErrorRow(HashRow):
@@ -1149,29 +1160,23 @@ class HashErrorRow(HashRow):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
-        self.hash_icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
-        self.prefix_hash_box.append(self.hash_icon)
-        self.add_prefix(self.prefix_hash_box)
-
+        self.prefix_icon.set_from_icon_name("dialog-error-symbolic")
+        self.prefix_label.set_visible(False)
         self.button_copy_error = self._create_button("edit-copy-symbolic", "Copy error message", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this error", None)
-        self.add_suffix(self.button_copy_error)
-        self.add_suffix(self.button_delete)
         self.add_css_class("custom-error")
 
     def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
         super().bind(row_data, list_item, model)
         self.error_message = row_data.error_message
-        self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
-        self.set_subtitle(row_data.error_message)
+        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
+        self.subtitle.set_text(GLib.markup_escape_text(self.error_message))
 
-        list_item.copy_error_handler = self.button_copy_error.connect("clicked", self._on_click_copy)
+        list_item.copy_handler_id = self.button_copy_error.connect("clicked", self._on_click_copy)
 
     def unbind(self, list_item):
         super().unbind(list_item)
-        self.button_copy_error.disconnect(list_item.copy_error_handler)
+        self.button_copy_error.disconnect(list_item.copy_handler_id)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1314,9 +1319,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_copy_all.set_sensitive(False)
         self.second_top_bar_box.append(self.button_copy_all)
 
-        self.button_sort = self._create_button("Sort", None, "Sort results by path", None, self._on_sort_clicked)
-        self.button_sort.set_sensitive(False)
-        self.second_top_bar_box.append(self.button_sort)
+        self.button_toggle_sort = Gtk.ToggleButton(
+            label="Sort",
+            tooltip_text="Sort results by path",
+            css_classes=["custom-toggle-btn"],
+            sensitive=False,
+        )
+        self.button_toggle_sort.connect("toggled", self._on_sort_toggled)
+        self.second_top_bar_box.append(self.button_toggle_sort)
 
         self.button_clear = self._create_button("Clear", None, "Clear all results", "destructive-action", self._on_clear_clicked)
         self.button_clear.set_sensitive(False)
@@ -1333,13 +1343,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_model = Gio.ListStore.new(ResultRowData)
         self.results_model.connect("items-changed", self._on_items_changed)
 
-        self.sort_enabled = False
-        self.results_custom_sorter = Gtk.CustomSorter.new(self._sort_by_hierarchy)
+        self.results_custom_sorter = Gtk.CustomSorter.new(self._sort_by_hierarchy, self.button_toggle_sort)
         self.results_model_sorted = Gtk.SortListModel.new(self.results_model, self.results_custom_sorter)
 
         self.results_custom_filter = Gtk.CustomFilter.new(self._filter_func)
         self.results_model_filtered = Gtk.FilterListModel.new(self.results_model_sorted, self.results_custom_filter)
-        self.search_entry.connect("search-changed", self._on_search_changed, self.results_custom_filter)
+        self.search_entry.connect("search-changed", self._on_search_changed, self.results_model, self.results_custom_filter)
 
         self.results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
         self.results_model_selection.connect("selection-changed", self._on_selection_changed)
@@ -1348,7 +1357,7 @@ class MainWindow(Adw.ApplicationWindow):
         factory.connect("setup", self._on_factory_setup, "result")
         factory.connect("bind", self._on_factory_bind)
         factory.connect("unbind", self._on_factory_unbind)
-        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["theme-bg-color"])
+        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["no-background"])
 
         self.results_scrolled_window = Gtk.ScrolledWindow(child=self.results_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
 
@@ -1358,7 +1367,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.errors_custom_filter = Gtk.CustomFilter.new(self._filter_func)
         self.errors_model_filtered = Gtk.FilterListModel.new(self.errors_model, self.errors_custom_filter)
-        self.search_entry.connect("search-changed", self._on_search_changed, self.errors_custom_filter)
+        self.search_entry.connect("search-changed", self._on_search_changed, self.errors_model, self.errors_custom_filter)
 
         self.errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
         self.errors_selection_model.connect("selection-changed", self._on_selection_changed)
@@ -1367,7 +1376,7 @@ class MainWindow(Adw.ApplicationWindow):
         factory_err.connect("setup", self._on_factory_setup, "error")
         factory_err.connect("bind", self._on_factory_bind)
         factory_err.connect("unbind", self._on_factory_unbind)
-        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["theme-bg-color"])
+        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["no-background"])
 
         self.errors_scrolled_window = Gtk.ScrolledWindow(child=self.errors_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
 
@@ -1467,16 +1476,19 @@ class MainWindow(Adw.ApplicationWindow):
 
         return button
 
-    def _modify_placeholder(self, title: str, description: str, icon_name: str):
+    def _modify_placeholder(self, current_page_name: str):
+        title = "No Results" if current_page_name == "results" else "No Errors"
         current_title = self.empty_placeholder.get_title()
         if current_title == title:
             return False
+        icon_name = "text-x-generic-symbolic" if current_page_name == "results" else "object-select-symbolic"
+        description = "Select files or folders to calculate their hashes." if current_page_name == "results" else " "
         self.empty_placeholder.set_title(title)
-        self.empty_placeholder.set_description(description)
         self.empty_placeholder.set_icon_name(icon_name)
+        self.empty_placeholder.set_description(description)
         return True
 
-    def _sort_by_hierarchy(self, row1: ResultRowData, row2: ResultRowData, *args) -> int:
+    def _sort_by_hierarchy(self, row1: ResultRowData, row2: ResultRowData, sort_enabled: Gtk.ToggleButton) -> int:
         """
         - /folder/a.txt
         - /folder/z.txt
@@ -1484,7 +1496,7 @@ class MainWindow(Adw.ApplicationWindow):
         - /folder/subfolder_b/file.txt
         - /folder/subfolder_y/
         """
-        if not self.sort_enabled:
+        if not sort_enabled.get_active():
             return 0
 
         p1, p2 = row1.path, row2.path
@@ -1603,7 +1615,7 @@ class MainWindow(Adw.ApplicationWindow):
         can_clear_or_search = has_results or has_errors
         self.button_save.set_sensitive(can_save_or_copy)
         self.button_copy_all.set_sensitive(can_save_or_copy)
-        self.button_sort.set_sensitive(has_results)
+        self.button_toggle_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(can_clear_or_search)
         self.button_show_searchbar.set_sensitive(can_clear_or_search)
         self._update_badge_numbers()
@@ -1611,11 +1623,7 @@ class MainWindow(Adw.ApplicationWindow):
         show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
         target_modified = False
         if show_empty:
-            target_modified = self._modify_placeholder(
-                title="No Results" if current_page_name == "results" else "No Errors",
-                description="Select files or folders to calculate their hashes." if current_page_name == "results" else " ",
-                icon_name="text-x-generic-symbolic" if current_page_name == "results" else "object-select-symbolic",
-            )
+            target_modified = self._modify_placeholder(current_page_name)
             target = self.empty_placeholder
         else:
             target = self.view_stack
@@ -1772,28 +1780,36 @@ class MainWindow(Adw.ApplicationWindow):
             self.errors_model.remove_all()
             self.add_toast("<big>✅ Results cleared</big>")
 
-    def _on_search_changed(self, entry: Gtk.SearchEntry, filter: Gtk.Filter):
+    def _on_search_changed(self, entry: Gtk.SearchEntry, model: Gio.ListStore, custom_filter: Gtk.Filter):
         self.search_query = entry.get_text().lower()
-        filter.changed(Gtk.FilterChange.DIFFERENT)
+        threading.Thread(target=self._background_filter, args=(model, custom_filter), daemon=True).start()
 
-    def _on_sort_clicked(self, _):
-        if self.results_model_filtered.get_n_items() > 0:
-            self.sort_enabled = True
-            self.results_custom_sorter.changed(Gtk.SorterChange.DIFFERENT)
-            self.add_toast("<big>✅ Done</big>")
-            self.sort_enabled = False
-        else:
-            self.add_toast("<big>❌ Nothing to sort</big>")
+    def _background_filter(self, model: Gio.ListStore, custom_filter: Gtk.Filter):
+        visible_rows = set()
+        if self.search_query:
+            terms = self.search_query.split()
+            for row in model:
+                fields = row.get_fields()
+                if all(any(term in field for field in fields) for term in terms):
+                    visible_rows.add(row)
+
+        GLib.idle_add(self._update_filter, custom_filter, visible_rows)
+
+    def _update_filter(self, custom_filter: Gtk.Filter, visible_rows: set):
+        self.visible_rows = visible_rows
+        custom_filter.changed(Gtk.FilterChange.DIFFERENT)
 
     def _filter_func(self, row: ResultRowData | ErrorRowData):
         if not self.search_query:
             return True
+        return row in self.visible_rows
 
-        terms = self.search_query.split()
-        fields = row.get_fields()
-        has_term = all(any(term in field for field in fields) for term in terms)
-
-        return has_term
+    def _on_sort_toggled(self, toggle: Gtk.ToggleButton):
+        if toggle.get_active():
+            self.add_toast("<big>✅ Sort Enabled</big>")
+            self.results_custom_sorter.changed(Gtk.FilterChange.DIFFERENT)
+        else:
+            self.add_toast("<big>❌ Sort Disabled</big>")
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
@@ -1814,7 +1830,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
             ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl><Shift>C"]),
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
-            ("results-sort", lambda *_: self._on_sort_clicked(_), ["<Ctrl>R"]),
+            ("results-sort", lambda *_: self.button_toggle_sort.set_active(not self.button_toggle_sort.get_active()), ["<Ctrl>R"]),
             ("results-clear", lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
             ("shortcuts", lambda *_: self.shortcuts_window.present(), ["<Ctrl>question"]),
         )
