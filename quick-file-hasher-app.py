@@ -844,8 +844,9 @@ class CalculateHashes:
                         return
 
                     hash_obj.update(chunk)
-                    self._total_bytes_read += len(chunk)
-                    hash_task_bytes_read += len(chunk)
+                    bytes_read = len(chunk)
+                    self._total_bytes_read += bytes_read
+                    hash_task_bytes_read += bytes_read
                     self.queue_handler.update_progress(self._current_progress)
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
@@ -893,7 +894,6 @@ class ResultRowData(GObject.Object):
 
 class ErrorRowData(GObject.Object):
     __gtype_name__ = "ErrorRowData"
-
     path: Path = GObject.Property()
     error_message: str = GObject.Property(type=str)
 
@@ -976,14 +976,13 @@ class HashRow(Adw.ActionRow):
     def bind(self, row_data: ResultRowData | ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
         self.path = row_data.path
 
-        handler_id = self.button_delete.connect("clicked", self._on_click_delete, list_item, model)
-        list_item.handler_id = handler_id
+        list_item.delete_handler_id = self.button_delete.connect("clicked", self._on_click_delete, list_item, model)
         self.button_delete.set_sensitive(True)
 
     def unbind(self, list_item):
-        if hasattr(list_item, "handler_id") and list_item.handler_id > 0:
-            self.button_delete.disconnect(list_item.handler_id)
-            list_item.handler_id = 0
+        if hasattr(list_item, "delete_handler_id") and list_item.delete_handler_id > 0:
+            self.button_delete.disconnect(list_item.delete_handler_id)
+            list_item.delete_handler_id = 0
         self.button_delete.set_sensitive(False)
 
 
@@ -993,11 +992,10 @@ class HashResultRow(HashRow):
     hash_value: str
     algo: str
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self):
+        super().__init__()
 
-        self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.prefix_hash_box.set_valign(Gtk.Align.CENTER)
+        self.prefix_hash_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
         self.hash_icon = Gtk.Image.new_from_icon_name("dialog-password-symbolic")
         self.hash_icon_name = self.hash_icon.get_icon_name()
         self.prefix_hash_box.append(self.hash_icon)
@@ -1005,10 +1003,10 @@ class HashResultRow(HashRow):
         self.prefix_hash_box.append(self.hash_name)
         self.add_prefix(self.prefix_hash_box)
 
-        self.button_make_hashes = self._create_button(None, "Select and compute multiple hash algorithms for this file", self._on_click_make_hashes)
+        self.button_make_hashes = self._create_button(None, "Select and compute multiple hash algorithms for this file", None)
         self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
-        self.button_copy_hash = self._create_button("edit-copy-symbolic", "Copy hash", self._on_click_copy, "success")
-        self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", self._on_click_compare)
+        self.button_copy_hash = self._create_button("edit-copy-symbolic", "Copy hash", None)
+        self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
         self.add_suffix(self.button_make_hashes)
@@ -1134,6 +1132,16 @@ class HashResultRow(HashRow):
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.hash_value)
 
+        list_item.make_hashes_handler = self.button_make_hashes.connect("clicked", self._on_click_make_hashes)
+        list_item.copy_hash_handler = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
+        list_item.compare_handler = self.button_compare.connect("clicked", self._on_click_compare)
+
+    def unbind(self, list_item):
+        super().unbind(list_item)
+        self.button_make_hashes.disconnect(list_item.make_hashes_handler)
+        self.button_copy_hash.disconnect(list_item.copy_hash_handler)
+        self.button_compare.disconnect(list_item.compare_handler)
+
 
 class HashErrorRow(HashRow):
     __gtype_name__ = "HashErrorRow"
@@ -1147,7 +1155,7 @@ class HashErrorRow(HashRow):
         self.prefix_hash_box.append(self.hash_icon)
         self.add_prefix(self.prefix_hash_box)
 
-        self.button_copy_error = self._create_button("edit-copy-symbolic", "Copy error message", self._on_click_copy)
+        self.button_copy_error = self._create_button("edit-copy-symbolic", "Copy error message", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this error", None)
         self.add_suffix(self.button_copy_error)
         self.add_suffix(self.button_delete)
@@ -1158,6 +1166,12 @@ class HashErrorRow(HashRow):
         self.error_message = row_data.error_message
         self.set_title(GLib.markup_escape_text(row_data.path.as_posix()))
         self.set_subtitle(row_data.error_message)
+
+        list_item.copy_error_handler = self.button_copy_error.connect("clicked", self._on_click_copy)
+
+    def unbind(self, list_item):
+        super().unbind(list_item)
+        self.button_copy_error.disconnect(list_item.copy_error_handler)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1414,7 +1428,7 @@ class MainWindow(Adw.ApplicationWindow):
             {
                 "title": "Clipboard",
                 "shortcuts": [
-                    {"title": "Copy All Results", "accelerator": "<Ctrl>C"},
+                    {"title": "Copy All Results", "accelerator": "<Ctrl><Shift>C"},
                 ],
             },
         ]
@@ -1492,13 +1506,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.cancel_event.clear()
         self.button_cancel.set_visible(True)
 
-        self.processing_thread = threading.Thread(
+        threading.Thread(
             target=self._calculate_hashes,
             args=(base_paths or paths, paths, hashing_algorithm, options),
             daemon=True,
-        )
-        self.processing_thread.start()
-        GLib.timeout_add(50, self._process_queue, priority=GLib.PRIORITY_DEFAULT_IDLE)
+        ).start()
+        GLib.timeout_add(50, self._process_queue)
 
     def _process_queue(self):
         self.progress_bar.set_opacity(1.0)
@@ -1532,11 +1545,14 @@ class MainWindow(Adw.ApplicationWindow):
                 new_errors.append(ErrorRowData(*update[1:]))
 
         if new_rows:
-            GLib.timeout_add(250, self.results_model.splice, self.results_model.get_n_items(), 0, new_rows)
+            GLib.idle_add(self.add_rows, self.results_model, new_rows)
         if new_errors:
-            GLib.timeout_add(250, self.errors_model.splice, self.errors_model.get_n_items(), 0, new_errors)
+            GLib.idle_add(self.add_rows, self.errors_model, new_errors)
 
         return True  # Continue monitoring
+
+    def add_rows(self, model: Gio.ListStore, rows: list):
+        model.splice(model.get_n_items(), 0, rows)
 
     def _processing_complete(self):
         if self.cancel_event.is_set():
@@ -1569,7 +1585,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _animate_opacity(self, widget: Gtk.Widget, from_value: float, to_value: float, duration: int):
         animation = Adw.TimedAnimation.new(
-            widget.get_parent(),
+            self,
             from_value,
             to_value,
             duration,
@@ -1657,12 +1673,12 @@ class MainWindow(Adw.ApplicationWindow):
             total_errors = self.errors_model_filtered.get_n_items()
 
             if total_results > 0:
-                results_text = "\n".join(str(r) for r in self.results_model_filtered)
-                parts.append(f"Results ({total_results}):\n\n{results_text}")
+                results_txt = "\n".join(str(r) for r in self.results_model_filtered)
+                parts.append(f"Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
-                errors_text = "\n".join(str(r) for r in self.errors_model_filtered)
-                parts.append(f"Errors ({total_errors}):\n\n{errors_text}")
+                errors_txt = "\n".join(str(r) for r in self.errors_model_filtered)
+                parts.append(f"Errors ({total_errors}):\n\n{errors_txt}")
 
             if self.pref.include_time() and parts:
                 now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
@@ -1796,7 +1812,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("show-searchbar", lambda *_: self._on_click_show_searchbar(True), ["<Ctrl>F"]),
             ("hide-searchbar", lambda *_: self._on_click_show_searchbar(False), ["Escape"]),
             ("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
-            ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl>C"]),
+            ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl><Shift>C"]),
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
             ("results-sort", lambda *_: self._on_sort_clicked(_), ["<Ctrl>R"]),
             ("results-clear", lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
