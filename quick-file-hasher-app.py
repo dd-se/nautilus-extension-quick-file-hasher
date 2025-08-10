@@ -89,6 +89,9 @@ CHECKSUM_FORMATS: list[dict[str, str]] = [
     },
 ]
 CSS = b"""
+toast {
+    background-color: #000000;
+}
 .view-switcher button {
     background-color: #404040;
     color: white;
@@ -119,6 +122,9 @@ CSS = b"""
     padding-left : 8px;
     padding-right : 8px;
     padding-bottom: 8px;
+}
+.darker-action-row {
+    background-color: rgba(0, 0, 0, 0.2);
 }
 .custom-style-row:hover {
     background-color: #454545;
@@ -172,7 +178,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         hash_algorithm: str = None,
         recursive_mode: bool = False,
     ):
-        self.logger.debug(f"App {APP_ID} launched by file manager")
+        self.logger.debug(f"App '{APP_ID}' launched by file manager")
 
         cmd = ["python3", __file__] + files
         if hash_algorithm:
@@ -181,7 +187,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
 
-        self.logger.debug(f"With args: {cmd}")
+        self.logger.debug(f"Args: '{cmd[2:]}'")
         subprocess.Popen(cmd)
 
     def create_menu(self, files, caller, has_dir, PREFIX="QuickFileHasher_OpenInApp"):
@@ -329,7 +335,7 @@ class Preferences(Adw.PreferencesWindow):
             "Relative Paths",
             "Display results using paths relative to the current working directory",
         )
-        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_format_label(self.get_format_style()))
+        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_format_text(self.get_format_style()))
         saving_group.add(child=self.setting_relative_path)
 
         self._create_checksum_format_toggle_group(saving_page)
@@ -383,30 +389,36 @@ class Preferences(Adw.PreferencesWindow):
         return switch_row
 
     def _create_checksum_format_toggle_group(self, page: Adw.PreferencesPage):
-        # TODO: Change this to Adw.ToggleGroup when made available for Ubuntu LTS
         name = "output-style"
         self.format_style = ""
 
         group = Adw.PreferencesGroup()
         toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
-        self.checksum_format_example_label = Adw.ActionRow(css_classes=["monospace"], halign=Gtk.Align.CENTER, title_lines=1)
+        self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "darker-action-row"], title_lines=1)
+        self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
 
         self._setting_widgets[name] = self.setting_checksum_format_toggle_group
 
+        first_toggle = None
         for fmt in CHECKSUM_FORMATS:
             toggle = Gtk.ToggleButton(name=name, label=fmt["name"], tooltip_text=fmt["description"], css_classes=["custom-toggle-btn"])
             toggle.connect("toggled", self._on_format_selected, fmt["style"])
+
+            if first_toggle is None:
+                first_toggle = toggle
+            else:
+                toggle.set_group(first_toggle)
+
             toggle_container.append(toggle)
             self.setting_checksum_format_toggle_group.append(toggle)
 
-        expander_row = Adw.ExpanderRow(title="Output Format", tooltip_text="Choose checksum output format", expanded=True)
-        expander_row.connect("notify::expanded", lambda *_: expander_row.set_expanded(True))
-        expander_row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
-        expander_row.add_suffix(toggle_container)
-        expander_row.add_row(self.checksum_format_example_label)
+        output_format_row = Adw.ActionRow(title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
+        output_format_row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
+        output_format_row.add_suffix(toggle_container)
 
-        group.add(expander_row)
+        group.add(output_format_row)
+        group.add(self.checksum_format_example_text)
         group.add(self._create_buttons())
 
         page.add(group)
@@ -567,24 +579,17 @@ class Preferences(Adw.PreferencesWindow):
         self.setting_recursive.set_active(state)
         self.logger.debug(f"Recursive mode set to {state} via action")
 
-    def _set_example_format_label(self, format_style: str):
+    def _set_example_format_text(self, format_style: str):
         example_file = "example.txt" if self.setting_relative_path.get_active() else "/folder/example.txt"
         example_hash = "fdfba9fc68f1f150a4"
         example_algo = "SHA256"
 
         example_text = format_style.format(hash=example_hash, filename=example_file, algo=example_algo)
-        self.checksum_format_example_label.set_title(example_text)
+        self.checksum_format_example_text.set_title(example_text)
 
     def _on_format_selected(self, button: Gtk.ToggleButton, format_style: str):
-        if not button.get_active():
-            return
-
-        for b in self.setting_checksum_format_toggle_group:
-            if b is not button:
-                b.set_active(False)
-
         self.format_style = format_style
-        self._set_example_format_label(self.format_style)
+        self._set_example_format_text(self.format_style)
 
         button_index = self.setting_checksum_format_toggle_group.index(button)
         config_key = button.get_name()
@@ -717,6 +722,9 @@ class QueueUpdateHandler:
     def update_error(self, file: Path, error: str):
         self.q.put(("error", file, error))
 
+    def update_toast(self, message: str):
+        self.q.put(("toast", message))
+
     def get_update(self):
         return self.q.get_nowait()
 
@@ -779,6 +787,7 @@ class CalculateHashes:
 
         if self._total_bytes == 0:
             self.queue_handler.update_progress(1)
+            self.queue_handler.update_toast("❌ Zero bytes. No files were hashed.")
 
         return jobs
 
@@ -1101,15 +1110,15 @@ class HashResultRow(HashRow):
                 if clipboard_text == self.hash_value:
                     self.add_css_class("custom-success")
                     self._set_icon_("object-select-symbolic")
-                    MainWindow().add_toast(f"<big>✅ Clipboard hash matches <b>{self.title.get_text()}</b>!</big>")
+                    MainWindow().add_toast(f"✅ Clipboard hash matches <b>{self.title.get_text()}</b>!")
 
                 else:
                     self.add_css_class("custom-error")
                     self._set_icon_("dialog-error-symbolic")
-                    MainWindow().add_toast(f"<big>❌ The clipboard hash does <b>not</b> match <b>{self.title.get_text()}</b>!</big>")
+                    MainWindow().add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{self.title.get_text()}</b>!")
 
             except Exception as e:
-                MainWindow().add_toast(f"<big>❌ Clipboard read error: {e}</big>")
+                MainWindow().add_toast(f"❌ Clipboard read error: {e}")
 
             finally:
 
@@ -1294,7 +1303,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.first_top_bar_box.append(self.button_save)
 
-        callback = lambda _: (self.cancel_event.set(), self.add_toast("<big>❌ Jobs Cancelled</big>"))
+        callback = lambda _: (self.cancel_event.set(), self.add_toast("❌ Jobs Cancelled"))
         self.button_cancel = self._create_button("Cancel Jobs", None, None, "destructive-action", callback)
         self.button_cancel.set_visible(False)
         self.first_top_bar_box.append(self.button_cancel)
@@ -1556,6 +1565,9 @@ class MainWindow(Adw.ApplicationWindow):
                 iterations += 1
                 new_errors.append(ErrorRowData(*update[1:]))
 
+            elif kind == "toast":
+                GLib.idle_add(self.add_toast, update[1])
+
         if new_rows:
             GLib.idle_add(self.add_rows, self.results_model, new_rows)
         if new_errors:
@@ -1642,7 +1654,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _txt_to_file(self, output: str | None):
         if output is None:
-            self.add_toast("<big>❌ Nothing to save</big>")
+            self.add_toast("❌ Nothing to save")
             return
         file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
 
@@ -1655,11 +1667,11 @@ class MainWindow(Adw.ApplicationWindow):
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(output)
 
-                    self.add_toast(f"<big>✅ Saved to <b>{path}</b></big>")
+                    self.add_toast(f"✅ Saved to <b>{path}</b>")
 
                 except Exception as e:
                     self.logger.error(f"Unexcepted error occured for {path}: {e}")
-                    self.add_toast(f"<big>❌ Failed to save: {e}</big>")
+                    self.add_toast(f"❌ Failed to save: {e}")
 
         file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
 
@@ -1670,9 +1682,9 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.Bytes.new(output.encode("utf-8")),
             )
             self.get_clipboard().set_content(cp)
-            self.add_toast("<big>✅ Results copied to clipboard</big>")
+            self.add_toast("✅ Results copied to clipboard")
         else:
-            self.add_toast("<big>❌ Nothing to copy</big>")
+            self.add_toast("❌ Nothing to copy")
 
     def _results_to_txt(self, callback: Callable[[str], None]):
         def worker():
@@ -1742,7 +1754,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 self.search_entry.set_text("")
         else:
-            self.add_toast("<big>🔍 No Results. Search is unavailable.</big>")
+            self.add_toast("🔍 No Results. Search is unavailable.")
 
     def _on_select_files_or_folders_clicked(self, _, files: bool):
         title = "Select Files" if files else "Select Folders"
@@ -1778,7 +1790,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._on_click_show_searchbar(False)
             self.results_model.remove_all()
             self.errors_model.remove_all()
-            self.add_toast("<big>✅ Results cleared</big>")
+            self.add_toast("✅ Results cleared")
 
     def _on_search_changed(self, entry: Gtk.SearchEntry, model: Gio.ListStore, custom_filter: Gtk.Filter):
         self.search_query = entry.get_text().lower()
@@ -1806,10 +1818,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_sort_toggled(self, toggle: Gtk.ToggleButton):
         if toggle.get_active():
-            self.add_toast("<big>✅ Sort Enabled</big>")
+            self.add_toast("✅ Sort Enabled")
             self.results_custom_sorter.changed(Gtk.FilterChange.DIFFERENT)
         else:
-            self.add_toast("<big>❌ Sort Disabled</big>")
+            self.add_toast("❌ Sort Disabled")
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
@@ -1866,8 +1878,8 @@ class QuickFileHasher(Adw.Application):
             website="https://github.com/dd-se/nautilus-extension-quick-file-hasher",
             issue_url="https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues",
             copyright="© 2025 Doğukan Doğru",
-            developers=["dd-se https://github.com/dd-se"],
-            designers=["dd-se https://github.com/dd-se"],
+            developers=["Doğukan Doğru https://github.com/dd-se"],
+            designers=["Doğukan Doğru https://github.com/dd-se"],
         )
         self._create_actions()
         self._create_options()
