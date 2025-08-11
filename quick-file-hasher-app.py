@@ -52,7 +52,7 @@ gi.require_version(namespace="Nautilus", version="4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
-APP_VERSION = "1.8.5"
+APP_VERSION = "1.9.1"
 
 DEFAULTS = {
     "algo": "sha256",
