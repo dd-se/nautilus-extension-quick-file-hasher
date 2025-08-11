@@ -1694,15 +1694,15 @@ class MainWindow(Adw.ApplicationWindow):
 
             if total_results > 0:
                 results_txt = "\n".join(str(r) for r in self.results_model_filtered)
-                parts.append(f"Results ({total_results}):\n\n{results_txt}")
+                parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
                 errors_txt = "\n".join(str(r) for r in self.errors_model_filtered)
-                parts.append(f"Errors ({total_errors}):\n\n{errors_txt}")
+                parts.append(f"# Errors ({total_errors}):\n\n{errors_txt}")
 
             if self.pref.include_time() and parts:
                 now = datetime.now().astimezone().strftime("%B %d, %Y at %H:%M:%S %Z")
-                parts.append(f"Generated on {now}")
+                parts.append(f"# Generated on {now}")
 
             if parts:
                 output = "\n\n".join(parts)
@@ -1874,7 +1874,7 @@ class QuickFileHasher(Adw.Application):
             version=APP_VERSION,
             developer_name="Doğukan Doğru",
             license_type=Gtk.License(Gtk.License.MIT_X11),
-            comments="A modern Nautilus extension and standalone GTK4/libadwaita app to calculate hashes.",
+            comments="Verify your files with speed and confidence.",
             website="https://github.com/dd-se/nautilus-extension-quick-file-hasher",
             issue_url="https://github.com/dd-se/nautilus-extension-quick-file-hasher/issues",
             copyright="© 2025 Doğukan Doğru",
