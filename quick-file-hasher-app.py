@@ -123,11 +123,13 @@ toast {
     padding-right : 8px;
     padding-bottom: 8px;
 }
-.darker-action-row {
-    background-color: rgba(0, 0, 0, 0.2);
-}
+/*
 .custom-style-row:hover {
     background-color: #454545;
+}
+*/
+.darker-action-row {
+    background-color: rgba(0, 0, 0, 0.2);
 }
 .drag-overlay {
     background-color: alpha(@accent_bg_color, 0.5);
@@ -893,17 +895,18 @@ class ResultRowData(GObject.Object):
     def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
         super().__init__(base_path=base_path, path=path, hash_value=hash_value, algo=algo, **kwargs)
 
-    def get_fields(self):
+    def get_search_fields(self):
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
-    def __str__(self):
-        pref = Preferences()
-        format_style = pref.get_format_style()
-        if pref.use_relative_paths():
-            display_path = self.base_path.name / self.path.relative_to(self.base_path)
+    def __str__(self) -> str:
+        return f"{self.path}:{self.hash_value}:{self.algo}"
+
+    def to_str(self, use_relative_paths: bool, style: str):
+        if use_relative_paths:
+            path = self.base_path.name / self.path.relative_to(self.base_path)
         else:
-            display_path = self.path
-        return format_style.format(hash=self.hash_value, filename=display_path, algo=self.algo)
+            path = self.path
+        return style.format(hash=self.hash_value, filename=path, algo=self.algo)
 
 
 class ErrorRowData(GObject.Object):
@@ -914,7 +917,7 @@ class ErrorRowData(GObject.Object):
     def __init__(self, path: Path, error_message: str, **kwargs):
         super().__init__(path=path, error_message=error_message, **kwargs)
 
-    def get_fields(self):
+    def get_search_fields(self):
         return (self.path.as_posix().lower(), self.error_message)
 
     def __str__(self) -> str:
@@ -1027,23 +1030,83 @@ class HashResultRow(HashRow):
         self.prefix_icon.set_from_icon_name("dialog-password-symbolic")
         self.hash_icon_name = self.prefix_icon.get_icon_name()
 
-        self.button_make_hashes = self._create_button(None, "Select and compute multiple hash algorithms for this file", None)
-        self.button_make_hashes.set_child(Gtk.Label(label="Multi-Hash"))
+        self.button_multi_hash = self._create_button(None, "Select and compute multiple hash algorithms for this file", None)
+        self.button_multi_hash.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_copy_hash = self._create_button("edit-copy-symbolic", "Copy hash", None)
         self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
-    def _on_click_make_hashes(self, button: Gtk.Button):
-        dialog = Adw.AlertDialog(body="<big><b>Select Hash Algorithms</b></big>", body_use_markup=True)
-        dialog.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("compute", "Compute")
-        dialog.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_response_enabled("compute", False)
-        dialog.set_close_response("cancel")
+    def _set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
+        self.prefix_icon.set_from_icon_name(icon_name)
+
+    def _reset_icon(self):
+        self._set_icon_(self.hash_icon_name)
+
+    def _reset_css(self):
+        self.remove_css_class("custom-success")
+        self.remove_css_class("custom-error")
+
+    def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow"):
+        super().bind(row_data, list_item, model)
+        self.base_path = row_data.base_path
+        self.algo = row_data.algo
+        self.hash_value = row_data.hash_value
+
+        self.prefix_label.set_label(row_data.algo.upper())
+        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
+        self.subtitle.set_text(self.hash_value)
+
+        list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent._on_multi_hash_requested, self)
+        list_item.copy_handler_id = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
+        list_item.compare_handler_id = self.button_compare.connect("clicked", parent._on_clipboard_compare_requested, self)
+
+    def unbind(self, list_item):
+        super().unbind(list_item)
+        self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
+        self.button_copy_hash.disconnect(list_item.copy_handler_id)
+        self.button_compare.disconnect(list_item.compare_handler_id)
+
+
+class HashErrorRow(HashRow):
+    __gtype_name__ = "HashErrorRow"
+    error_message: str
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.prefix_icon.set_from_icon_name("dialog-error-symbolic")
+        self.prefix_label.set_visible(False)
+        self.button_copy_error = self._create_button("edit-copy-symbolic", "Copy error message", None)
+        self.button_delete = self._create_button("user-trash-symbolic", "Remove this error", None)
+        self.add_css_class("custom-error")
+
+    def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow"):
+        super().bind(row_data, list_item, model)
+        self.error_message = row_data.error_message
+        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
+        self.subtitle.set_text(GLib.markup_escape_text(self.error_message))
+
+        list_item.copy_handler_id = self.button_copy_error.connect("clicked", self._on_click_copy)
+
+    def unbind(self, list_item):
+        super().unbind(list_item)
+        self.button_copy_error.disconnect(list_item.copy_handler_id)
+
+
+class MultiHashDialog(Adw.AlertDialog):
+    def __init__(self, parent: "MainWindow", data: "HashResultRow"):
+        super().__init__(
+            body="<big><b>Select Hash Algorithms</b></big>",
+            body_use_markup=True,
+            presentation_mode=Adw.DialogPresentationMode.BOTTOM_SHEET,
+        )
+        self.add_response("cancel", "Cancel")
+        self.add_response("compute", "Compute")
+        self.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
+        self.set_response_enabled("compute", False)
+        self.set_close_response("cancel")
 
         main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        dialog.set_extra_child(main_container)
+        self.set_extra_child(main_container)
 
         horizontal_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         main_container.append(horizontal_container)
@@ -1059,12 +1122,12 @@ class HashResultRow(HashRow):
         horizontal_container_2.append(deselect_all_button)
 
         switches: list[Adw.SwitchRow] = []
-        can_compute = lambda *_: dialog.set_response_enabled("compute", any(s.get_active() for s in switches))
+        can_compute = lambda *_: self.set_response_enabled("compute", any(s.get_active() for s in switches))
         on_button_click = lambda _, state: list(s.set_active(state) for s in switches)
 
         count = 0
         for algo in AVAILABLE_ALGORITHMS:
-            if algo == self.algo:
+            if algo == data.algo:
                 continue
 
             if count % 5 == 0:
@@ -1088,104 +1151,15 @@ class HashResultRow(HashRow):
             if response_id == "compute":
                 selected_algos = [switch.algo for switch in switches if switch.get_active()]
                 repeat_n_times = len(selected_algos)
-                MainWindow().start_job(
-                    repeat(self.base_path, repeat_n_times),
-                    repeat(self.path, repeat_n_times),
+                parent.start_job(
+                    repeat(data.base_path, repeat_n_times),
+                    repeat(data.path, repeat_n_times),
                     selected_algos,
                     Preferences().get_working_config(),
                 )
 
-        dialog.connect("response", on_response)
-        dialog.present(MainWindow())
-
-    def _on_click_compare(self, button: Gtk.Button):
-        if self.noop_cmp:
-            return
-        self.noop_cmp = True
-
-        def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
-            try:
-                clipboard_text: str = clipboard.read_text_finish(result).strip()
-
-                if clipboard_text == self.hash_value:
-                    self.add_css_class("custom-success")
-                    self._set_icon_("object-select-symbolic")
-                    MainWindow().add_toast(f"✅ Clipboard hash matches <b>{self.title.get_text()}</b>!")
-
-                else:
-                    self.add_css_class("custom-error")
-                    self._set_icon_("dialog-error-symbolic")
-                    MainWindow().add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{self.title.get_text()}</b>!")
-
-            except Exception as e:
-                MainWindow().add_toast(f"❌ Clipboard read error: {e}")
-
-            finally:
-
-                def reset():
-                    self._reset_css()
-                    self._reset_icon()
-                    self.noop_cmp = False
-
-                GLib.timeout_add(3000, reset)
-
-        clipboard = button.get_clipboard()
-        clipboard.read_text_async(None, handle_clipboard_comparison)
-
-    def _set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
-        self.prefix_icon.set_from_icon_name(icon_name)
-
-    def _reset_icon(self):
-        self._set_icon_(self.hash_icon_name)
-
-    def _reset_css(self):
-        self.remove_css_class("custom-success")
-        self.remove_css_class("custom-error")
-
-    def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
-        super().bind(row_data, list_item, model)
-        self.base_path = row_data.base_path
-        self.algo = row_data.algo
-        self.hash_value = row_data.hash_value
-
-        self.prefix_label.set_label(row_data.algo.upper())
-        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
-        self.subtitle.set_text(self.hash_value)
-
-        list_item.make_hashes_handler_id = self.button_make_hashes.connect("clicked", self._on_click_make_hashes)
-        list_item.copy_handler_id = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
-        list_item.compare_handler_id = self.button_compare.connect("clicked", self._on_click_compare)
-
-    def unbind(self, list_item):
-        super().unbind(list_item)
-        self.button_make_hashes.disconnect(list_item.make_hashes_handler_id)
-        self.button_copy_hash.disconnect(list_item.copy_handler_id)
-        self.button_compare.disconnect(list_item.compare_handler_id)
-
-
-class HashErrorRow(HashRow):
-    __gtype_name__ = "HashErrorRow"
-    error_message: str
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.prefix_icon.set_from_icon_name("dialog-error-symbolic")
-        self.prefix_label.set_visible(False)
-        self.button_copy_error = self._create_button("edit-copy-symbolic", "Copy error message", None)
-        self.button_delete = self._create_button("user-trash-symbolic", "Remove this error", None)
-        self.add_css_class("custom-error")
-
-    def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore):
-        super().bind(row_data, list_item, model)
-        self.error_message = row_data.error_message
-        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
-        self.subtitle.set_text(GLib.markup_escape_text(self.error_message))
-
-        list_item.copy_handler_id = self.button_copy_error.connect("clicked", self._on_click_copy)
-
-    def unbind(self, list_item):
-        super().unbind(list_item)
-        self.button_copy_error.disconnect(list_item.copy_handler_id)
+        self.connect("response", on_response)
+        self.present(parent)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1693,7 +1667,9 @@ class MainWindow(Adw.ApplicationWindow):
             total_errors = self.errors_model_filtered.get_n_items()
 
             if total_results > 0:
-                results_txt = "\n".join(str(r) for r in self.results_model_filtered)
+                use_relative_paths = self.pref.use_relative_paths()
+                style = self.pref.get_format_style()
+                results_txt = "\n".join(r.to_str(use_relative_paths, style) for r in self.results_model_filtered)
                 parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
@@ -1709,7 +1685,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 output = None
 
-            GLib.idle_add(callback, output)
+            callback(output)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1724,7 +1700,7 @@ class MainWindow(Adw.ApplicationWindow):
         row_widget: HashResultRow | HashErrorRow = list_item.get_child()
         row_data: ResultRowData | ErrorRowData = list_item.get_item()
         model = self.results_model if isinstance(row_widget, HashResultRow) else self.errors_model
-        row_widget.bind(row_data, list_item, model)
+        row_widget.bind(row_data, list_item, model, self)
 
     def _on_factory_unbind(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem):
         row_widget: HashResultRow | HashErrorRow = list_item.get_child()
@@ -1745,6 +1721,43 @@ class MainWindow(Adw.ApplicationWindow):
         print("Selected items:")
         for item in selected_items:
             print(item)
+
+    def _on_multi_hash_requested(self, _, row: HashResultRow):
+        MultiHashDialog(self, row)
+
+    def _on_clipboard_compare_requested(self, _, row: HashResultRow):
+        if row.noop_cmp:
+            return
+        row.noop_cmp = True
+
+        def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
+            try:
+                clipboard_text: str = clipboard.read_text_finish(result).strip()
+
+                if clipboard_text == row.hash_value:
+                    row.add_css_class("custom-success")
+                    row._set_icon_("object-select-symbolic")
+                    self.add_toast(f"✅ Clipboard hash matches <b>{row.title.get_text()}</b>!")
+
+                else:
+                    row.add_css_class("custom-error")
+                    row._set_icon_("dialog-error-symbolic")
+                    self.add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{row.title.get_text()}</b>!")
+
+            except Exception as e:
+                self.add_toast(f"❌ Clipboard read error: {e}")
+
+            finally:
+
+                def reset():
+                    row._reset_css()
+                    row._reset_icon()
+                    row.noop_cmp = False
+
+                GLib.timeout_add(3000, reset)
+
+        clipboard = self.get_clipboard()
+        clipboard.read_text_async(None, handle_clipboard_comparison)
 
     def _on_click_show_searchbar(self, show: bool):
         if self.button_show_searchbar.is_sensitive():
@@ -1801,7 +1814,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self.search_query:
             terms = self.search_query.split()
             for row in model:
-                fields = row.get_fields()
+                fields = row.get_search_fields()
                 if all(any(term in field for field in fields) for term in terms):
                     visible_rows.add(row)
 
