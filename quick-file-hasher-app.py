@@ -53,12 +53,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # 
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_VERSION = "1.8.5"
-PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
-AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
-MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
-NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
-CONFIG_DIR = Path(GLib.get_user_config_dir()) / APP_ID
-CONFIG_FILE = CONFIG_DIR / "config.json"
+
 DEFAULTS = {
     "algo": "sha256",
     "max-visible-results": 100,
@@ -71,6 +66,12 @@ DEFAULTS = {
     "include-time": True,
     "output-style": 0,
 }
+PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
+AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
+MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
+NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
+CONFIG_DIR = Path(GLib.get_user_config_dir()) / APP_ID
+CONFIG_FILE = CONFIG_DIR / "config.json"
 CHECKSUM_FORMATS: list[dict[str, str]] = [
     {
         "name": "Default",
@@ -272,7 +273,12 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
 
 
 class Preferences(Adw.PreferencesWindow):
+    __gtype_name__ = "Preferences"
     _instance = None
+    __gsignals__ = {
+        "call-main-window": (GObject.SignalFlags.RUN_LAST, None, (str, str, GObject.TYPE_PYOBJECT)),
+        "call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+    }
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -325,7 +331,6 @@ class Preferences(Adw.PreferencesWindow):
         saving_page.add(group=saving_group)
 
         self.setting_save_errors = self._create_switch_row("save-errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
-        self.setting_save_errors.connect("notify::active", lambda *_: MainWindow().has_results())
         saving_group.add(child=self.setting_save_errors)
 
         self.setting_include_time = self._create_switch_row("include-time", "edit-find-symbolic", "Include Timestamp", "Include timestamp in results")
@@ -605,6 +610,12 @@ class Preferences(Adw.PreferencesWindow):
         if self.working_config.get(config_key) != new_value:
             self.working_config[config_key] = new_value
             self.logger.info(f"Switch Preference '{config_key}' changed to '{new_value}'")
+
+            if config_key == "save-errors":
+                self.emit("call-main-window", "method", "has_results", None)
+
+            elif config_key == "relative-paths":
+                self.emit("call-row-data", "trigger-path-update")
 
     def _on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec):
         new_value = int(spin_row.get_value())
@@ -887,35 +898,43 @@ class CalculateHashes:
 
 class ResultRowData(GObject.Object):
     __gtype_name__ = "ResultRowData"
-    base_path: Path = GObject.Property()
-    path: Path = GObject.Property()
+    base_path: Path
+    path: Path
     hash_value: str = GObject.Property(type=str)
     algo: str = GObject.Property(type=str)
 
-    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
-        super().__init__(base_path=base_path, path=path, hash_value=hash_value, algo=algo, **kwargs)
+    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, pref, **kwargs):
+        super().__init__(hash_value=hash_value, algo=algo, **kwargs)
+        self.base_path = base_path
+        self.path = path
+        self.pref: Preferences = pref
+
+    def __str__(self) -> str:
+        return self.pref.get_format_style().format(hash=self.hash_value, filename=self.display_path, algo=self.algo)
+
+    @GObject.Property(type=str)
+    def display_path(self):
+        if self.pref.use_relative_paths():
+            return GLib.markup_escape_text((self.base_path.name / self.path.relative_to(self.base_path)).as_posix())
+
+        return GLib.markup_escape_text(self.path.as_posix())
 
     def get_search_fields(self):
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
-    def __str__(self) -> str:
-        return f"{self.path}:{self.hash_value}:{self.algo}"
-
-    def to_str(self, use_relative_paths: bool, style: str):
-        if use_relative_paths:
-            path = self.base_path.name / self.path.relative_to(self.base_path)
-        else:
-            path = self.path
-        return style.format(hash=self.hash_value, filename=path, algo=self.algo)
+    def signal_handler(self, widget, action):
+        if action == "trigger-path-update":
+            self.notify("display_path")
 
 
 class ErrorRowData(GObject.Object):
     __gtype_name__ = "ErrorRowData"
-    path: Path = GObject.Property()
+    path: Path
     error_message: str = GObject.Property(type=str)
 
     def __init__(self, path: Path, error_message: str, **kwargs):
-        super().__init__(path=path, error_message=error_message, **kwargs)
+        super().__init__(error_message=error_message, **kwargs)
+        self.path = path
 
     def get_search_fields(self):
         return (self.path.as_posix().lower(), self.error_message)
@@ -1021,6 +1040,7 @@ class HashRow(Gtk.Box):
 
 class HashResultRow(HashRow):
     __gtype_name__ = "HashResultRow"
+    pref: Preferences
     base_path: Path
     hash_value: str
     algo: str
@@ -1048,12 +1068,14 @@ class HashResultRow(HashRow):
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow"):
         super().bind(row_data, list_item, model)
+        self.pref = row_data.pref
         self.base_path = row_data.base_path
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
 
         self.prefix_label.set_label(row_data.algo.upper())
-        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
+        list_item.display_path_binding = row_data.bind_property("display_path", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.display_path_handler_id = self.pref.connect("call-row-data", row_data.signal_handler)
         self.subtitle.set_text(self.hash_value)
 
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent._on_multi_hash_requested, self)
@@ -1062,6 +1084,8 @@ class HashResultRow(HashRow):
 
     def unbind(self, list_item):
         super().unbind(list_item)
+        list_item.display_path_binding.unbind()
+        self.pref.disconnect(list_item.display_path_handler_id)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
         self.button_copy_hash.disconnect(list_item.copy_handler_id)
         self.button_compare.disconnect(list_item.compare_handler_id)
@@ -1093,7 +1117,7 @@ class HashErrorRow(HashRow):
 
 
 class MultiHashDialog(Adw.AlertDialog):
-    def __init__(self, parent: "MainWindow", data: "HashResultRow"):
+    def __init__(self, parent: "MainWindow", data: "HashResultRow", working_config: dict):
         super().__init__(
             body="<big><b>Select Hash Algorithms</b></big>",
             body_use_markup=True,
@@ -1155,7 +1179,7 @@ class MultiHashDialog(Adw.AlertDialog):
                     repeat(data.base_path, repeat_n_times),
                     repeat(data.path, repeat_n_times),
                     selected_algos,
-                    Preferences().get_working_config(),
+                    working_config,
                 )
 
         self.connect("response", on_response)
@@ -1533,7 +1557,7 @@ class MainWindow(Adw.ApplicationWindow):
 
             elif kind == "result":
                 iterations += 1
-                new_rows.append(ResultRowData(*update[1:]))
+                new_rows.append(ResultRowData(*update[1:], self.pref))
 
             elif kind == "error":
                 iterations += 1
@@ -1543,13 +1567,13 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self.add_toast, update[1])
 
         if new_rows:
-            GLib.idle_add(self.add_rows, self.results_model, new_rows)
+            GLib.idle_add(self._add_rows, self.results_model, new_rows)
         if new_errors:
-            GLib.idle_add(self.add_rows, self.errors_model, new_errors)
+            GLib.idle_add(self._add_rows, self.errors_model, new_errors)
 
         return True  # Continue monitoring
 
-    def add_rows(self, model: Gio.ListStore, rows: list):
+    def _add_rows(self, model: Gio.ListStore, rows: list):
         model.splice(model.get_n_items(), 0, rows)
 
     def _processing_complete(self):
@@ -1667,9 +1691,7 @@ class MainWindow(Adw.ApplicationWindow):
             total_errors = self.errors_model_filtered.get_n_items()
 
             if total_results > 0:
-                use_relative_paths = self.pref.use_relative_paths()
-                style = self.pref.get_format_style()
-                results_txt = "\n".join(r.to_str(use_relative_paths, style) for r in self.results_model_filtered)
+                results_txt = "\n".join(str(r) for r in self.results_model_filtered)
                 parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
@@ -1723,7 +1745,7 @@ class MainWindow(Adw.ApplicationWindow):
             print(item)
 
     def _on_multi_hash_requested(self, _, row: HashResultRow):
-        MultiHashDialog(self, row)
+        MultiHashDialog(self, row, self.pref.get_working_config())
 
     def _on_clipboard_compare_requested(self, _, row: HashResultRow):
         if row.noop_cmp:
@@ -1879,6 +1901,7 @@ class QuickFileHasher(Adw.Application):
         self.logger = get_logger(self.__class__.__name__)
         self.pref = Preferences()
         self.pref.load_config_file()
+        self.pref.connect("call-main-window", self.on_setting_changed)
         self.about = Adw.AboutWindow(
             hide_on_close=True,
             modal=True,
@@ -1981,13 +2004,20 @@ class QuickFileHasher(Adw.Application):
         active_window = self.get_active_window()
         if active_window:
             self.pref.set_transient_for(active_window)
-        self.pref.present()
+            self.pref.present()
+
+    def on_setting_changed(self, pref: Preferences, kind: str, value: str, *args):
+        main_window: MainWindow = self.get_active_window()
+        if main_window:
+            if kind == "method":
+                method = getattr(main_window, value)
+                method(*args)
 
     def on_about(self, action, param):
         active_window = self.get_active_window()
         if active_window:
             self.about.set_transient_for(active_window)
-        self.about.present()
+            self.about.present()
 
     def create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
