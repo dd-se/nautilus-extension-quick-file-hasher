@@ -56,7 +56,6 @@ APP_VERSION = "1.9.1"
 
 DEFAULTS = {
     "algo": "sha256",
-    "max-visible-results": 100,
     "max-workers": 4,
     "recursive": False,
     "gitignore": False,
@@ -272,11 +271,66 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return self.create_menu(files, 2, has_dir)
 
 
-class Preferences(Adw.PreferencesWindow):
+class ConfigMixin:
+    def init_config(self):
+        self.logger = get_logger("ConfigMixin")
+        self._load_config_file()
+
+    def _get_config_file(self):
+        try:
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config: dict = json.load(f)
+                return config
+
+        except json.JSONDecodeError as e:
+            self.logger.error(f"'{CONFIG_FILE}': {e}. Using defaults.")
+
+        except Exception as e:
+            self.logger.error(f"'{CONFIG_FILE}': {e}. Using defaults.")
+
+    def _load_config_file(self):
+        self._persisted_config = DEFAULTS.copy()
+
+        if loaded_config := self._get_config_file():
+            self._persisted_config.update(loaded_config)
+            self.logger.debug(f"Loaded config from '{CONFIG_FILE}'")
+
+        self._working_config = self._persisted_config.copy()
+
+    def persist_working_config_to_file(self):
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self._working_config, f, indent=4, sort_keys=True)
+                self._persisted_config = self._working_config.copy()
+
+            self.logger.debug(f"Preferences saved to file: '{CONFIG_FILE}'")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error saving preferences to '{CONFIG_FILE}': {e}")
+
+    def update(self, config_key: str, new_value):
+        if self.get(config_key) != new_value:
+            self._working_config[config_key] = new_value
+            self.logger.info(f"Configuration for '{config_key}' changed to '{new_value}'")
+            return True
+
+    def get(self, config_key: str, default=None):
+        return self._working_config.get(config_key, default)
+
+    def get_persisted_config(self):
+        return self._persisted_config.copy()
+
+    def get_working_config(self):
+        return self._working_config.copy()
+
+
+class Preferences(Adw.PreferencesWindow, ConfigMixin):
     __gtype_name__ = "Preferences"
     _instance = None
     __gsignals__ = {
-        "call-main-window": (GObject.SignalFlags.RUN_LAST, None, (str, str, GObject.TYPE_PYOBJECT)),
+        "call-main-window": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
         "call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
@@ -290,14 +344,15 @@ class Preferences(Adw.PreferencesWindow):
             return
         super().__init__(title="Preferences", modal=True, hide_on_close=True, **kwargs)
         self.set_size_request(0, MainWindow.DEFAULT_HEIGHT - 100)
-
         self.logger = get_logger(self.__class__.__name__)
+        self.init_config()
         self._setting_widgets: dict[str, Adw.ActionRow] = {}
 
         self._setup_processing_page()
         self._setup_saving_page()
         self._setup_hashing_page()
 
+        self.apply_config_ui(self.get_working_config())
         self._initialized = True
 
     def _setup_processing_page(self):
@@ -404,7 +459,6 @@ class Preferences(Adw.PreferencesWindow):
         self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "darker-action-row"], title_lines=1)
         self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
-
         self._setting_widgets[name] = self.setting_checksum_format_toggle_group
 
         first_toggle = None
@@ -420,17 +474,17 @@ class Preferences(Adw.PreferencesWindow):
             toggle_container.append(toggle)
             self.setting_checksum_format_toggle_group.append(toggle)
 
-        output_format_row = Adw.ActionRow(title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
-        output_format_row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
-        output_format_row.add_suffix(toggle_container)
+        output_format_picker = Adw.ActionRow(name=name, title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
+        output_format_picker.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
+        output_format_picker.add_suffix(toggle_container)
 
-        group.add(output_format_row)
+        group.add(output_format_picker)
         group.add(self.checksum_format_example_text)
         group.add(self._create_buttons())
 
         page.add(group)
 
-    def _add_reset_button(self, row: Adw.ActionRow):
+    def _get_reset_button(self):
         reset_button = Gtk.Button(
             label="Reset",
             css_classes=["flat"],
@@ -438,6 +492,10 @@ class Preferences(Adw.PreferencesWindow):
             tooltip_markup="<b>Reset</b> to default value",
             icon_name="edit-undo-symbolic",
         )
+        return reset_button
+
+    def _add_reset_button(self, row: Adw.ActionRow):
+        reset_button = self._get_reset_button()
         value = DEFAULTS[row.get_name()]
         if isinstance(row, Adw.SwitchRow):
             reset_button.connect("clicked", lambda _: row.set_active(value))
@@ -466,7 +524,7 @@ class Preferences(Adw.PreferencesWindow):
             tooltip_text="Persist current preferences to config file",
             hexpand=True,
         )
-        button_save_preferences.connect("clicked", lambda _: self._save_working_config_to_file())
+        button_save_preferences.connect("clicked", lambda _: self._persist_preferences())
         button_box.append(button_save_preferences)
 
         button_reset_preferences = Gtk.Button(
@@ -479,58 +537,26 @@ class Preferences(Adw.PreferencesWindow):
         button_box.append(button_reset_preferences)
         return main_box
 
-    def get_format_style(self):
-        """{path}:hash:algo"""
+    def get_format_style(self) -> str:
         return self.format_style
 
-    def get_persisted_config(self):
-        return self.persisted_config
-
-    def get_working_config(self):
-        return self.working_config
-
     def get_algorithm(self) -> str:
-        return self.setting_algorithm.get_selected_item().get_string()
+        return self.get("algo")
 
-    def set_working_config(self, config):
-        self.working_config = config
+    def use_relative_paths(self) -> bool:
+        return self.get("relative-paths")
 
-    def use_relative_paths(self):
-        return self.setting_relative_path.get_active()
+    def save_errors(self) -> bool:
+        return self.get("save-errors")
 
-    def save_errors(self):
-        return self.setting_save_errors.get_active()
+    def include_time(self) -> bool:
+        return self.get("include-time")
 
-    def include_time(self):
-        return self.setting_include_time.get_active()
-
-    def max_rows(self) -> int:
-        return self.working_config["max-visible-results"]
-
-    def _get_config_file(self):
-        try:
-            if CONFIG_FILE.exists():
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    config: dict = json.load(f)
-                return config
-
-        except json.JSONDecodeError as e:
-            self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
-
-        except Exception as e:
-            self.logger.error(f"{CONFIG_FILE}: {e}. Using defaults.")
-
-    def load_config_file(self):
-        self.persisted_config = DEFAULTS.copy()
-
-        if loaded_config := self._get_config_file():
-            self.persisted_config.update(loaded_config)
-            self.logger.debug(f"Loaded config from {CONFIG_FILE}")
-
-        self.working_config = self.persisted_config.copy()
-        self.apply_config_ui(self.working_config)
+    def send_toast(self, msg: str, timeout: int = 1):
+        self.add_toast(Adw.Toast(title=msg, timeout=timeout))
 
     def apply_config_ui(self, config: dict):
+        self.logger.debug("Applying config to UI components")
         for key, value in config.items():
             if widget := self._setting_widgets.get(key):
                 if isinstance(widget, Adw.SwitchRow):
@@ -542,52 +568,28 @@ class Preferences(Adw.PreferencesWindow):
                 elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
 
-                elif isinstance(widget, list) and isinstance(widget[value], Gtk.ToggleButton):
-                    toggle: Gtk.ToggleButton = widget[value]
-                    toggle.set_active(True)
+                elif isinstance(widget, list):
+                    if 0 <= value < len(widget):
+                        toggle: Gtk.ToggleButton = widget[value]
+                        toggle.set_active(True)
+        return True
 
-        self.logger.debug("Applied config to UI components")
-
-    def _save_working_config_to_file(self):
-        try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.working_config, f, indent=4, sort_keys=True)
-                self.persisted_config = self.working_config.copy()
-
-            self.add_toast(Adw.Toast(title="Success", use_markup=True, timeout=1))
-            self.logger.debug(f"Preferences saved to file: {CONFIG_FILE}")
-
-        except Exception as e:
-            self.add_toast(Adw.Toast(title=str(e)))
-            self.logger.error(f"Error saving preferences to {CONFIG_FILE}: {e}")
+    def _persist_preferences(self):
+        success = self.persist_working_config_to_file()
+        if success:
+            self.send_toast("Success")
+        else:
+            self.send_toast("Something went wrong!")
 
     def _reset_preferences(self):
-        for key, value in DEFAULTS.items():
-            if widget := self._setting_widgets.get(key):
-                if isinstance(widget, Adw.SwitchRow):
-                    widget.set_active(value)
-
-                elif isinstance(widget, Adw.SpinRow):
-                    widget.set_value(value)
-
-                elif isinstance(widget, Adw.ComboRow):
-                    widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
-
-                elif isinstance(widget, list) and isinstance(widget[value], Gtk.ToggleButton):
-                    toggle: Gtk.ToggleButton = widget[value]
-                    toggle.set_active(True)
-
-        self.add_toast(Adw.Toast(title="Reset", use_markup=True, timeout=1))
-
-    def set_recursive_mode(self, action, param):
-        state: bool = param.get_string() == "yes"
-        self.setting_gitignore.set_active(state)
-        self.setting_recursive.set_active(state)
-        self.logger.debug(f"Recursive mode set to {state} via action")
+        success = self.apply_config_ui(DEFAULTS)
+        if success:
+            self.send_toast("Reset")
+        else:
+            self.send_toast("Something went wrong!")
 
     def _set_example_format_text(self, format_style: str):
-        example_file = "example.txt" if self.setting_relative_path.get_active() else "/folder/example.txt"
+        example_file = "example.txt" if self.use_relative_paths() else "/folder/example.txt"
         example_hash = "fdfba9fc68f1f150a4"
         example_algo = "SHA256"
 
@@ -600,19 +602,15 @@ class Preferences(Adw.PreferencesWindow):
 
         button_index = self.setting_checksum_format_toggle_group.index(button)
         config_key = button.get_name()
-        if self.working_config.get(config_key) != button_index:
-            self.working_config[config_key] = button_index
-            self.logger.info(f"Toggle Preference '{config_key}' changed to index '{button_index}': '{button.get_label()}'")
+        self.update(config_key, button_index)
 
     def _on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec):
         new_value = switch_row.get_active()
         config_key = switch_row.get_name()
-        if self.working_config.get(config_key) != new_value:
-            self.working_config[config_key] = new_value
-            self.logger.info(f"Switch Preference '{config_key}' changed to '{new_value}'")
-
+        success = self.update(config_key, new_value)
+        if success:
             if config_key == "save-errors":
-                self.emit("call-main-window", "method", "has_results", None)
+                self.emit("call-main-window", ["method", "has_results"])
 
             elif config_key == "relative-paths":
                 self.emit("call-row-data", "trigger-path-update")
@@ -620,16 +618,12 @@ class Preferences(Adw.PreferencesWindow):
     def _on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec):
         new_value = int(spin_row.get_value())
         config_key = spin_row.get_name()
-        if self.working_config.get(config_key) != new_value:
-            self.working_config[config_key] = new_value
-            self.logger.info(f"Spin Preference '{config_key}' changed to {new_value}")
+        self.update(config_key, new_value)
 
     def _on_algo_selected(self, algo: Adw.ComboRow, g_param_object):
-        selected_hashing_algorithm = self.get_algorithm()
+        selected_hashing_algorithm = algo.get_selected_item().get_string()
         config_key = algo.get_name()
-        if self.working_config.get(config_key) != selected_hashing_algorithm:
-            self.working_config[config_key] = selected_hashing_algorithm
-            self.logger.info(f"Algorithm changed to {selected_hashing_algorithm} for new jobs")
+        self.update(config_key, selected_hashing_algorithm)
 
 
 class IgnoreRule:
@@ -910,10 +904,10 @@ class ResultRowData(GObject.Object):
         self.pref: Preferences = pref
 
     def __str__(self) -> str:
-        return self.pref.get_format_style().format(hash=self.hash_value, filename=self.display_path, algo=self.algo)
+        return self.pref.get_format_style().format(hash=self.hash_value, filename=self.path_display, algo=self.algo)
 
     @GObject.Property(type=str)
-    def display_path(self):
+    def path_display(self):
         if self.pref.use_relative_paths():
             return GLib.markup_escape_text((self.base_path.name / self.path.relative_to(self.base_path)).as_posix())
 
@@ -922,9 +916,9 @@ class ResultRowData(GObject.Object):
     def get_search_fields(self):
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
-    def signal_handler(self, widget, action):
+    def signal_handler(self, emitter, action):
         if action == "trigger-path-update":
-            self.notify("display_path")
+            self.notify("path_display")
 
 
 class ErrorRowData(GObject.Object):
@@ -967,7 +961,7 @@ class HashRow(Gtk.Box):
         content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         self.append(content_box)
 
-        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
         self.subtitle = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["dim-label", "caption"], margin_top=2)
         content_box.append(self.title)
         content_box.append(self.subtitle)
@@ -1074,8 +1068,8 @@ class HashResultRow(HashRow):
         self.hash_value = row_data.hash_value
 
         self.prefix_label.set_label(row_data.algo.upper())
-        list_item.display_path_binding = row_data.bind_property("display_path", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
-        list_item.display_path_handler_id = self.pref.connect("call-row-data", row_data.signal_handler)
+        list_item.path_display_binding = row_data.bind_property("path_display", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.path_display_handler_id = self.pref.connect("call-row-data", row_data.signal_handler)
         self.subtitle.set_text(self.hash_value)
 
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent._on_multi_hash_requested, self)
@@ -1084,8 +1078,8 @@ class HashResultRow(HashRow):
 
     def unbind(self, list_item):
         super().unbind(list_item)
-        list_item.display_path_binding.unbind()
-        self.pref.disconnect(list_item.display_path_handler_id)
+        list_item.path_display_binding.unbind()
+        self.pref.disconnect(list_item.path_display_handler_id)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
         self.button_copy_hash.disconnect(list_item.copy_handler_id)
         self.button_compare.disconnect(list_item.compare_handler_id)
@@ -1188,32 +1182,23 @@ class MultiHashDialog(Adw.AlertDialog):
 
 class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
-    _instance = None
     DEFAULT_WIDTH = 970
     DEFAULT_HEIGHT = 650
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __init__(self, app: "QuickFileHasher" = None):
-        if hasattr(self, "_initialized"):
-            return
+    def __init__(self, app: "QuickFileHasher"):
         super().__init__(application=app)
-        self.app = app
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
-
         self.logger = get_logger(self.__class__.__name__)
+        self.app = app
+        self.pref = app.pref
+
         self._create_actions()
         self._build_ui()
 
-        self.pref = app.pref
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
-        self._initialized = True
 
     def _build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -1519,7 +1504,7 @@ class MainWindow(Adw.ApplicationWindow):
         self,
         base_paths: Iterable[Path] | None,
         paths: Iterable[Path],
-        hashing_algorithm: Iterable[str],
+        hashing_algorithms: Iterable[str],
         options: dict,
     ):
         self.cancel_event.clear()
@@ -1527,7 +1512,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         threading.Thread(
             target=self._calculate_hashes,
-            args=(base_paths or paths, paths, hashing_algorithm, options),
+            args=(base_paths or paths, paths, hashing_algorithms, options),
             daemon=True,
         ).start()
         GLib.timeout_add(50, self._process_queue)
@@ -1900,7 +1885,6 @@ class QuickFileHasher(Adw.Application):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
         self.logger = get_logger(self.__class__.__name__)
         self.pref = Preferences()
-        self.pref.load_config_file()
         self.pref.connect("call-main-window", self.on_setting_changed)
         self.about = Adw.AboutWindow(
             hide_on_close=True,
@@ -1948,7 +1932,7 @@ class QuickFileHasher(Adw.Application):
         paths = command_line.get_arguments()[1:]
 
         if from_cli:
-            _config_ = self.pref.get_persisted_config().copy()
+            _config_ = self.pref.get_persisted_config()
             algo = cli_options.get("algo") or _config_.get("algo")
 
             if algo not in AVAILABLE_ALGORITHMS:
@@ -1970,7 +1954,7 @@ class QuickFileHasher(Adw.Application):
         if paths:
             cwd = command_line.get_cwd()
             paths = [Path(cwd) / path for path in paths]
-            self.do_open(paths, len(paths), "", _config_.get("algo"), _config_)
+            self.do_open(paths, len(paths), _config_.get("algo"), _config_)
 
         else:
             self.do_activate()
@@ -1989,7 +1973,6 @@ class QuickFileHasher(Adw.Application):
         self,
         paths: Iterable[Path],
         n_files: int,
-        hint: str,
         hash_algorithm: str,
         options: dict,
     ):
@@ -2006,11 +1989,12 @@ class QuickFileHasher(Adw.Application):
             self.pref.set_transient_for(active_window)
             self.pref.present()
 
-    def on_setting_changed(self, pref: Preferences, kind: str, value: str, *args):
+    def on_setting_changed(self, emitter, args: list):
         main_window: MainWindow = self.get_active_window()
         if main_window:
+            kind = args.pop(0)
             if kind == "method":
-                method = getattr(main_window, value)
+                method = getattr(main_window, args.pop(0))
                 method(*args)
 
     def on_about(self, action, param):
@@ -2033,7 +2017,6 @@ class QuickFileHasher(Adw.Application):
         self.create_action("preferences", self.on_preferences, shortcuts=["<Ctrl>comma"])
         self.create_action("about", self.on_about)
         self.create_action("quit", lambda *_: self.quit(), shortcuts=["<Ctrl>Q"])
-        self.create_action("set-recursive-mode", lambda *_: self.pref.set_recursive_mode(*_), GLib.VariantType.new("s"))
 
     def _create_options(self):
         self.set_option_context_summary("Quick File Hasher - Modern Nautilus Extension and GTK4 App")
