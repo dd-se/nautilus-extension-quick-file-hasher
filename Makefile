@@ -39,12 +39,12 @@ shortcut:
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
 	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
 	@echo "StartupNotify=true" >> $(SHORTCUT_NAME)
-	@echo "Actions=Debug;" >> $(SHORTCUT_NAME)
-	@echo "" >> $(SHORTCUT_NAME)
+	@echo "Actions=new-window;" >> $(SHORTCUT_NAME)
 
-	@echo "[Desktop Action Debug]" >> $(SHORTCUT_NAME)
-	@echo "Name=Run in Debug Mode" >> $(SHORTCUT_NAME)
-	@echo "Exec=env LOGLEVEL=DEBUG python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U" >> $(SHORTCUT_NAME)
+	@echo "" >> $(SHORTCUT_NAME)
+	@echo "[Desktop Action new-window]" >> $(SHORTCUT_NAME)
+	@echo "Name=New Window" >> $(SHORTCUT_NAME)
+	@echo "Exec=python3 $(INSTALL_DIR)/$(APP) --new-window --DESKTOP" >> $(SHORTCUT_NAME)
 
 	@echo "$(SHORTCUT_NAME) file created in current directory"
 
