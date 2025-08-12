@@ -331,7 +331,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
     _instance = None
     __gsignals__ = {
         "call-application": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
-        "call-main-window": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "call-main-window": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
     }
 
     def __new__(cls, *args, **kwargs):
@@ -610,10 +610,10 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         success = self.update(config_key, new_value)
         if success:
             if config_key == "save-errors":
-                self.emit("call-main-window", "trigger-has-results")
+                self.emit("call-main-window", ["trigger-has-results"])
 
             elif config_key == "relative-paths":
-                self.emit("call-main-window", "trigger-path-update")
+                self.emit("call-main-window", ["trigger-path-update", new_value])
 
     def _on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec):
         new_value = int(spin_row.get_value())
@@ -892,46 +892,71 @@ class CalculateHashes:
 
 class ResultRowData(GObject.Object):
     __gtype_name__ = "ResultRowData"
-    base_path: Path
-    path: Path
-    hash_value: str = GObject.Property(type=str)
-    algo: str = GObject.Property(type=str)
 
-    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, pref, **kwargs):
+    hash_value = GObject.Property(type=str)
+    algo = GObject.Property(type=str)
+
+    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, relative_path: bool = False, **kwargs):
         super().__init__(hash_value=hash_value, algo=algo, **kwargs)
         self.base_path = base_path
         self.path = path
-        self.pref: Preferences = pref
+        self.relative_path = relative_path
 
-    def __str__(self) -> str:
-        return self.pref.get_format_style().format(hash=self.hash_value, filename=self.path_display, algo=self.algo)
+    def __call__(self, format_style: str) -> str:
+        return format_style.format(hash=self.hash_value, filename=self.path_display, algo=self.algo)
 
     @GObject.Property(type=str)
-    def path_display(self):
-        if self.pref.use_relative_paths():
+    def path_display(self) -> str:
+        if self.relative_path:
             return GLib.markup_escape_text((self.base_path.name / self.path.relative_to(self.base_path)).as_posix())
-
         return GLib.markup_escape_text(self.path.as_posix())
 
-    def get_search_fields(self):
+    @GObject.Property(type=bool, default=False)
+    def relative_path(self):
+        return self._relative_path
+
+    @relative_path.setter
+    def relative_path(self, state: bool) -> None:
+        self._relative_path = state
+        self.notify("path_display")
+
+    def get_search_fields(self) -> tuple[str, str, str]:
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
-    def signal_handler(self, emitter, action):
+    def signal_handler(self, emitter, args: list) -> None:
+        args_copy = args.copy()
+        action = args_copy.pop(0)
         if action == "trigger-path-update":
-            self.notify("path_display")
+            use_relative_path = args_copy.pop(0)
+            self.relative_path = use_relative_path
 
 
 class ErrorRowData(GObject.Object):
     __gtype_name__ = "ErrorRowData"
-    path: Path
-    error_message: str = GObject.Property(type=str)
 
     def __init__(self, path: Path, error_message: str, **kwargs):
-        super().__init__(error_message=error_message, **kwargs)
+        super().__init__(**kwargs)
         self.path = path
+        self.error_message = error_message
 
-    def get_search_fields(self):
-        return (self.path.as_posix().lower(), self.error_message)
+    @property
+    def path(self):
+        return GLib.markup_escape_text(self._path.as_posix())
+
+    @path.setter
+    def path(self, path: Path):
+        self._path = path
+
+    @property
+    def error_message(self):
+        return GLib.markup_escape_text(self._error_message)
+
+    @error_message.setter
+    def error_message(self, error_message: str):
+        self._error_message = error_message
+
+    def get_search_fields(self) -> tuple[str, str, str]:
+        return (self._path.as_posix().lower(), self.error_message)
 
     def __str__(self) -> str:
         return f"{self.path}:ERROR:{self.error_message}"
@@ -1034,7 +1059,6 @@ class HashRow(Gtk.Box):
 
 class HashResultRow(HashRow):
     __gtype_name__ = "HashResultRow"
-    pref: Preferences
     base_path: Path
     hash_value: str
     algo: str
@@ -1062,7 +1086,6 @@ class HashResultRow(HashRow):
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow"):
         super().bind(row_data, list_item, model, parent)
-        self.pref = row_data.pref
         self.base_path = row_data.base_path
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
@@ -1100,8 +1123,8 @@ class HashErrorRow(HashRow):
     def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow"):
         super().bind(row_data, list_item, model, parent)
         self.error_message = row_data.error_message
-        self.title.set_text(GLib.markup_escape_text(self.path.as_posix()))
-        self.subtitle.set_text(GLib.markup_escape_text(self.error_message))
+        self.title.set_text(self.path)
+        self.subtitle.set_text(self.error_message)
 
         list_item.copy_handler_id = self.button_copy_error.connect("clicked", self._on_click_copy)
 
@@ -1182,7 +1205,7 @@ class MultiHashDialog(Adw.AlertDialog):
 
 class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
-    __gsignals__ = {"call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str,))}
+    __gsignals__ = {"call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,))}
     DEFAULT_WIDTH = 970
     DEFAULT_HEIGHT = 650
 
@@ -1203,11 +1226,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.cancel_event = threading.Event()
         self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
-    def signal_handler(self, emitter, action):
+    def signal_handler(self, emitter, args: list):
+        args_copy = args.copy()
+        action = args_copy.pop(0)
         if action == "trigger-has-results":
             self.has_results()
-        if action == "trigger-path-update":
-            self.emit("call-row-data", action)
+
+        elif action == "trigger-path-update":
+            use_relative_path = args_copy.pop(0)
+            self.emit("call-row-data", [action, use_relative_path])
 
     def _build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -1493,6 +1520,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._processing_complete()
             return False
 
+        use_relative_paths = self.pref.use_relative_paths()
         new_rows = []
         new_errors = []
         iterations = 0
@@ -1508,7 +1536,7 @@ class MainWindow(Adw.ApplicationWindow):
 
             elif kind == "result":
                 iterations += 1
-                new_rows.append(ResultRowData(*update[1:], self.pref))
+                new_rows.append(ResultRowData(*update[1:], use_relative_paths))
 
             elif kind == "error":
                 iterations += 1
@@ -1642,7 +1670,8 @@ class MainWindow(Adw.ApplicationWindow):
             total_errors = self.errors_model_filtered.get_n_items()
 
             if total_results > 0:
-                results_txt = "\n".join(str(r) for r in self.results_model_filtered)
+                format_style = self.pref.get_format_style()
+                results_txt = "\n".join(r(format_style) for r in self.results_model_filtered)
                 parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
@@ -1658,7 +1687,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 output = None
 
-            callback(output)
+            GLib.idle_add(callback, output)
 
         threading.Thread(target=worker, daemon=True).start()
 
