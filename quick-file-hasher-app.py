@@ -1187,7 +1187,7 @@ class MainWindow(Adw.ApplicationWindow):
     DEFAULT_HEIGHT = 650
 
     def __init__(self, app: "QuickFileHasher"):
-        super().__init__(application=app)
+        super().__init__(application=app, title="MainWindow")
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.set_size_request(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.logger = get_logger(self.__class__.__name__)
@@ -1236,8 +1236,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._setup_bottom_bar()
         self.toolbar_view.add_bottom_bar(self.progress_bar)
-
-        self._setup_shortcuts()
 
     def _setup_search(self):
         self.search_query = ""
@@ -1401,7 +1399,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _setup_menu(self):
         menu = Gio.Menu()
         menu.append("Preferences", "app.preferences")
-        menu.append("Keyboard Shortcuts", "win.shortcuts")
+        menu.append("Keyboard Shortcuts", "app.shortcuts")
         menu.append("About", "app.about")
         menu.append("Quit", "win.quit")
         button_menu = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
@@ -1415,47 +1413,6 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.button_show_searchbar.connect("clicked", lambda _: self._on_click_show_searchbar(not self.search_entry.is_visible()))
         self.header_bar.pack_end(self.button_show_searchbar)
-
-    def _setup_shortcuts(self):
-        shortcuts = [
-            {
-                "title": "File Operations",
-                "shortcuts": [
-                    {"title": "Open Files", "accelerator": "<Ctrl>O"},
-                    {"title": "Save Results", "accelerator": "<Ctrl>S"},
-                    {"title": "Close Window", "accelerator": "<Ctrl>Q"},
-                ],
-            },
-            {
-                "title": "View & Search",
-                "shortcuts": [
-                    {"title": "Show Search Bar", "accelerator": "<Ctrl>F"},
-                    {"title": "Hide Search Bar", "accelerator": "Escape"},
-                    {"title": "Toggle Sort", "accelerator": "<Ctrl>R"},
-                    {"title": "Clear All Results", "accelerator": "<Ctrl>L"},
-                ],
-            },
-            {
-                "title": "Clipboard",
-                "shortcuts": [
-                    {"title": "Copy All Results", "accelerator": "<Ctrl><Shift>C"},
-                ],
-            },
-        ]
-
-        self.shortcuts_window = Gtk.ShortcutsWindow(modal=True, transient_for=self, hide_on_close=True)
-
-        shortcuts_section = Gtk.ShortcutsSection(section_name="shortcuts", max_height=12)
-
-        for group in shortcuts:
-            shortcuts_group = Gtk.ShortcutsGroup(title=group["title"])
-
-            for shortcut in group["shortcuts"]:
-                shortcuts_group.add_shortcut(Gtk.ShortcutsShortcut(title=shortcut["title"], accelerator=shortcut["accelerator"]))
-
-            shortcuts_section.add_group(shortcuts_group)
-
-        self.shortcuts_window.add_section(shortcuts_section)
 
     def _setup_bottom_bar(self):
         self.progress_bar = Gtk.ProgressBar(opacity=0, margin_top=2)
@@ -1855,7 +1812,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_close_request(self, window):
         self.cancel_event.set()
         self.pref.disconnect_by_func(self.signal_handler)
-        self.destroy()
+        self._on_clear_clicked(window)
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL):
         toast = Adw.Toast(
@@ -1878,7 +1835,6 @@ class MainWindow(Adw.ApplicationWindow):
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
             ("results-sort", lambda *_: self.button_toggle_sort.set_active(not self.button_toggle_sort.get_active()), ["<Ctrl>R"]),
             ("results-clear", lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
-            ("shortcuts", lambda *_: self.shortcuts_window.present(), ["<Ctrl>question"]),
             ("quit", lambda *_: self.close(), ["<Ctrl>Q"]),
         )
 
@@ -1918,6 +1874,7 @@ class QuickFileHasher(Adw.Application):
         )
         self._create_actions()
         self._create_options()
+        self._setup_shortcuts()
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -1997,9 +1954,11 @@ class QuickFileHasher(Adw.Application):
             self.pref.set_transient_for(active_window)
             self.pref.present()
 
-    def signal_handler(self, emitter, args: list):
-        # TODO
-        pass
+    def on_shortcuts(self, action, param):
+        active_window = self.get_active_window()
+        if active_window:
+            self.shortcuts.set_transient_for(active_window)
+            self.shortcuts.present()
 
     def on_about(self, action, param):
         active_window = self.get_active_window()
@@ -2007,7 +1966,57 @@ class QuickFileHasher(Adw.Application):
             self.about.set_transient_for(active_window)
             self.about.present()
 
-    def create_action(self, name, callback, parameter_type=None, shortcuts=None):
+    def signal_handler(self, emitter, args: list):
+        # TODO
+        pass
+
+    def _setup_shortcuts(self):
+        shortcuts = [
+            {
+                "title": "File Operations",
+                "shortcuts": [
+                    {"title": "Open Files", "accelerator": "<Ctrl>O"},
+                    {"title": "Save Results", "accelerator": "<Ctrl>S"},
+                    {"title": "Close Window", "accelerator": "<Ctrl>Q"},
+                ],
+            },
+            {
+                "title": "View & Search",
+                "shortcuts": [
+                    {"title": "Show Search Bar", "accelerator": "<Ctrl>F"},
+                    {"title": "Hide Search Bar", "accelerator": "Escape"},
+                    {"title": "Toggle Sort", "accelerator": "<Ctrl>R"},
+                    {"title": "Clear All Results", "accelerator": "<Ctrl>L"},
+                ],
+            },
+            {
+                "title": "Clipboard",
+                "shortcuts": [
+                    {"title": "Copy All Results", "accelerator": "<Ctrl><Shift>C"},
+                ],
+            },
+        ]
+
+        self.shortcuts = Gtk.ShortcutsWindow(title="Shortcuts", modal=True, hide_on_close=True)
+
+        shortcuts_section = Gtk.ShortcutsSection(section_name="shortcuts", max_height=12)
+
+        for group in shortcuts:
+            shortcuts_group = Gtk.ShortcutsGroup(title=group["title"])
+
+            for shortcut in group["shortcuts"]:
+                shortcuts_group.add_shortcut(Gtk.ShortcutsShortcut(title=shortcut["title"], accelerator=shortcut["accelerator"]))
+
+            shortcuts_section.add_group(shortcuts_group)
+
+        self.shortcuts.add_section(shortcuts_section)
+
+    def _create_actions(self):
+        self._create_action("preferences", self.on_preferences, shortcuts=["<Ctrl>comma"])
+        self._create_action("shortcuts", self.on_shortcuts, shortcuts=["<Ctrl>question"])
+        self._create_action("about", self.on_about)
+
+    def _create_action(self, name, callback, parameter_type=None, shortcuts=None):
         action = Gio.SimpleAction.new(name=name, parameter_type=parameter_type)
         action.connect("activate", callback)
         self.add_action(action=action)
@@ -2016,10 +2025,6 @@ class QuickFileHasher(Adw.Application):
                 detailed_action_name=f"app.{name}",
                 accels=shortcuts,
             )
-
-    def _create_actions(self):
-        self.create_action("preferences", self.on_preferences, shortcuts=["<Ctrl>comma"])
-        self.create_action("about", self.on_about)
 
     def _create_options(self):
         self.set_option_context_summary("Quick File Hasher - Verify your files with speed and confidence")
