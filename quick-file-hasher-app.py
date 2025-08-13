@@ -1138,46 +1138,46 @@ class HashErrorRow(HashRow):
 
 
 class MultiHashDialog(Adw.AlertDialog):
-    def __init__(self, parent: "MainWindow", data: "HashResultRow", working_config: dict):
-        super().__init__()
+    def __init__(self, parent: "MainWindow", data: "HashResultRow", working_config: dict, **kwargs):
+        super().__init__(**kwargs)
         body = "<big><b>Select Additional Algorithms</b></big>\n"
         body = f"{body}<small>Choose one or more algorithms to run in addition to the calculated one.</small>"
         self.set_body(body)
         self.set_body_use_markup(True)
+        self.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
         self.add_response("cancel", "Cancel")
         self.add_response("compute", "Compute")
         self.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
         self.set_response_enabled("compute", False)
         self.set_close_response("cancel")
 
-        main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.set_extra_child(main_container)
+        vertical_main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.set_extra_child(vertical_main_container)
 
-        representation_row = HashRow()
-        representation_row.add_css_class("darker-action-row")
-        representation_row.prefix_icon.set_from_icon_name("dialog-password-symbolic")
-        representation_row.prefix_label.set_text(data.prefix_label.get_text())
-        representation_row.title.set_text(data.path.name)
-        representation_row.subtitle.set_text(data.subtitle.get_text())
-        representation_row.set_margin_bottom(5)
-        main_container.append(representation_row)
+        display_row = HashRow()
+        display_row.add_css_class("darker-action-row")
+        display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
+        display_row.remove(display_row.prefix_label)
+        display_row.title.set_text(data.path.name)
+        display_row.subtitle.set_text(f"{data.algo.upper()}  {data.hash_value}")
+        display_row.set_margin_bottom(5)
+        vertical_main_container.append(display_row)
 
-        horizontal_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        main_container.append(horizontal_container)
+        horizontal_container_checkbuttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15, css_classes=["custom-style-row"])
+        vertical_main_container.append(horizontal_container_checkbuttons)
 
-        horizontal_container_2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        horizontal_container_2.set_halign(Gtk.Align.END)
-        main_container.append(horizontal_container_2)
+        horizontal_container_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=6)
+        vertical_main_container.append(horizontal_container_buttons)
 
         select_all_button = Gtk.Button(label="Select All", css_classes=["flat"])
-        horizontal_container_2.append(select_all_button)
+        horizontal_container_buttons.append(select_all_button)
 
         deselect_all_button = Gtk.Button(label="Deselect All", css_classes=["flat"])
-        horizontal_container_2.append(deselect_all_button)
+        horizontal_container_buttons.append(deselect_all_button)
 
-        switches: list[Adw.SwitchRow] = []
-        can_compute = lambda *_: self.set_response_enabled("compute", any(s.get_active() for s in switches))
-        on_button_click = lambda _, state: list(s.set_active(state) for s in switches)
+        checkbuttons: list[Gtk.CheckButton] = []
+        can_compute = lambda *_: self.set_response_enabled("compute", any(c.get_active() for c in checkbuttons))
+        on_button_click = lambda _, state: list(c.set_active(state) for c in checkbuttons)
 
         count = 0
         for algo in AVAILABLE_ALGORITHMS:
@@ -1185,17 +1185,16 @@ class MultiHashDialog(Adw.AlertDialog):
                 continue
 
             if count % 5 == 0:
-                current_switch_box_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                horizontal_container.append(current_switch_box_container)
+                current_check_box_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+                horizontal_container_checkbuttons.append(current_check_box_container)
 
-            switch = Adw.SwitchRow(css_classes=["card"], can_focus=False)
-            switch.algo = algo
-            switch.add_prefix(Gtk.Label(label=algo.replace("_", "-").upper()))
-            switch.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
-            switch.connect("notify::active", can_compute)
+            checkbutton = Gtk.CheckButton()
+            checkbutton.set_child(Gtk.Label(label=algo.replace("_", "-").upper()))
+            checkbutton.algo = algo
+            checkbutton.connect("notify::active", can_compute)
 
-            switches.append(switch)
-            current_switch_box_container.append(switch)
+            checkbuttons.append(checkbutton)
+            current_check_box_container.append(checkbutton)
             count += 1
 
         select_all_button.connect("clicked", on_button_click, True)
@@ -1203,7 +1202,7 @@ class MultiHashDialog(Adw.AlertDialog):
 
         def on_response(_, response_id):
             if response_id == "compute":
-                selected_algos = [switch.algo for switch in switches if switch.get_active()]
+                selected_algos = [c.algo for c in checkbuttons if c.get_active()]
                 repeat_n_times = len(selected_algos)
                 parent.start_job(
                     repeat(data.base_path, repeat_n_times),
