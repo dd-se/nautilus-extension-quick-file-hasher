@@ -723,7 +723,7 @@ class QueueUpdateHandler:
 
     def update_progress(self, progress: float) -> None:
         self.c = self.c + 1
-        if self.c == 10 or progress == 1.0:
+        if self.c == 5 or progress == 1.0:
             self.c = 0
             self.q.put(("progress", progress))
 
@@ -1139,11 +1139,11 @@ class HashErrorRow(HashRow):
 
 class MultiHashDialog(Adw.AlertDialog):
     def __init__(self, parent: "MainWindow", data: "HashResultRow", working_config: dict):
-        super().__init__(
-            body="<big><b>Select Hash Algorithms</b></big>",
-            body_use_markup=True,
-            presentation_mode=Adw.DialogPresentationMode.BOTTOM_SHEET,
-        )
+        super().__init__()
+        body = "<big><b>Select Additional Algorithms</b></big>\n"
+        body = f"{body}<small>Choose one or more algorithms to run in addition to the calculated one.</small>"
+        self.set_body(body)
+        self.set_body_use_markup(True)
         self.add_response("cancel", "Cancel")
         self.add_response("compute", "Compute")
         self.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
@@ -1152,6 +1152,15 @@ class MultiHashDialog(Adw.AlertDialog):
 
         main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.set_extra_child(main_container)
+
+        representation_row = HashRow()
+        representation_row.add_css_class("darker-action-row")
+        representation_row.prefix_icon.set_from_icon_name("dialog-password-symbolic")
+        representation_row.prefix_label.set_text(data.prefix_label.get_text())
+        representation_row.title.set_text(data.path.name)
+        representation_row.subtitle.set_text(data.subtitle.get_text())
+        representation_row.set_margin_bottom(5)
+        main_container.append(representation_row)
 
         horizontal_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         main_container.append(horizontal_container)
@@ -1315,7 +1324,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_select_files = self._create_button("Select Files", "document-open-symbolic", "Select files to add", "suggested-action", self._on_select_files_or_folders_clicked, True)
         self.first_top_bar_box.append(self.button_select_files)
 
-        self.button_select_folders = self._create_button("Select Folders", "folder-open-symbolic", "Select folders to add", "suggested-action", self._on_select_files_or_folders_clicked, False)
+        self.button_select_folders = self._create_button("Select Folders", "folder-symbolic", "Select folders to add", "suggested-action", self._on_select_files_or_folders_clicked, False)
         self.first_top_bar_box.append(self.button_select_folders)
 
         self.button_save = self._create_button("Save", "document-save-symbolic", "Save results to file", "suggested-action", self._on_save_clicked)
@@ -1353,6 +1362,7 @@ class MainWindow(Adw.ApplicationWindow):
             tooltip_text="Sort results by path",
             css_classes=["custom-toggle-btn"],
             sensitive=False,
+            valign=Gtk.Align.CENTER,
         )
         self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
         self.second_top_bar_box.append(self.toggle_button_sort)
