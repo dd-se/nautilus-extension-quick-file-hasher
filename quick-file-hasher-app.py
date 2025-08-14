@@ -31,6 +31,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import warnings
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -1222,7 +1223,7 @@ class MainWindow(Adw.ApplicationWindow):
     DEFAULT_HEIGHT = 650
 
     def __init__(self, app: "QuickFileHasher"):
-        super().__init__(application=app, title="MainWindow")
+        super().__init__(application=app, title="Quick File Hasher")
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.logger = get_logger(self.__class__.__name__)
         self.app = app
@@ -1514,17 +1515,26 @@ class MainWindow(Adw.ApplicationWindow):
     ) -> None:
         self.cancel_event.clear()
         self.button_cancel.set_visible(True)
+        self.progress_bar.set_opacity(1.0)
 
         threading.Thread(
             target=self._calculate_hashes,
             args=(base_paths or paths, paths, hashing_algorithms, options),
             daemon=True,
         ).start()
-        GLib.timeout_add(50, self._process_queue)
+        self._run_every_n_ms_in_background(0.01, self._process_queue, self.pref.use_relative_paths())
 
-    def _process_queue(self) -> bool:
-        self.progress_bar.set_opacity(1.0)
+    def _run_every_n_ms_in_background(self, interval: float, callback: Callable[..., bool], *args, **kwargs):
+        def loop():
+            while True:
+                keep_going = callback(*args, **kwargs)
+                if not keep_going:
+                    break
+                time.sleep(interval)
 
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _process_queue(self, use_relative_paths: bool) -> bool:
         queue_empty = self.queue_handler.is_empty()
         job_done = self.progress_bar.get_fraction() == 1.0
 
@@ -1532,7 +1542,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._processing_complete()
             return False
 
-        use_relative_paths = self.pref.use_relative_paths()
         new_rows = []
         new_errors = []
         iterations = 0
@@ -1544,7 +1553,7 @@ class MainWindow(Adw.ApplicationWindow):
 
             kind = update[0]
             if kind == "progress":
-                self.progress_bar.set_fraction(update[1])
+                GLib.idle_add(self.progress_bar.set_fraction, update[1])
 
             elif kind == "result":
                 iterations += 1
