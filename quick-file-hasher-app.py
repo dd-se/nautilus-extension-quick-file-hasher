@@ -914,11 +914,10 @@ class ResultRowData(GObject.Object):
     hash_value = GObject.Property(type=str)
     algo = GObject.Property(type=str)
 
-    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, relative_path: bool = False, **kwargs):
-        super().__init__(hash_value=hash_value, algo=algo, **kwargs)
+    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
+        super().__init__(hash_value=hash_value, algo=algo, relative_path=False, **kwargs)
         self.base_path = base_path
         self.path = path
-        self.relative_path = relative_path
 
     def __call__(self, format_style: str) -> str:
         return format_style.format(hash=self.hash_value, filename=self.path_display, algo=self.algo)
@@ -1104,15 +1103,14 @@ class HashResultRow(HashRow):
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
+        self.prefix_label.set_label(row_data.algo.upper())
         self.base_path = row_data.base_path
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
-
-        self.prefix_label.set_label(row_data.algo.upper())
+        self.subtitle.set_text(self.hash_value)
+        row_data.relative_path = parent.pref.use_relative_paths()
         list_item.path_display_binding = row_data.bind_property("path_display", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
         list_item.path_display_handler_id = parent.connect("call-row-data", row_data.signal_handler)
-        self.subtitle.set_text(self.hash_value)
-
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent._on_multi_hash_requested, self)
         list_item.copy_handler_id = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
         list_item.compare_handler_id = self.button_compare.connect("clicked", parent._on_clipboard_compare_requested, self)
@@ -1534,7 +1532,7 @@ class MainWindow(Adw.ApplicationWindow):
             args=(base_paths or paths, paths, hashing_algorithms, options),
             daemon=True,
         ).start()
-        self._timeout_add(10, self._process_queue, self.pref.use_relative_paths())
+        self._timeout_add(10, self._process_queue)
 
     def _timeout_add(self, interval: int, callback: Callable[..., bool], *args, **kwargs):
         interval_seconds = interval / 1000
@@ -1548,7 +1546,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=loop, daemon=True).start()
 
-    def _process_queue(self, use_relative_paths: bool) -> bool:
+    def _process_queue(self) -> bool:
         queue_empty = self.queue_handler.is_empty()
         job_done = self.progress_bar.get_fraction() == 1.0
 
@@ -1571,7 +1569,7 @@ class MainWindow(Adw.ApplicationWindow):
 
             elif kind == "result":
                 iterations += 1
-                new_rows.append(ResultRowData(*update[1:], use_relative_paths))
+                new_rows.append(ResultRowData(*update[1:]))
 
             elif kind == "error":
                 iterations += 1
