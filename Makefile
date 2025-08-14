@@ -1,5 +1,5 @@
-NAME = "Quick File Hasher"
 APP = quick-file-hasher-app.py
+APP_NAME = "Quick File Hasher"
 APP_ID = $(shell grep -Po '^APP_ID\s*=\s*\K[^\s#]+' $(APP))
 VERSION = $(shell grep -Po '^APP_VERSION\s*=\s*\K[^\s#]+' $(APP))
 SHORTCUT_NAME = $(APP_ID).desktop
@@ -13,7 +13,7 @@ ICON_DIR = $(HOME)/.local/share/icons/hicolor/scalable/apps
 .PHONY: help makedir shortcut icon install uninstall symlink
 
 help:
-	@echo "Makefile for $(NAME)"
+	@echo "Makefile for $(APP_NAME)"
 	@echo "Available commands:"
 	@echo "  help       - Show this help message"
 	@echo "  install    - Install the application"

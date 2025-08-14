@@ -53,6 +53,7 @@ gi.require_version(namespace="Nautilus", version="4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
+APP_NAME = "Quick File Hasher"
 APP_VERSION = "1.9.1"
 
 DEFAULTS = {
@@ -93,23 +94,21 @@ CSS = b"""
 toast {
     background-color: #000000;
 }
+
 .view-switcher button {
     background-color: #404040;
     color: white;
     transition: background-color 0.3s ease;
 }
-.view-switcher button:nth-child(1):hover {
-    background-color: #3074cf;
-}
+.view-switcher button:nth-child(1):hover,
 .view-switcher button:nth-child(1):checked {
     background-color: #3074cf;
 }
-.view-switcher button:nth-child(2):hover {
-    background-color: #c7162b;
-}
+.view-switcher button:nth-child(2):hover,
 .view-switcher button:nth-child(2):checked {
     background-color: #c7162b;
 }
+
 .no-background {
     background-color: @theme_bg_color;
 }
@@ -193,83 +192,97 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         self.logger.debug(f"Args: '{cmd[2:]}'")
         subprocess.Popen(cmd)
 
-    def create_menu(self, files: list[str], caller: int, has_dir: bool, PREFIX: str = "QuickFileHasher_OpenInApp") -> list[Nautilus.MenuItem]:
-        quick_file_hasher_menu = Nautilus.MenuItem(
-            name=f"{PREFIX}_Menu_{caller}",
-            label="Quick File Hasher",  # Quick
-        )
-        quick_file_hasher_submenu = Nautilus.Menu()  # >
-        quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)  # Quick >
+    def _simple_hash_item(self, caller: str, hash_name: str, files: list[str]):
+        """Hash Simple ()"""
+        label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
+
+        simple_hash_item = Nautilus.MenuItem(name=f"{label}_Simple_{caller}", label=label)
+        simple_hash_item.connect("activate", self.nautilus_launch_app, files, hash_name, False)
+        return simple_hash_item
+
+    def _recursive_hash_item(self, caller: str, hash_name: str, files: list[str]):
+        """Hash Recursive ()"""
+        label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
+
+        recursive_hash_item = Nautilus.MenuItem(name=f"{label}_Recursive_{caller}", label=label)
+        recursive_hash_item.connect("activate", self.nautilus_launch_app, files, hash_name, True)
+        return recursive_hash_item
+
+    def _add_hash_items(self, caller: str, files: list[str], simple_submenu: Nautilus.Menu, recursive_submenu: Nautilus.Menu | None = None):
+        for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
+            # Hash Simple ()
+            simple_hash_item = self._simple_hash_item(caller, hash_name, files)
+            # > Hash Simple ()
+            simple_submenu.append_item(simple_hash_item)
+
+            if recursive_submenu:
+                # Hash Recursive ()
+                recursive_hash_item = self._recursive_hash_item(caller, hash_name, files)
+                # > Hash Recursive ()
+                recursive_submenu.append_item(recursive_hash_item)
+
+    def _simple_submenu(self, caller: str, submenu: Nautilus.Menu) -> Nautilus.Menu:
+        """Simple Submenu"""
+        simple_menu_item = Nautilus.MenuItem(name=f"Simple_{caller}", label="Simple")
+        # Quick > Simple
+        submenu.append_item(simple_menu_item)
+        # >
+        simple_submenu = Nautilus.Menu()
+        # Quick > Simple >
+        simple_menu_item.set_submenu(simple_submenu)
+        return simple_submenu
+
+    def _recursive_submenu(self, caller: str, submenu: Nautilus.Menu) -> Nautilus.Menu:
+        """Recursive Submenu"""
+        recursive_menu_item = Nautilus.MenuItem(name=f"Recursive_{caller}", label="Recursive")
+        # Quick > Recursive
+        submenu.append_item(recursive_menu_item)
+        # >
+        recursive_submenu = Nautilus.Menu()
+        # Quick > Recursive >
+        recursive_menu_item.set_submenu(recursive_submenu)
+        return recursive_submenu
+
+    def _create_menu(self, caller: str, files: list[str], has_dir: bool) -> list[Nautilus.MenuItem]:
+        # Quick
+        quick_file_hasher_menu = Nautilus.MenuItem(name=f"Menu_{caller}", label=APP_NAME)
+        # >
+        quick_file_hasher_submenu = Nautilus.Menu()
+        # Quick >
+        quick_file_hasher_menu.set_submenu(quick_file_hasher_submenu)
 
         if has_dir:
-            simple_menu = Nautilus.MenuItem(
-                name=f"{PREFIX}_Simple_{caller}",  # Simple Menu
-                label="Simple",
-            )
-
-            quick_file_hasher_submenu.append_item(simple_menu)  # Quick > Simple
-            simple_submenu = Nautilus.Menu()  # >
-            simple_menu.set_submenu(simple_submenu)  # Quick > Simple >
-
-            recursive_menu = Nautilus.MenuItem(
-                name=f"{PREFIX}_Recursive_{caller}",  # Recursive Menu
-                label="Recursive",
-            )
-
-            quick_file_hasher_submenu.append_item(recursive_menu)  # Quick > Recursive
-            recursive_submenu = Nautilus.Menu()  # >
-            recursive_menu.set_submenu(recursive_submenu)  # Quick > Recursive >
-
-            for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
-                label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
-                item_hash_simple = Nautilus.MenuItem(
-                    name=f"{PREFIX}_{label}_Simple_{caller}",  # MD5 Simple
-                    label=label,
-                )
-                item_hash_simple.connect("activate", self.nautilus_launch_app, files, hash_name, False)
-
-                simple_submenu.append_item(item_hash_simple)  # Quick > Simple > MD5
-
-                item_hash_recursive = Nautilus.MenuItem(
-                    name=f"{PREFIX}_{label}_Recursive_{caller}",  # MD5 Recursive
-                    label=label,
-                )
-                item_hash_recursive.connect("activate", self.nautilus_launch_app, files, hash_name, True)
-
-                recursive_submenu.append_item(item_hash_recursive)  # Quick > Recursive > MD5
+            # Quick > Simple >
+            simple_submenu = self._simple_submenu(caller, quick_file_hasher_submenu)
+            # Quick > Recursive >
+            recursive_submenu = self._recursive_submenu(caller, quick_file_hasher_submenu)
+            # Quick > Recursive/Simple > Hash ()
+            self._add_hash_items(caller, files, simple_submenu, recursive_submenu)
 
         else:
-            for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
-                label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
-                item = Nautilus.MenuItem(
-                    name=f"{PREFIX}_{label}_{caller}",  # MD5
-                    label=label,
-                )
-                item.connect("activate", self.nautilus_launch_app, files, hash_name)
-                quick_file_hasher_submenu.append_item(item)  #  Quick > MD5
+            # Quick > Hash ()
+            self._add_hash_items(caller, files, quick_file_hasher_submenu)
 
         return [quick_file_hasher_menu]
 
-    def validate_to_string(self, files: list[Nautilus.FileInfo]) -> tuple[bool, list[str]]:
+    def validate_to_string(self, file_objects: list[Nautilus.FileInfo]) -> tuple[bool, list[str]]:
         has_dir = False
-        validated_files = []
-        for obj in files:
+        validated_paths = []
+        for obj in file_objects:
             if obj.is_directory():
                 has_dir = True
-            if file := obj.get_location().get_path():
-                validated_files.append(file)
-        return has_dir, validated_files
+            if valid_path := obj.get_location().get_path():
+                validated_paths.append(valid_path)
+        return has_dir, validated_paths
 
-    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
-        if not current_folder.is_directory():
-            return []
-        return self.create_menu([current_folder.get_location().get_path()], 1, True)
+    def get_background_items(self, current_folder: Nautilus.FileInfo) -> None:
+        return
 
     def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
         has_dir, files = self.validate_to_string(files)
         if not files:
-            return []
-        return self.create_menu(files, 2, has_dir)
+            return
+        return self._create_menu("fg", files, has_dir)
 
 
 class ConfigMixin:
@@ -1223,7 +1236,7 @@ class MainWindow(Adw.ApplicationWindow):
     DEFAULT_HEIGHT = 650
 
     def __init__(self, app: "QuickFileHasher"):
-        super().__init__(application=app, title="Quick File Hasher")
+        super().__init__(application=app, title=APP_NAME)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.logger = get_logger(self.__class__.__name__)
         self.app = app
@@ -1372,7 +1385,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_header_bar(self) -> None:
         self.header_bar = Adw.HeaderBar(
-            title_widget=Gtk.Label(label="<big><b>Quick File Hasher</b></big>", use_markup=True),
+            title_widget=Gtk.Label(label=f"<big><b>{APP_NAME}</b></big>", use_markup=True),
         )
         self._setup_menu()
         self._setup_search_button()
@@ -2012,7 +2025,7 @@ class QuickFileHasher(Adw.Application):
         self.about = Adw.AboutWindow(
             hide_on_close=True,
             modal=True,
-            application_name="Quick File Hasher",
+            application_name=APP_NAME,
             application_icon=APP_ID,
             version=APP_VERSION,
             developer_name="Doğukan Doğru",
@@ -2088,7 +2101,7 @@ class QuickFileHasher(Adw.Application):
             )
 
     def _create_options(self) -> None:
-        self.set_option_context_summary("Quick File Hasher - Verify your files with speed and confidence")
+        self.set_option_context_summary(f"{APP_NAME} - Verify your files with speed and confidence")
         self.set_option_context_parameter_string("[FILE|FOLDER...] [--recursive] [--gitignore] [--max-workers 4] [--algo sha256]")
         self.add_main_option("algo", ord("a"), GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Default hashing algorithm", "ALGORITHM")
         self.add_main_option("recursive", ord("r"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Process files within subdirectories", None)
