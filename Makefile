@@ -30,7 +30,7 @@ makedir:
 shortcut:
 	@echo "[Desktop Entry]" > $(SHORTCUT_NAME)
 	@echo "Version=$(VERSION)" >> $(SHORTCUT_NAME)
-	@echo "Name=$(NAME)" >> $(SHORTCUT_NAME)
+	@echo "Name=$(APP_NAME)" >> $(SHORTCUT_NAME)
 	@echo "Comment=Python-based file hashing utility for Nautilus" >> $(SHORTCUT_NAME)
 	@echo "Icon=$(ICON_NAME)" >> $(SHORTCUT_NAME)
 	@echo "Exec=python3 $(INSTALL_DIR)/$(APP) --DESKTOP %U" >> $(SHORTCUT_NAME)
