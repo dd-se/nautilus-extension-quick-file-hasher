@@ -208,7 +208,13 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         recursive_hash_item.connect("activate", self.nautilus_launch_app, files, hash_name, True)
         return recursive_hash_item
 
-    def _add_hash_items(self, caller: str, files: list[str], simple_submenu: Nautilus.Menu, recursive_submenu: Nautilus.Menu | None = None):
+    def _add_hash_items(
+        self,
+        caller: str,
+        files: list[str],
+        simple_submenu: Nautilus.Menu,
+        recursive_submenu: Nautilus.Menu | None = None,
+    ) -> None:
         for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
             # Hash Simple ()
             simple_hash_item = self._simple_hash_item(caller, hash_name, files)
@@ -265,7 +271,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
 
         return [quick_file_hasher_menu]
 
-    def validate_to_string(self, file_objects: list[Nautilus.FileInfo]) -> tuple[bool, list[str]]:
+    def _validate_to_string(self, file_objects: list[Nautilus.FileInfo]) -> tuple[bool, list[str]]:
         has_dir = False
         validated_paths = []
         for obj in file_objects:
@@ -275,11 +281,12 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
                 validated_paths.append(valid_path)
         return has_dir, validated_paths
 
-    def get_background_items(self, current_folder: Nautilus.FileInfo) -> None:
-        return
+    def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
+        if valid_path := current_folder.get_location().get_path():
+            return self._create_menu("bg", [valid_path], True)
 
     def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
-        has_dir, files = self.validate_to_string(files)
+        has_dir, files = self._validate_to_string(files)
         if not files:
             return
         return self._create_menu("fg", files, has_dir)
@@ -919,13 +926,14 @@ class ResultRowData(GObject.Object):
         self.base_path = base_path
         self.path = path
 
-    def __call__(self, format_style: str) -> str:
-        return format_style.format(hash=self.hash_value, filename=self.path_display, algo=self.algo)
+    def __call__(self, format_style: str, relative_path: bool) -> str:
+        filename = self._get_rel_path() if relative_path else self.path.as_posix()
+        return format_style.format(hash=self.hash_value, filename=filename, algo=self.algo)
 
     @GObject.Property(type=str)
     def path_display(self) -> str:
         if self.relative_path:
-            return GLib.markup_escape_text((self.base_path.name / self.path.relative_to(self.base_path)).as_posix())
+            return GLib.markup_escape_text(self._get_rel_path())
         return GLib.markup_escape_text(self.path.as_posix())
 
     @GObject.Property(type=bool, default=False)
@@ -936,6 +944,9 @@ class ResultRowData(GObject.Object):
     def relative_path(self, state: bool) -> None:
         self._relative_path = state
         self.notify("path_display")
+
+    def _get_rel_path(self):
+        return (self.base_path.name / self.path.relative_to(self.base_path)).as_posix()
 
     def get_search_fields(self) -> tuple[str, str, str]:
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
@@ -1557,7 +1568,7 @@ class MainWindow(Adw.ApplicationWindow):
         new_rows = []
         new_errors = []
         iterations = 0
-        while iterations < 100:
+        while iterations < 500:
             try:
                 update = self.queue_handler.get_update()
             except Empty:
@@ -1662,41 +1673,42 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
-    def _txt_to_file(self, output: str | None) -> None:
-        if output is None:
-            self.add_toast("❌ Nothing to save")
-            return
-        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
+    def _txt_to_file(self, output: bytes | None) -> None:
+        def file_save_dialog():
+            if output is None:
+                self.add_toast("❌ Nothing to save")
+                return
+            file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
 
-        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
-            if not gio_task.had_error():
-                try:
-                    local_file = file_dialog.save_finish(gio_task)
-                    path: str = local_file.get_path()
+            def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
+                if not gio_task.had_error():
+                    try:
+                        local_file = file_dialog.save_finish(gio_task)
+                        path: str = local_file.get_path()
 
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(output)
+                        with open(path, "wb") as f:
+                            f.write(output)
 
-                    self.add_toast(f"✅ Saved to <b>{path}</b>")
+                        self.add_toast("✅ Saved")
 
-                except Exception as e:
-                    self.logger.error(f"Unexcepted error occured for {path}: {e}")
-                    self.add_toast(f"❌ Failed to save: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Unexcepted error occured for {path}: {e}")
+                        self.add_toast(f"❌ Failed: {e}")
 
-        file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
+            file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
 
-    def _txt_to_clipboard(self, output: str | None):
+        GLib.idle_add(file_save_dialog)
+
+    def _txt_to_clipboard(self, output: bytes | None):
         if output:
-            cp = Gdk.ContentProvider.new_for_bytes(
-                "text/plain;charset=utf-8",
-                GLib.Bytes.new(output.encode("utf-8")),
-            )
+            cp = Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8", GLib.Bytes.new(output))
             self.get_clipboard().set_content(cp)
-            self.add_toast("✅ Results copied to clipboard")
+            toast = "✅ Results copied to clipboard"
         else:
-            self.add_toast("❌ Nothing to copy")
+            toast = "❌ Nothing to copy"
+        GLib.idle_add(self.add_toast, toast)
 
-    def _results_to_txt(self, callback: Callable[[str | None], None]) -> None:
+    def _results_to_txt(self, callback: Callable[[bytes | None], None]) -> None:
         def worker():
             parts = []
             total_results = self.results_model_filtered.get_n_items()
@@ -1704,7 +1716,8 @@ class MainWindow(Adw.ApplicationWindow):
 
             if total_results > 0:
                 format_style = self.pref.get_format_style()
-                results_txt = "\n".join(r(format_style) for r in self.results_model_filtered)
+                rel_path = self.pref.use_relative_paths()
+                results_txt = "\n".join(r(format_style, rel_path) for r in self.results_model_filtered)
                 parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
@@ -1716,11 +1729,11 @@ class MainWindow(Adw.ApplicationWindow):
                 parts.append(f"# Generated on {now}")
 
             if parts:
-                output = "\n\n".join(parts)
+                output = "\n\n".join(parts).encode("utf-8")
             else:
                 output = None
 
-            GLib.idle_add(callback, output)
+            callback(output)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1973,7 +1986,7 @@ class QuickFileHasher(Adw.Application):
 
         if paths:
             cwd = command_line.get_cwd()
-            paths = [Path(cwd) / path for path in paths]
+            paths = [(Path(cwd) / path).resolve() for path in paths]
             self.do_open(paths, len(paths), _config_.get("algo"), _config_, new_window)
 
         else:
