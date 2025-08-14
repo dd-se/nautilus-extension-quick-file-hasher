@@ -1164,10 +1164,10 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.set_margin_bottom(5)
         vertical_main_container.append(display_row)
 
-        horizontal_container_checkbuttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15, css_classes=["custom-style-row"])
+        horizontal_container_checkbuttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.CENTER, spacing=15)
         vertical_main_container.append(horizontal_container_checkbuttons)
 
-        horizontal_container_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=6)
+        horizontal_container_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=6, margin_top=10)
         vertical_main_container.append(horizontal_container_buttons)
 
         select_all_button = Gtk.Button(label="Select All", css_classes=["flat"])
@@ -1337,9 +1337,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_cancel.set_visible(False)
         self.first_top_bar_box.append(self.button_cancel)
 
-        spacer_0 = Gtk.Box()
-        spacer_0.set_hexpand(True)
-        self.first_top_bar_box.append(spacer_0)
+        spacer = Gtk.Box(hexpand=True)
+        self.first_top_bar_box.append(spacer)
 
         self._setup_header_bar()
         self.first_top_bar_box.append(self.header_bar)
@@ -1350,8 +1349,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_switcher = Adw.ViewSwitcher(hexpand=True, policy=Adw.ViewSwitcherPolicy.WIDE, css_classes=["view-switcher"])
         self.second_top_bar_box.append(self.view_switcher)
 
-        spacer_1 = Gtk.Box(hexpand=True)
-        self.second_top_bar_box.append(spacer_1)
+        spacer = Gtk.Box(hexpand=True)
+        self.second_top_bar_box.append(spacer)
 
         self.button_copy_all = self._create_button("Copy", None, "Copy results to clipboard", "suggested-action", self._on_copy_all_clicked)
         self.button_copy_all.set_sensitive(False)
@@ -1522,15 +1521,17 @@ class MainWindow(Adw.ApplicationWindow):
             args=(base_paths or paths, paths, hashing_algorithms, options),
             daemon=True,
         ).start()
-        self._run_every_n_ms_in_background(0.01, self._process_queue, self.pref.use_relative_paths())
+        self._timeout_add(10, self._process_queue, self.pref.use_relative_paths())
 
-    def _run_every_n_ms_in_background(self, interval: float, callback: Callable[..., bool], *args, **kwargs):
+    def _timeout_add(self, interval: int, callback: Callable[..., bool], *args, **kwargs):
+        interval_seconds = interval / 1000
+
         def loop():
             while True:
                 keep_going = callback(*args, **kwargs)
                 if not keep_going:
                     break
-                time.sleep(interval)
+                time.sleep(interval_seconds)
 
         threading.Thread(target=loop, daemon=True).start()
 
@@ -1539,7 +1540,7 @@ class MainWindow(Adw.ApplicationWindow):
         job_done = self.progress_bar.get_fraction() == 1.0
 
         if self.cancel_event.is_set() or (queue_empty and job_done):
-            self._processing_complete()
+            GLib.idle_add(self._processing_complete)
             return False
 
         new_rows = []
