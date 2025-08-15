@@ -192,7 +192,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         self.logger.debug(f"Args: '{cmd[2:]}'")
         subprocess.Popen(cmd)
 
-    def _simple_hash_item(self, caller: str, hash_name: str, files: list[str]):
+    def _simple_hash_item(self, caller: str, hash_name: str, files: list[str]) -> Nautilus.MenuItem:
         """Hash Simple ()"""
         label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
 
@@ -200,7 +200,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         simple_hash_item.connect("activate", self.nautilus_launch_app, files, hash_name, False)
         return simple_hash_item
 
-    def _recursive_hash_item(self, caller: str, hash_name: str, files: list[str]):
+    def _recursive_hash_item(self, caller: str, hash_name: str, files: list[str]) -> Nautilus.MenuItem:
         """Hash Recursive ()"""
         label = hash_name.replace("_", "-").upper() if hash_name else "DEFAULT"
 
@@ -917,36 +917,39 @@ class CalculateHashes:
 
 class ResultRowData(GObject.Object):
     __gtype_name__ = "ResultRowData"
-
-    hash_value = GObject.Property(type=str)
-    algo = GObject.Property(type=str)
+    _use_relative_path: bool = False
 
     def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
-        super().__init__(hash_value=hash_value, algo=algo, relative_path=False, **kwargs)
+        super().__init__(**kwargs)
         self.base_path = base_path
         self.path = path
+        self._rel_path = self._get_rel_path()
+        self.hash_value = hash_value
+        self.algo = algo
 
-    def __call__(self, format_style: str, relative_path: bool) -> str:
-        filename = self._get_rel_path() if relative_path else self.path.as_posix()
+    def __call__(self, format_style: str, use_relative_path: bool) -> str:
+        filename = self._rel_path if use_relative_path else self.path.as_posix()
         return format_style.format(hash=self.hash_value, filename=filename, algo=self.algo)
 
     @GObject.Property(type=str)
     def path_display(self) -> str:
-        if self.relative_path:
-            return GLib.markup_escape_text(self._get_rel_path())
+        if self.use_relative_path:
+            return GLib.markup_escape_text(self._rel_path)
         return GLib.markup_escape_text(self.path.as_posix())
 
-    @GObject.Property(type=bool, default=False)
-    def relative_path(self) -> bool:
-        return self._relative_path
+    @property
+    def use_relative_path(self) -> bool:
+        return self._use_relative_path
 
-    @relative_path.setter
-    def relative_path(self, state: bool) -> None:
-        self._relative_path = state
+    @use_relative_path.setter
+    def use_relative_path(self, state: bool) -> None:
+        self._use_relative_path = state
         self.notify("path_display")
 
     def _get_rel_path(self):
-        return (self.base_path.name / self.path.relative_to(self.base_path)).as_posix()
+        base_str = self.base_path.as_posix()
+        path_str = self.path.as_posix()
+        return f"{self.base_path.name}{path_str[len(base_str) :]}"
 
     def get_search_fields(self) -> tuple[str, str, str]:
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
@@ -956,7 +959,7 @@ class ResultRowData(GObject.Object):
         action = args_copy.pop(0)
         if action == "trigger-path-update":
             use_relative_path = args_copy.pop(0)
-            self.relative_path = use_relative_path
+            self.use_relative_path = use_relative_path
 
 
 class ErrorRowData(GObject.Object):
@@ -1036,9 +1039,8 @@ class HashRow(Gtk.Box):
         self.suffix_box.append(button)
         return button
 
-    def _on_click_delete(self, button: Gtk.Button, list_item: Gtk.ListItem, model: Gio.ListStore) -> None:
+    def _on_click_delete(self, button: Gtk.Button, row_data: GObject.GObject, model: Gio.ListStore) -> None:
         button.set_sensitive(False)
-        row_data = list_item.get_item()
 
         found, position = model.find(row_data)
         if not found:
@@ -1074,8 +1076,7 @@ class HashRow(Gtk.Box):
 
     def bind(self, row_data: ResultRowData | ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         self.path = row_data.path
-
-        list_item.delete_handler_id = self.button_delete.connect("clicked", self._on_click_delete, list_item, model)
+        list_item.delete_handler_id = self.button_delete.connect("clicked", self._on_click_delete, row_data, model)
         self.button_delete.set_sensitive(True)
 
     def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
@@ -1114,12 +1115,14 @@ class HashResultRow(HashRow):
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
-        self.prefix_label.set_label(row_data.algo.upper())
         self.base_path = row_data.base_path
         self.algo = row_data.algo
         self.hash_value = row_data.hash_value
+        self.prefix_label.set_text(self.algo.upper().replace("_", "-"))
         self.subtitle.set_text(self.hash_value)
-        row_data.relative_path = parent.pref.use_relative_paths()
+
+        row_data.use_relative_path = parent.pref.use_relative_paths()
+
         list_item.path_display_binding = row_data.bind_property("path_display", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
         list_item.path_display_handler_id = parent.connect("call-row-data", row_data.signal_handler)
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent._on_multi_hash_requested, self)
@@ -1129,6 +1132,7 @@ class HashResultRow(HashRow):
     def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         super().unbind(list_item, parent)
         list_item.path_display_binding.unbind()
+        list_item.path_display_binding = None
         parent.disconnect(list_item.path_display_handler_id)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
         self.button_copy_hash.disconnect(list_item.copy_handler_id)
@@ -1182,7 +1186,7 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
         display_row.remove(display_row.prefix_label)
         display_row.title.set_text(data.path.name)
-        display_row.subtitle.set_text(f"{data.algo.upper()}  {data.hash_value}")
+        display_row.subtitle.set_text(f"{data.prefix_label.get_text()}  {data.hash_value}")
         display_row.set_margin_bottom(5)
         vertical_main_container.append(display_row)
 
@@ -1417,6 +1421,7 @@ class MainWindow(Adw.ApplicationWindow):
         factory.connect("setup", self._on_factory_setup, "result")
         factory.connect("bind", self._on_factory_bind)
         factory.connect("unbind", self._on_factory_unbind)
+        factory.connect("teardown", self._on_factory_teardown)
         self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["no-background"])
 
         self.results_scrolled_window = Gtk.ScrolledWindow(child=self.results_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
@@ -1436,6 +1441,7 @@ class MainWindow(Adw.ApplicationWindow):
         factory_err.connect("setup", self._on_factory_setup, "error")
         factory_err.connect("bind", self._on_factory_bind)
         factory_err.connect("unbind", self._on_factory_unbind)
+        factory_err.connect("teardown", self._on_factory_teardown)
         self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["no-background"])
 
         self.errors_scrolled_window = Gtk.ScrolledWindow(child=self.errors_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
@@ -1567,8 +1573,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         new_rows = []
         new_errors = []
-        iterations = 0
-        while iterations < 500:
+        additions = 0
+        while additions < 500:
             try:
                 update = self.queue_handler.get_update()
             except Empty:
@@ -1579,11 +1585,11 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self.progress_bar.set_fraction, update[1])
 
             elif kind == "result":
-                iterations += 1
+                additions += 1
                 new_rows.append(ResultRowData(*update[1:]))
 
             elif kind == "error":
-                iterations += 1
+                additions += 1
                 new_errors.append(ErrorRowData(*update[1:]))
 
             elif kind == "toast":
@@ -1674,30 +1680,27 @@ class MainWindow(Adw.ApplicationWindow):
         self.empty_placeholder.set_visible(show_empty)
 
     def _txt_to_file(self, output: bytes | None) -> None:
-        def file_save_dialog():
-            if output is None:
-                self.add_toast("❌ Nothing to save")
-                return
-            file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
+        if output is None:
+            self.add_toast("❌ Nothing to save")
+            return
+        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
 
-            def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
-                if not gio_task.had_error():
-                    try:
-                        local_file = file_dialog.save_finish(gio_task)
-                        path: str = local_file.get_path()
+        def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
+            if not gio_task.had_error():
+                try:
+                    local_file = file_dialog.save_finish(gio_task)
+                    path: str = local_file.get_path()
 
-                        with open(path, "wb") as f:
-                            f.write(output)
+                    with open(path, "wb") as f:
+                        f.write(output)
 
-                        self.add_toast("✅ Saved")
+                    self.add_toast("✅ Saved")
 
-                    except Exception as e:
-                        self.logger.error(f"Unexcepted error occured for {path}: {e}")
-                        self.add_toast(f"❌ Failed: {e}")
+                except Exception as e:
+                    self.logger.error(f"Unexcepted error occured for {path}: {e}")
+                    self.add_toast(f"❌ Failed: {e}")
 
-            file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
-
-        GLib.idle_add(file_save_dialog)
+        file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
 
     def _txt_to_clipboard(self, output: bytes | None):
         if output:
@@ -1706,7 +1709,7 @@ class MainWindow(Adw.ApplicationWindow):
             toast = "✅ Results copied to clipboard"
         else:
             toast = "❌ Nothing to copy"
-        GLib.idle_add(self.add_toast, toast)
+        self.add_toast(toast)
 
     def _results_to_txt(self, callback: Callable[[bytes | None], None]) -> None:
         def worker():
@@ -1733,7 +1736,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 output = None
 
-            callback(output)
+            GLib.idle_add(callback, output)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1753,6 +1756,9 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_factory_unbind(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
         row_widget: HashResultRow | HashErrorRow = list_item.get_child()
         row_widget.unbind(list_item, self)
+
+    def _on_factory_teardown(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
+        list_item.set_child(None)
 
     def _on_items_changed(self, model: Gio.ListStore, position: int, removed: int, added: int) -> None:
         self.on_items_changed()
