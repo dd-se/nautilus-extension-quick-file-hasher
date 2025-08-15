@@ -91,59 +91,33 @@ CHECKSUM_FORMATS: list[dict[str, str]] = [
     },
 ]
 CSS = b"""
-toast {
-    background-color: #000000;
-}
-
+toast { background-color: #000000; }
 .view-switcher button {
     background-color: #404040;
     color: white;
     transition: background-color 0.3s ease;
 }
 .view-switcher button:nth-child(1):hover,
-.view-switcher button:nth-child(1):checked {
-    background-color: #3074cf;
-}
+.view-switcher button:nth-child(1):checked { background-color: #3074cf; }
 .view-switcher button:nth-child(2):hover,
-.view-switcher button:nth-child(2):checked {
-    background-color: #c7162b;
-}
-
-.no-background {
-    background-color: @theme_bg_color;
-}
-.search-bg-color {
-    background-color: shade(@theme_bg_color, 0.8);
-}
+.view-switcher button:nth-child(2):checked { background-color: #c7162b; }
+.no-background { background-color: transparent; }
+.search-bg-color { background-color: shade(@theme_bg_color, 0.8); }
 .custom-style-row {
-    background-color: #3D3D3D;
     border-radius: 6px;
     padding-top: 8px;
     padding-left : 8px;
     padding-right : 8px;
     padding-bottom: 8px;
+    transition: box-shadow 0.3s ease;
 }
-/*
-.custom-style-row:hover {
-    background-color: #454545;
-}
-*/
-.darker-action-row {
-    background-color: rgba(0, 0, 0, 0.2);
-}
-.drag-overlay {
-    background-color: alpha(@accent_bg_color, 0.5);
-    color: @accent_fg_color;
-}
-.custom-success {
-    color: #57EB72;
-}
-.custom-error {
-    color: #FF938C;
-}
-.custom-toggle-btn:checked {
-    background: shade(@theme_selected_bg_color,0.9);
-}
+.custom-style-row:hover { box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.6); }
+.custom-row-light { background-color: shade(@theme_bg_color, 1.40); }
+.custom-row-dark { background-color: rgba(0, 0, 0, 0.2); }
+.dnd-overlay { background-color: alpha(@accent_bg_color, 0.5); color: @accent_fg_color; }
+.custom-success { color: #57EB72; }
+.custom-error { color: #FF938C; }
+.custom-toggle-btn:checked { background: shade(@theme_selected_bg_color,0.9); }
 """
 
 css_provider = Gtk.CssProvider()
@@ -477,7 +451,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
         group = Adw.PreferencesGroup()
         toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
-        self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "darker-action-row"], title_lines=1)
+        self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "custom-row-dark"], title_lines=1)
         self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
         self._setting_widgets[name] = self.setting_checksum_format_toggle_group
@@ -1004,7 +978,7 @@ class HashRow(Gtk.Box):
     def __init__(self, **kwargs):
         super().__init__(
             orientation=Gtk.Orientation.HORIZONTAL,
-            css_classes=["custom-style-row"],
+            css_classes=["custom-style-row", "custom-row-light"],
             spacing=12,
             **kwargs,
         )
@@ -1103,13 +1077,13 @@ class HashResultRow(HashRow):
         self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
-    def _set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
+    def set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
         self.prefix_icon.set_from_icon_name(icon_name)
 
-    def _reset_icon(self) -> None:
-        self._set_icon_(self.hash_icon_name)
+    def reset_icon(self) -> None:
+        self.set_icon_(self.hash_icon_name)
 
-    def _reset_css(self) -> None:
+    def reset_css(self) -> None:
         self.remove_css_class("custom-success")
         self.remove_css_class("custom-error")
 
@@ -1182,7 +1156,7 @@ class MultiHashDialog(Adw.AlertDialog):
         self.set_extra_child(vertical_main_container)
 
         display_row = HashRow()
-        display_row.add_css_class("darker-action-row")
+        display_row.add_css_class("custom-row-dark")
         display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
         display_row.remove(display_row.prefix_label)
         display_row.title.set_text(data.path.name)
@@ -1318,7 +1292,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.dnd_status_page = Adw.StatusPage(
             title="Drop Files Here",
             icon_name="document-send-symbolic",
-            css_classes=["drag-overlay"],
+            css_classes=["dnd-overlay"],
         )
         self.dnd_revealer = Gtk.Revealer(
             transition_type=Gtk.RevealerTransitionType.CROSSFADE,
@@ -1790,12 +1764,12 @@ class MainWindow(Adw.ApplicationWindow):
 
                 if clipboard_text == row.hash_value:
                     row.add_css_class("custom-success")
-                    row._set_icon_("object-select-symbolic")
+                    row.set_icon_("object-select-symbolic")
                     self.add_toast(f"✅ Clipboard hash matches <b>{row.title.get_text()}</b>!")
 
                 else:
                     row.add_css_class("custom-error")
-                    row._set_icon_("dialog-error-symbolic")
+                    row.set_icon_("dialog-error-symbolic")
                     self.add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{row.title.get_text()}</b>!")
 
             except Exception as e:
@@ -1804,8 +1778,8 @@ class MainWindow(Adw.ApplicationWindow):
             finally:
 
                 def reset():
-                    row._reset_css()
-                    row._reset_icon()
+                    row.reset_css()
+                    row.reset_icon()
                     row.noop_cmp = False
 
                 GLib.timeout_add(3000, reset)
