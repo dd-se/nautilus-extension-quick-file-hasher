@@ -725,8 +725,8 @@ class QueueUpdateHandler:
     def update_result(self, base_path: Path, file: Path, hash_value: str, algo: str) -> None:
         self.q.put(("result", base_path, file, hash_value, algo))
 
-    def update_error(self, file: Path, error: str) -> None:
-        self.q.put(("error", file, error))
+    def update_error(self, base_path: Path, file: Path, error: str) -> None:
+        self.q.put(("error", base_path, file, error))
 
     def update_toast(self, message: str) -> None:
         self.q.put(("toast", message))
@@ -765,7 +765,7 @@ class CalculateHashes:
         for base_path, path in zip(base_paths, paths):
             try:
                 if not path.exists():
-                    self.queue_handler.update_error(path, "File or directory not found.")
+                    self.queue_handler.update_error(base_path, path, "File or directory not found.")
                     continue
 
                 ignore_rules = []
@@ -789,7 +789,7 @@ class CalculateHashes:
 
             except Exception as e:
                 self.logger.debug(f"Error processing {path.name}: {e}")
-                self.queue_handler.update_error(path, str(e))
+                self.queue_handler.update_error(base_path, path, str(e))
 
         if self._total_bytes == 0:
             self.queue_handler.update_progress(1)
@@ -802,7 +802,7 @@ class CalculateHashes:
             return
         try:
             if current_path.is_symlink():
-                self.queue_handler.update_error(current_path, "Symbolic links are not supported")
+                self.queue_handler.update_error(base_path, current_path, "Symbolic links are not supported")
                 self.logger.debug(f"Skipped symbolic link: {current_path}")
 
             elif IgnoreRule.is_ignored(current_path, current_rules):
@@ -813,7 +813,7 @@ class CalculateHashes:
 
                 if file_size == 0:
                     if not options.get("ignore-empty-files"):
-                        self.queue_handler.update_error(current_path, "File is empty")
+                        self.queue_handler.update_error(base_path, current_path, "File is empty")
 
                 else:
                     self._add_file_size(file_size)
@@ -840,7 +840,7 @@ class CalculateHashes:
 
         except Exception as e:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
-            self.queue_handler.update_error(current_path, str(e))
+            self.queue_handler.update_error(base_path, current_path, str(e))
 
     @property
     def _current_progress(self) -> float:
@@ -878,7 +878,7 @@ class CalculateHashes:
             if self._total_bytes > 0:
                 self.queue_handler.update_progress(self._current_progress)
 
-            self.queue_handler.update_error(file, str(e))
+            self.queue_handler.update_error(base_path, file, str(e))
             self.logger.exception(f"Error processing {file.name}: {e}", stack_info=True)
 
     def _add_file_size(self, bytes_: int) -> None:
@@ -889,27 +889,42 @@ class CalculateHashes:
         self._total_bytes = 0
 
 
-class ResultRowData(GObject.Object):
-    __gtype_name__ = "ResultRowData"
+class RowData(GObject.Object):
+    __gtype_name__ = "RowData"
     _use_relative_path: bool = False
+    noop_copy: bool = False
+    noop_cmp: bool = False
 
-    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
+    def __init__(self, base_path: Path, path: Path, **kwargs):
         super().__init__(**kwargs)
         self.base_path = base_path
         self.path = path
-        self._rel_path = self._get_rel_path()
-        self.hash_value = hash_value
-        self.algo = algo
+        self.rel_path = self._get_rel_path()
 
-    def __call__(self, format_style: str, use_relative_path: bool) -> str:
-        filename = self._rel_path if use_relative_path else self.path.as_posix()
-        return format_style.format(hash=self.hash_value, filename=filename, algo=self.algo)
+    def get_prefix(self) -> str:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def get_title(self) -> str:
+        return self.title_display
+
+    def get_subtitle(self) -> str:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def get_search_fields(self) -> tuple[Any]:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def get_formatted(self, use_relative_path: bool, format_style: str | None) -> str:
+        raise NotImplementedError("Subclasses must implement this method")
 
     @GObject.Property(type=str)
-    def path_display(self) -> str:
+    def title_display(self) -> str:
         if self.use_relative_path:
-            return GLib.markup_escape_text(self._rel_path)
+            return GLib.markup_escape_text(self.rel_path)
         return GLib.markup_escape_text(self.path.as_posix())
+
+    @GObject.Property(type=str)
+    def subtitle_display(self) -> str:
+        return GLib.markup_escape_text(self.get_subtitle())
 
     @property
     def use_relative_path(self) -> bool:
@@ -917,16 +932,14 @@ class ResultRowData(GObject.Object):
 
     @use_relative_path.setter
     def use_relative_path(self, state: bool) -> None:
-        self._use_relative_path = state
-        self.notify("path_display")
+        if self._use_relative_path != state:
+            self._use_relative_path = state
+            self.notify("title_display")
 
     def _get_rel_path(self):
         base_str = self.base_path.as_posix()
         path_str = self.path.as_posix()
         return f"{self.base_path.name}{path_str[len(base_str) :]}"
-
-    def get_search_fields(self) -> tuple[str, str, str]:
-        return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
     def signal_handler(self, emitter: Any, args: list) -> None:
         args_copy = args.copy()
@@ -936,52 +949,57 @@ class ResultRowData(GObject.Object):
             self.use_relative_path = use_relative_path
 
 
-class ErrorRowData(GObject.Object):
-    __gtype_name__ = "ErrorRowData"
+class ResultRowData(RowData):
+    __gtype_name__ = "ResultRowData"
 
-    def __init__(self, path: Path, error_message: str, **kwargs):
-        super().__init__(**kwargs)
-        self.path = path
-        self.error_message = error_message
+    def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
+        super().__init__(base_path, path, **kwargs)
+        self.hash_value = hash_value
+        self.algo = algo
 
-    @property
-    def path(self) -> str:
-        return GLib.markup_escape_text(self._path.as_posix())
+    def get_prefix(self):
+        return self.algo.upper().replace("_", "-")
 
-    @path.setter
-    def path(self, path: Path) -> None:
-        self._path = path
+    def get_subtitle(self):
+        return self.hash_value
 
-    @property
-    def error_message(self) -> str:
-        return GLib.markup_escape_text(self._error_message)
-
-    @error_message.setter
-    def error_message(self, error_message: str) -> None:
-        self._error_message = error_message
+    def get_formatted(self, use_relative_path: bool, format_style: str):
+        filename = self.rel_path if use_relative_path else self.path.as_posix()
+        return format_style.format(hash=self.hash_value, filename=filename, algo=self.algo)
 
     def get_search_fields(self) -> tuple[str, str, str]:
-        return (self._path.as_posix().lower(), self.error_message)
+        return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
-    def __str__(self) -> str:
-        return f"{self.path}:ERROR:{self.error_message}"
+
+class ErrorRowData(RowData):
+    __gtype_name__ = "ErrorRowData"
+
+    def __init__(self, base_path: Path, path: Path, error_message: str, **kwargs):
+        super().__init__(base_path, path, **kwargs)
+        self._error_message = error_message
+
+    def get_prefix(self):
+        return "ERROR"
+
+    def get_subtitle(self):
+        return self._error_message
+
+    def get_formatted(self, use_relative_path: bool):
+        filename = self.rel_path if use_relative_path else self.path.as_posix()
+        return f"{filename} -> {self._error_message}"
+
+    def get_search_fields(self) -> tuple[str, str]:
+        return (self.path.as_posix().lower(), self._error_message)
 
 
 class HashRow(Gtk.Box):
     __gtype_name__ = "HashRow"
-    base_path: Path
-    path: Path
+    _btn_css: str | None = None
+    button_copy: Gtk.Button
     button_delete: Gtk.Button
-    noop_copy = False
-    noop_cmp = False
 
     def __init__(self, **kwargs):
-        super().__init__(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            css_classes=["custom-style-row", "custom-row-light"],
-            spacing=12,
-            **kwargs,
-        )
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, css_classes=["custom-style-row", "custom-row-light"], spacing=12, **kwargs)
         self.prefix_icon = Gtk.Image(margin_start=4)
         self.prefix_label = Gtk.Label(width_chars=MAX_WIDTH)
         self.prefix_label.add_css_class("dim-label")
@@ -1013,47 +1031,26 @@ class HashRow(Gtk.Box):
         self.suffix_box.append(button)
         return button
 
-    def _on_click_delete(self, button: Gtk.Button, row_data: GObject.GObject, model: Gio.ListStore) -> None:
-        button.set_sensitive(False)
+    def bind(self, row_data: RowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
+        self.prefix_label.set_text(row_data.get_prefix())
+        list_item.title_display_binding = row_data.bind_property("title_display", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.subtitle_display_binding = row_data.bind_property("subtitle_display", self.subtitle, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.row_data_signal_handler_id = parent.connect("call-row-data", row_data.signal_handler)
 
-        found, position = model.find(row_data)
-        if not found:
-            raise ValueError("Item not found in original model")
-
-        anim = Adw.TimedAnimation(
-            widget=self,
-            value_from=1.0,
-            value_to=0.3,
-            duration=100,
-            target=Adw.CallbackAnimationTarget.new(lambda opacity: self.set_opacity(opacity)),
-        )
-        anim.connect("done", lambda _: model.remove(position))
-        anim.play()
-
-    def _on_click_copy(self, button: Gtk.Button, css: str | None = None) -> None:
-        if self.noop_copy:
-            return
-        self.noop_copy = True
-        button.get_clipboard().set(self.subtitle.get_text())
-        icon_name = button.get_icon_name()
-        button.set_icon_name("object-select-symbolic")
-
-        if css:
-            button.add_css_class(css)
-
-        def reset():
-            button.set_icon_name(icon_name)
-            button.remove_css_class("success")
-            self.noop_copy = False
-
-        GLib.timeout_add(1500, reset)
-
-    def bind(self, row_data: ResultRowData | ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
-        self.path = row_data.path
-        list_item.delete_handler_id = self.button_delete.connect("clicked", self._on_click_delete, row_data, model)
+        list_item.copy_handler_id = self.button_copy.connect("clicked", parent.on_copy_row_requested, row_data, self._btn_css)
+        list_item.delete_handler_id = self.button_delete.connect("clicked", parent.on_delete_row_requested, self, row_data, model)
         self.button_delete.set_sensitive(True)
 
+        row_data.use_relative_path = parent.pref.use_relative_paths()
+
     def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
+        list_item.title_display_binding.unbind()
+        list_item.title_display_binding = None
+        list_item.subtitle_display_binding.unbind()
+        list_item.subtitle_display_binding = None
+        parent.disconnect(list_item.row_data_signal_handler_id)
+
+        self.button_copy.disconnect(list_item.copy_handler_id)
         if hasattr(list_item, "delete_handler_id") and list_item.delete_handler_id > 0:
             self.button_delete.disconnect(list_item.delete_handler_id)
             list_item.delete_handler_id = 0
@@ -1062,18 +1059,15 @@ class HashRow(Gtk.Box):
 
 class HashResultRow(HashRow):
     __gtype_name__ = "HashResultRow"
-    base_path: Path
-    hash_value: str
-    algo: str
+    _icon_name = "dialog-password-symbolic"
+    _btn_css = "success"
 
     def __init__(self):
         super().__init__()
-        self.prefix_icon.set_from_icon_name("dialog-password-symbolic")
-        self.hash_icon_name = self.prefix_icon.get_icon_name()
-
+        self.prefix_icon.set_from_icon_name(self._icon_name)
         self.button_multi_hash = self._create_button(None, "Select and compute multiple hash algorithms for this file", None)
         self.button_multi_hash.set_child(Gtk.Label(label="Multi-Hash"))
-        self.button_copy_hash = self._create_button("edit-copy-symbolic", "Copy hash", None)
+        self.button_copy = self._create_button("edit-copy-symbolic", "Copy hash", None)
         self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
@@ -1081,7 +1075,7 @@ class HashResultRow(HashRow):
         self.prefix_icon.set_from_icon_name(icon_name)
 
     def reset_icon(self) -> None:
-        self.set_icon_(self.hash_icon_name)
+        self.set_icon_(self._icon_name)
 
     def reset_css(self) -> None:
         self.remove_css_class("custom-success")
@@ -1089,57 +1083,37 @@ class HashResultRow(HashRow):
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
-        self.base_path = row_data.base_path
-        self.algo = row_data.algo
-        self.hash_value = row_data.hash_value
-        self.prefix_label.set_text(self.algo.upper().replace("_", "-"))
-        self.subtitle.set_text(self.hash_value)
-
-        row_data.use_relative_path = parent.pref.use_relative_paths()
-
-        list_item.path_display_binding = row_data.bind_property("path_display", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
-        list_item.path_display_handler_id = parent.connect("call-row-data", row_data.signal_handler)
-        list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent._on_multi_hash_requested, self)
-        list_item.copy_handler_id = self.button_copy_hash.connect("clicked", self._on_click_copy, "success")
-        list_item.compare_handler_id = self.button_compare.connect("clicked", parent._on_clipboard_compare_requested, self)
+        list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent.on_multi_hash_requested, row_data)
+        list_item.compare_handler_id = self.button_compare.connect("clicked", parent.on_clipboard_compare_requested, self, row_data)
 
     def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         super().unbind(list_item, parent)
-        list_item.path_display_binding.unbind()
-        list_item.path_display_binding = None
-        parent.disconnect(list_item.path_display_handler_id)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
-        self.button_copy_hash.disconnect(list_item.copy_handler_id)
         self.button_compare.disconnect(list_item.compare_handler_id)
 
 
 class HashErrorRow(HashRow):
     __gtype_name__ = "HashErrorRow"
-    error_message: str
+    _icon_name = "dialog-error-symbolic"
+    _btn_css = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.prefix_icon.set_from_icon_name("dialog-error-symbolic")
-        self.prefix_label.set_visible(False)
-        self.button_copy_error = self._create_button("edit-copy-symbolic", "Copy error message", None)
+        self.prefix_icon.set_from_icon_name(self._icon_name)
+
+        self.button_copy = self._create_button("edit-copy-symbolic", "Copy error message", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this error", None)
         self.add_css_class("custom-error")
 
     def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
-        self.error_message = row_data.error_message
-        self.title.set_text(self.path)
-        self.subtitle.set_text(self.error_message)
-
-        list_item.copy_handler_id = self.button_copy_error.connect("clicked", self._on_click_copy)
 
     def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         super().unbind(list_item, parent)
-        self.button_copy_error.disconnect(list_item.copy_handler_id)
 
 
 class MultiHashDialog(Adw.AlertDialog):
-    def __init__(self, parent: "MainWindow", data: "HashResultRow", working_config: dict, **kwargs):
+    def __init__(self, parent: "MainWindow", row_data: ResultRowData, working_config: dict, **kwargs):
         super().__init__(**kwargs)
         body = "<big><b>Select Additional Algorithms</b></big>\n"
         body = f"{body}<small>Choose one or more algorithms to run in addition to the calculated one.</small>"
@@ -1159,8 +1133,8 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.add_css_class("custom-row-dark")
         display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
         display_row.remove(display_row.prefix_label)
-        display_row.title.set_text(data.path.name)
-        display_row.subtitle.set_text(f"{data.prefix_label.get_text()}  {data.hash_value}")
+        display_row.title.set_text(row_data.path.name)
+        display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.hash_value}")
         display_row.set_margin_bottom(5)
         vertical_main_container.append(display_row)
 
@@ -1182,7 +1156,7 @@ class MultiHashDialog(Adw.AlertDialog):
 
         count = 0
         for algo in AVAILABLE_ALGORITHMS:
-            if algo == data.algo:
+            if algo == row_data.algo:
                 continue
 
             if count % 5 == 0:
@@ -1206,8 +1180,8 @@ class MultiHashDialog(Adw.AlertDialog):
                 selected_algos = [c.algo for c in checkbuttons if c.get_active()]
                 repeat_n_times = len(selected_algos)
                 parent.start_job(
-                    repeat(data.base_path, repeat_n_times),
-                    repeat(data.path, repeat_n_times),
+                    repeat(row_data.base_path, repeat_n_times),
+                    repeat(row_data.path, repeat_n_times),
                     selected_algos,
                     working_config,
                 )
@@ -1507,6 +1481,16 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
+    def signal_handler(self, emitter: Any, args: list) -> None:
+        args_copy = args.copy()
+        action = args_copy.pop(0)
+        if action == "trigger-on-items-changed":
+            self.on_items_changed()
+
+        elif action == "trigger-path-update":
+            use_relative_path = args_copy.pop(0)
+            self.emit("call-row-data", [action, use_relative_path])
+
     def start_job(
         self,
         base_paths: Iterable[Path] | None,
@@ -1618,41 +1602,6 @@ class MainWindow(Adw.ApplicationWindow):
         )
         animation.play()
 
-    def on_items_changed(self, view_stack: Adw.ViewStack = None, param: GObject.ParamSpec = None) -> None:
-        has_results = self.results_model.get_n_items() > 0
-        has_errors = self.errors_model.get_n_items() > 0
-        save_errors = self.pref.save_errors()
-        current_page_name = self.view_stack.get_visible_child_name()
-
-        can_save_or_copy = has_results or (has_errors and save_errors)
-        can_clear_or_search = has_results or has_errors
-        self.button_save.set_sensitive(can_save_or_copy)
-        self.button_copy_all.set_sensitive(can_save_or_copy)
-        self.toggle_button_sort.set_sensitive(has_results)
-        self.button_clear.set_sensitive(can_clear_or_search)
-        self.button_show_searchbar.set_sensitive(can_clear_or_search)
-        self._update_badge_numbers()
-
-        show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
-        target_modified = False
-        if show_empty:
-            target_modified = self._modify_placeholder(current_page_name)
-            target = self.empty_placeholder
-        else:
-            target = self.view_stack
-
-        if not target.is_visible() or (view_stack and param) or (target.is_visible() and target_modified):
-            Adw.TimedAnimation(
-                widget=self,
-                value_from=0.3,
-                value_to=1.0,
-                duration=250,
-                target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
-            ).play()
-
-        self.view_stack.set_visible(not show_empty)
-        self.empty_placeholder.set_visible(show_empty)
-
     def _txt_to_file(self, output: bytes | None) -> None:
         if output is None:
             self.add_toast("❌ Nothing to save")
@@ -1690,15 +1639,15 @@ class MainWindow(Adw.ApplicationWindow):
             parts = []
             total_results = self.results_model_filtered.get_n_items()
             total_errors = self.errors_model_filtered.get_n_items()
+            format_style = self.pref.get_format_style()
+            rel_path = self.pref.use_relative_paths()
 
             if total_results > 0:
-                format_style = self.pref.get_format_style()
-                rel_path = self.pref.use_relative_paths()
-                results_txt = "\n".join(r(format_style, rel_path) for r in self.results_model_filtered)
+                results_txt = "\n".join(r.get_formatted(rel_path, format_style) for r in self.results_model_filtered)
                 parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
-                errors_txt = "\n".join(str(r) for r in self.errors_model_filtered)
+                errors_txt = "\n".join(r.get_formatted(rel_path) for r in self.errors_model_filtered)
                 parts.append(f"# Errors ({total_errors}):\n\n{errors_txt}")
 
             if self.pref.include_time() and parts:
@@ -1737,6 +1686,41 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_items_changed(self, model: Gio.ListStore, position: int, removed: int, added: int) -> None:
         self.on_items_changed()
 
+    def on_items_changed(self, view_stack: Adw.ViewStack = None, param: GObject.ParamSpec = None) -> None:
+        has_results = self.results_model.get_n_items() > 0
+        has_errors = self.errors_model.get_n_items() > 0
+        save_errors = self.pref.save_errors()
+        current_page_name = self.view_stack.get_visible_child_name()
+
+        can_save_or_copy = has_results or (has_errors and save_errors)
+        can_clear_or_search = has_results or has_errors
+        self.button_save.set_sensitive(can_save_or_copy)
+        self.button_copy_all.set_sensitive(can_save_or_copy)
+        self.toggle_button_sort.set_sensitive(has_results)
+        self.button_clear.set_sensitive(can_clear_or_search)
+        self.button_show_searchbar.set_sensitive(can_clear_or_search)
+        self._update_badge_numbers()
+
+        show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
+        target_modified = False
+        if show_empty:
+            target_modified = self._modify_placeholder(current_page_name)
+            target = self.empty_placeholder
+        else:
+            target = self.view_stack
+
+        if not target.is_visible() or (view_stack and param) or (target.is_visible() and target_modified):
+            Adw.TimedAnimation(
+                widget=self,
+                value_from=0.3,
+                value_to=1.0,
+                duration=250,
+                target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
+            ).play()
+
+        self.view_stack.set_visible(not show_empty)
+        self.empty_placeholder.set_visible(show_empty)
+
     def _on_selection_changed(self, selection_model: Gtk.MultiSelection, position: int, n_items: int) -> None:
         selected_items = []
         model = selection_model.get_model()
@@ -1750,27 +1734,45 @@ class MainWindow(Adw.ApplicationWindow):
         for item in selected_items:
             print(item)
 
-    def _on_multi_hash_requested(self, _: Gtk.Button, row: HashResultRow) -> None:
+    def on_multi_hash_requested(self, _: Gtk.Button, row: ResultRowData) -> None:
         MultiHashDialog(self, row, self.pref.get_working_config())
 
-    def _on_clipboard_compare_requested(self, _: Gtk.Button, row: HashResultRow) -> None:
-        if row.noop_cmp:
+    def on_copy_row_requested(self, button: Gtk.Button, row_data: RowData, css: str | None = None) -> None:
+        if row_data.noop_copy:
             return
-        row.noop_cmp = True
+        row_data.noop_copy = True
+        button.get_clipboard().set(row_data.get_subtitle())
+        icon_name = button.get_icon_name()
+        button.set_icon_name("object-select-symbolic")
+
+        if css:
+            button.add_css_class(css)
+
+        def reset():
+            button.set_icon_name(icon_name)
+            button.remove_css_class("success")
+            row_data.noop_copy = False
+
+        GLib.timeout_add(1500, reset)
+
+    def on_clipboard_compare_requested(self, _: Gtk.Button, row_widget: HashResultRow, row_data: ResultRowData) -> None:
+        if row_data.noop_cmp:
+            return
+        row_data.noop_cmp = True
 
         def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
             try:
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
 
-                if clipboard_text == row.hash_value:
-                    row.add_css_class("custom-success")
-                    row.set_icon_("object-select-symbolic")
-                    self.add_toast(f"✅ Clipboard hash matches <b>{row.title.get_text()}</b>!")
+                if clipboard_text == row_data.hash_value:
+                    row_widget.add_css_class("custom-success")
+                    row_widget.set_icon_("object-select-symbolic")
+                    self.add_toast(f"✅ Clipboard hash matches <b>{row_data.get_title()}</b>!")
 
                 else:
-                    row.add_css_class("custom-error")
-                    row.set_icon_("dialog-error-symbolic")
-                    self.add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{row.title.get_text()}</b>!")
+                    row_widget.add_css_class("custom-error")
+                    row_widget.set_icon_("dialog-error-symbolic")
+                    self.add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{row_data.get_title()}</b>!")
 
             except Exception as e:
                 self.add_toast(f"❌ Clipboard read error: {e}")
@@ -1778,14 +1780,31 @@ class MainWindow(Adw.ApplicationWindow):
             finally:
 
                 def reset():
-                    row.reset_css()
-                    row.reset_icon()
-                    row.noop_cmp = False
+                    row_widget.reset_css()
+                    row_widget.reset_icon()
+                    row_data.noop_cmp = False
 
                 GLib.timeout_add(3000, reset)
 
         clipboard = self.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
+
+    def on_delete_row_requested(self, button: Gtk.Button, row_widget: HashRow, row_data: RowData, model: Gio.ListStore) -> None:
+        button.set_sensitive(False)
+
+        found, position = model.find(row_data)
+        if not found:
+            raise ValueError("Item not found in original model")
+
+        anim = Adw.TimedAnimation(
+            widget=row_widget,
+            value_from=1.0,
+            value_to=0.3,
+            duration=100,
+            target=Adw.CallbackAnimationTarget.new(lambda opacity: row_widget.set_opacity(opacity)),
+        )
+        anim.connect("done", lambda _: model.remove(position))
+        anim.play()
 
     def _on_click_show_searchbar(self, show: bool) -> None:
         if self.button_show_searchbar.is_sensitive():
