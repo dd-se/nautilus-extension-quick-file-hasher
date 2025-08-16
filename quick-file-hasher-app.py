@@ -876,13 +876,12 @@ class CalculateHashes:
             hash_obj = hashlib.new(algorithm)
             with open(file, "rb") as f:
                 while chunk := f.read(chunk_size):
-                    if self.cancel_event.is_set():
-                        return
-
                     hash_obj.update(chunk)
                     bytes_read = len(chunk)
                     self._total_bytes_read += bytes_read
                     hash_task_bytes_read += bytes_read
+                    if self.cancel_event.is_set():
+                        return
                     self.queue_handler.update_progress(self._current_progress)
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
