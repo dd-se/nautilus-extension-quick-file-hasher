@@ -66,6 +66,7 @@ DEFAULTS = {
     "relative-paths": False,
     "include-time": True,
     "output-style": 0,
+    "uppercase-hash": False,
 }
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
@@ -92,28 +93,19 @@ CHECKSUM_FORMATS: list[dict[str, str]] = [
 ]
 CSS = b"""
 toast { background-color: #000000; }
-.view-switcher button {
-    background-color: #404040;
-    color: white;
-    transition: background-color 0.3s ease;
-}
+.view-switcher button { background-color: #404040; color: white; transition: background-color 0.3s ease; }
 .view-switcher button:nth-child(1):hover,
 .view-switcher button:nth-child(1):checked { background-color: #3074cf; }
 .view-switcher button:nth-child(2):hover,
 .view-switcher button:nth-child(2):checked { background-color: #c7162b; }
 .no-background { background-color: transparent; }
 .search-bg-color { background-color: shade(@theme_bg_color, 0.8); }
-.custom-style-row {
-    border-radius: 6px;
-    padding-top: 8px;
-    padding-left : 8px;
-    padding-right : 8px;
-    padding-bottom: 8px;
-    transition: box-shadow 0.3s ease;
-}
-.custom-style-row:hover { box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.6); }
+.custom-row-padding-large { padding-top: 8px; padding-left : 8px; padding-right : 8px; padding-bottom: 8px; }
+.custom-glow { transition: background-color 200ms ease; }
+.custom-glow:hover { background-color: shade(@theme_bg_color, 1.60); }
 .custom-row-light { background-color: shade(@theme_bg_color, 1.40); }
 .custom-row-dark { background-color: rgba(0, 0, 0, 0.2); }
+.custom-rounded-corners { border-radius: 6px; }
 .dnd-overlay { background-color: alpha(@accent_bg_color, 0.5); color: @accent_fg_color; }
 .custom-success { color: #57EB72; }
 .custom-error { color: #FF938C; }
@@ -320,6 +312,30 @@ class ConfigMixin:
     def get_working_config(self) -> dict:
         return self._working_config.copy()
 
+    def get_algorithm(self) -> str:
+        return self.get("algo")
+
+    def get_formatted_params(self) -> tuple[bool, bool, str]:
+        return (self.use_relative_paths(), self.use_uppercase_hash(), self.get_output_style())
+
+    def get_output_style(self) -> str:
+        return CHECKSUM_FORMATS[self.get_output_style_index()]["style"]
+
+    def get_output_style_index(self) -> int:
+        return self.get("output-style")
+
+    def use_uppercase_hash(self) -> bool:
+        return self.get("uppercase-hash")
+
+    def use_relative_paths(self) -> bool:
+        return self.get("relative-paths")
+
+    def save_errors(self) -> bool:
+        return self.get("save-errors")
+
+    def include_time(self) -> bool:
+        return self.get("include-time")
+
 
 class Preferences(Adw.PreferencesWindow, ConfigMixin):
     __gtype_name__ = "Preferences"
@@ -392,7 +408,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             "Relative Paths",
             "Display results using paths relative to the current working directory",
         )
-        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_format_text(self.get_format_style()))
+        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_format_text(*self.get_formatted_params()))
         saving_group.add(child=self.setting_relative_path)
 
         self._create_checksum_format_toggle_group(saving_page)
@@ -446,32 +462,41 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         return switch_row
 
     def _create_checksum_format_toggle_group(self, page: Adw.PreferencesPage) -> None:
-        name = "output-style"
-        self.format_style = ""
+        name_output_style = "output-style"
+        name_uppercase_hash = "uppercase-hash"
 
         group = Adw.PreferencesGroup()
-        toggle_container = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
-        self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "custom-row-dark"], title_lines=1)
-        self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
-        self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
-        self._setting_widgets[name] = self.setting_checksum_format_toggle_group
 
+        self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "custom-row-dark"], title_lines=1)
+        self.setting_uppercase_check_button = Gtk.CheckButton(name=name_uppercase_hash, label="Uppercase", tooltip_text="Check for uppercased hash value and algorithm")
+        self.setting_uppercase_check_button.connect(
+            "toggled",
+            lambda _: self._on_format_selected(self.setting_checksum_format_toggle_group[self.get_output_style_index()], self.setting_uppercase_check_button),
+        )
+        self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
+        self.checksum_format_example_text.add_prefix(self.setting_uppercase_check_button)
+        self._setting_widgets[self.setting_uppercase_check_button.get_name()] = self.setting_uppercase_check_button
+
+        self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
+        self._setting_widgets[name_output_style] = self.setting_checksum_format_toggle_group
+
+        toggle_box = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
         first_toggle = None
         for fmt in CHECKSUM_FORMATS:
-            toggle = Gtk.ToggleButton(name=name, label=fmt["name"], tooltip_text=fmt["description"], css_classes=["custom-toggle-btn"])
-            toggle.connect("toggled", self._on_format_selected, fmt["style"])
+            toggle = Gtk.ToggleButton(name=name_output_style, label=fmt["name"], tooltip_text=fmt["description"], css_classes=["custom-toggle-btn"])
+            toggle.connect("toggled", self._on_format_selected, self.setting_uppercase_check_button)
 
             if first_toggle is None:
                 first_toggle = toggle
             else:
                 toggle.set_group(first_toggle)
 
-            toggle_container.append(toggle)
+            toggle_box.append(toggle)
             self.setting_checksum_format_toggle_group.append(toggle)
 
-        output_format_picker = Adw.ActionRow(name=name, title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
+        output_format_picker = Adw.ActionRow(title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
         output_format_picker.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
-        output_format_picker.add_suffix(toggle_container)
+        output_format_picker.add_suffix(toggle_box)
 
         group.add(output_format_picker)
         group.add(self.checksum_format_example_text)
@@ -532,21 +557,6 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         button_box.append(button_reset_preferences)
         return main_box
 
-    def get_format_style(self) -> str:
-        return self.format_style
-
-    def get_algorithm(self) -> str:
-        return self.get("algo")
-
-    def use_relative_paths(self) -> bool:
-        return self.get("relative-paths")
-
-    def save_errors(self) -> bool:
-        return self.get("save-errors")
-
-    def include_time(self) -> bool:
-        return self.get("include-time")
-
     def send_toast(self, msg: str, timeout: int = 1) -> None:
         self.add_toast(Adw.Toast(title=msg, timeout=timeout))
 
@@ -562,6 +572,9 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
                 elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
+
+                elif isinstance(widget, Gtk.CheckButton):
+                    widget.set_active(value)
 
                 elif isinstance(widget, list):
                     if 0 <= value < len(widget):
@@ -583,21 +596,24 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         else:
             self.send_toast("Something went wrong!")
 
-    def _set_example_format_text(self, format_style: str) -> None:
-        example_file = "example.txt" if self.use_relative_paths() else "/folder/example.txt"
-        example_hash = "fdfba9fc68f1f150a4"
-        example_algo = "SHA256"
+    def _set_example_format_text(self, use_relative_paths: bool, use_uppercase_hash: bool, output_style: str) -> None:
+        example_file = "example.txt" if use_relative_paths else "/folder/example.txt"
+        example_hash = "FDFBA9FC68" if use_uppercase_hash else "fdfba9fc68"
+        example_algo = "SHA256" if use_uppercase_hash else "sha256"
 
-        example_text = format_style.format(hash=example_hash, filename=example_file, algo=example_algo)
+        example_text = output_style.format(hash=example_hash, filename=example_file, algo=example_algo)
         self.checksum_format_example_text.set_title(example_text)
 
-    def _on_format_selected(self, button: Gtk.ToggleButton, format_style: str) -> None:
-        self.format_style = format_style
-        self._set_example_format_text(self.format_style)
+    def _on_format_selected(self, output_style: Gtk.ToggleButton, uppercase_hash: Gtk.CheckButton) -> None:
+        config_key_for_output_style = output_style.get_name()
+        index_for_output_style = self.setting_checksum_format_toggle_group.index(output_style)
+        self.update(config_key_for_output_style, index_for_output_style)
 
-        button_index = self.setting_checksum_format_toggle_group.index(button)
-        config_key = button.get_name()
-        self.update(config_key, button_index)
+        config_key_for_uppercase_hash = uppercase_hash.get_name()
+        use_uppercase_hash_bool = uppercase_hash.get_active()
+        self.update(config_key_for_uppercase_hash, use_uppercase_hash_bool)
+
+        self._set_example_format_text(*self.get_formatted_params())
 
     def _on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec) -> None:
         new_value = switch_row.get_active()
@@ -765,7 +781,7 @@ class CalculateHashes:
         for base_path, path in zip(base_paths, paths):
             try:
                 if not path.exists():
-                    self.queue_handler.update_error(base_path, path, "File or directory not found.")
+                    self.queue_handler.update_error(base_path, path, "File or directory not found")
                     continue
 
                 ignore_rules = []
@@ -913,7 +929,7 @@ class RowData(GObject.Object):
     def get_search_fields(self) -> tuple[Any]:
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_formatted(self, use_relative_path: bool, format_style: str | None) -> str:
+    def get_formatted(self, use_relative_path: bool, use_uppercase_hash: bool | None, output_style: str | None) -> str:
         raise NotImplementedError("Subclasses must implement this method")
 
     @GObject.Property(type=str)
@@ -963,9 +979,11 @@ class ResultRowData(RowData):
     def get_subtitle(self):
         return self.hash_value
 
-    def get_formatted(self, use_relative_path: bool, format_style: str):
+    def get_formatted(self, use_relative_path: bool, use_uppercase_hash: bool, output_style: str):
         filename = self.rel_path if use_relative_path else self.path.as_posix()
-        return format_style.format(hash=self.hash_value, filename=filename, algo=self.algo)
+        hash_value = self.hash_value.upper() if use_uppercase_hash else self.hash_value
+        algo = self.algo.upper() if use_uppercase_hash else self.algo
+        return output_style.format(hash=hash_value, filename=filename, algo=algo)
 
     def get_search_fields(self) -> tuple[str, str, str]:
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
@@ -984,7 +1002,7 @@ class ErrorRowData(RowData):
     def get_subtitle(self):
         return self._error_message
 
-    def get_formatted(self, use_relative_path: bool):
+    def get_formatted(self, use_relative_path: bool, *args):
         filename = self.rel_path if use_relative_path else self.path.as_posix()
         return f"{filename} -> {self._error_message}"
 
@@ -999,7 +1017,12 @@ class HashRow(Gtk.Box):
     button_delete: Gtk.Button
 
     def __init__(self, **kwargs):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, css_classes=["custom-style-row", "custom-row-light"], spacing=12, **kwargs)
+        super().__init__(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            css_classes=["custom-row-padding-large", "custom-glow", "custom-row-light", "custom-rounded-corners"],
+            spacing=12,
+            **kwargs,
+        )
         self.prefix_icon = Gtk.Image(margin_start=4)
         self.prefix_label = Gtk.Label(width_chars=MAX_WIDTH)
         self.prefix_label.add_css_class("dim-label")
@@ -1115,8 +1138,9 @@ class HashErrorRow(HashRow):
 class MultiHashDialog(Adw.AlertDialog):
     def __init__(self, parent: "MainWindow", row_data: ResultRowData, working_config: dict, **kwargs):
         super().__init__(**kwargs)
-        body = "<big><b>Select Additional Algorithms</b></big>\n"
-        body = f"{body}<small>Choose one or more algorithms to run in addition to the calculated one.</small>"
+        heading = "Select Additional Algorithms"
+        body = "<small>Choose one or more algorithms to run in addition to the calculated one.</small>"
+        self.set_heading(heading)
         self.set_body(body)
         self.set_body_use_markup(True)
         self.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
@@ -1126,20 +1150,21 @@ class MultiHashDialog(Adw.AlertDialog):
         self.set_response_enabled("compute", False)
         self.set_close_response("cancel")
 
-        vertical_main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        vertical_main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
         self.set_extra_child(vertical_main_container)
 
         display_row = HashRow()
-        display_row.add_css_class("custom-row-dark")
-        display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
         display_row.remove(display_row.prefix_label)
+        display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
+        display_row.add_css_class("custom-row-dark")
+        display_row.remove_css_class("custom-glow")
         display_row.title.set_text(row_data.path.name)
         display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.hash_value}")
-        display_row.set_margin_bottom(5)
+        display_row.set_margin_bottom(8)
         vertical_main_container.append(display_row)
 
-        horizontal_container_checkbuttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.CENTER, spacing=15)
-        vertical_main_container.append(horizontal_container_checkbuttons)
+        horizontal_container_check_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        vertical_main_container.append(horizontal_container_check_buttons)
 
         horizontal_container_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=6, margin_top=10)
         vertical_main_container.append(horizontal_container_buttons)
@@ -1150,9 +1175,9 @@ class MultiHashDialog(Adw.AlertDialog):
         deselect_all_button = Gtk.Button(label="Deselect All", css_classes=["flat"])
         horizontal_container_buttons.append(deselect_all_button)
 
-        checkbuttons: list[Gtk.CheckButton] = []
-        can_compute = lambda *_: self.set_response_enabled("compute", any(c.get_active() for c in checkbuttons))
-        on_button_click = lambda _, state: list(c.set_active(state) for c in checkbuttons)
+        check_buttons: list[Gtk.CheckButton] = []
+        can_compute = lambda *_: self.set_response_enabled("compute", any(c.get_active() for c in check_buttons))
+        on_button_click = lambda _, state: list(c.set_active(state) for c in check_buttons)
 
         count = 0
         for algo in AVAILABLE_ALGORITHMS:
@@ -1160,16 +1185,15 @@ class MultiHashDialog(Adw.AlertDialog):
                 continue
 
             if count % 5 == 0:
-                current_check_box_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-                horizontal_container_checkbuttons.append(current_check_box_container)
+                current_check_box_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, hexpand=True, halign=Gtk.Align.CENTER)
+                horizontal_container_check_buttons.append(current_check_box_container)
 
-            checkbutton = Gtk.CheckButton()
-            checkbutton.set_child(Gtk.Label(label=algo.replace("_", "-").upper()))
-            checkbutton.algo = algo
-            checkbutton.connect("notify::active", can_compute)
+            check_button = Gtk.CheckButton(label=algo.replace("_", "-").upper())
+            check_button.algo = algo
+            check_button.connect("notify::active", can_compute)
 
-            checkbuttons.append(checkbutton)
-            current_check_box_container.append(checkbutton)
+            check_buttons.append(check_button)
+            current_check_box_container.append(check_button)
             count += 1
 
         select_all_button.connect("clicked", on_button_click, True)
@@ -1177,7 +1201,7 @@ class MultiHashDialog(Adw.AlertDialog):
 
         def on_response(_, response_id):
             if response_id == "compute":
-                selected_algos = [c.algo for c in checkbuttons if c.get_active()]
+                selected_algos = [c.algo for c in check_buttons if c.get_active()]
                 repeat_n_times = len(selected_algos)
                 parent.start_job(
                     repeat(row_data.base_path, repeat_n_times),
@@ -1639,15 +1663,14 @@ class MainWindow(Adw.ApplicationWindow):
             parts = []
             total_results = self.results_model_filtered.get_n_items()
             total_errors = self.errors_model_filtered.get_n_items()
-            format_style = self.pref.get_format_style()
-            rel_path = self.pref.use_relative_paths()
+            formatted_params = self.pref.get_formatted_params()
 
             if total_results > 0:
-                results_txt = "\n".join(r.get_formatted(rel_path, format_style) for r in self.results_model_filtered)
+                results_txt = "\n".join(r.get_formatted(*formatted_params) for r in self.results_model_filtered)
                 parts.append(f"# Results ({total_results}):\n\n{results_txt}")
 
             if self.pref.save_errors() and total_errors > 0:
-                errors_txt = "\n".join(r.get_formatted(rel_path) for r in self.errors_model_filtered)
+                errors_txt = "\n".join(r.get_formatted(*formatted_params) for r in self.errors_model_filtered)
                 parts.append(f"# Errors ({total_errors}):\n\n{errors_txt}")
 
             if self.pref.include_time() and parts:
