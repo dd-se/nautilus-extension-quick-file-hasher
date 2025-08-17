@@ -54,7 +54,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # 
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_NAME = "Quick File Hasher"
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.9.5"
 
 DEFAULTS = {
     "algo": "sha256",
@@ -341,8 +341,8 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
     __gtype_name__ = "Preferences"
     _instance = None
     __gsignals__ = {
-        "call-application": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
-        "call-main-window": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
+        "main-window-signal-handler": (GObject.SignalFlags.RUN_FIRST, None, (str, str, bool)),
+        "on-items-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __new__(cls, *args, **kwargs):
@@ -462,43 +462,49 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         return switch_row
 
     def _create_checksum_format_toggle_group(self, page: Adw.PreferencesPage) -> None:
+        group = Adw.PreferencesGroup()
+
         name_output_style = "output-style"
         name_uppercase_hash = "uppercase-hash"
 
-        group = Adw.PreferencesGroup()
-
-        self.checksum_format_example_text = Adw.ActionRow(css_classes=["monospace", "custom-row-dark"], title_lines=1)
-        self.setting_uppercase_check_button = Gtk.CheckButton(name=name_uppercase_hash, label="Uppercase", tooltip_text="Check for uppercased hash value and algorithm")
-        self.setting_uppercase_check_button.connect(
-            "toggled",
-            lambda _: self._on_format_selected(self.setting_checksum_format_toggle_group[self.get_output_style_index()], self.setting_uppercase_check_button),
+        self.setting_uppercase_check_button = Gtk.CheckButton(
+            name=name_uppercase_hash,
+            label="Uppercase",
+            tooltip_text="Check it for uppercase hash value and algorithm",
+            margin_end=3,
         )
+        self.setting_uppercase_check_button.connect("toggled", lambda _: self._on_format_selected(None, self.setting_uppercase_check_button))
+
+        self.checksum_format_example_text = Adw.ActionRow(css_classes=["custom-row-dark"], title_lines=1, use_markup=True)
         self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
+        self.checksum_format_example_text.add_prefix(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.checksum_format_example_text.add_prefix(self.setting_uppercase_check_button)
-        self._setting_widgets[self.setting_uppercase_check_button.get_name()] = self.setting_uppercase_check_button
+
+        output_format_row = Adw.ActionRow(title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
+        output_format_row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
+
+        toggle_group = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
+        output_format_row.add_suffix(toggle_group)
 
         self.setting_checksum_format_toggle_group: list[Gtk.ToggleButton] = []
-        self._setting_widgets[name_output_style] = self.setting_checksum_format_toggle_group
 
-        toggle_box = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
         first_toggle = None
         for fmt in CHECKSUM_FORMATS:
             toggle = Gtk.ToggleButton(name=name_output_style, label=fmt["name"], tooltip_text=fmt["description"], css_classes=["custom-toggle-btn"])
-            toggle.connect("toggled", self._on_format_selected, self.setting_uppercase_check_button)
+            toggle.connect("toggled", self._on_format_selected, None)
 
             if first_toggle is None:
                 first_toggle = toggle
             else:
                 toggle.set_group(first_toggle)
 
-            toggle_box.append(toggle)
+            toggle_group.append(toggle)
             self.setting_checksum_format_toggle_group.append(toggle)
 
-        output_format_picker = Adw.ActionRow(title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
-        output_format_picker.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
-        output_format_picker.add_suffix(toggle_box)
+        self._setting_widgets[self.setting_uppercase_check_button.get_name()] = self.setting_uppercase_check_button
+        self._setting_widgets[name_output_style] = self.setting_checksum_format_toggle_group
 
-        group.add(output_format_picker)
+        group.add(output_format_row)
         group.add(self.checksum_format_example_text)
         group.add(self._create_buttons())
 
@@ -602,16 +608,21 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         example_algo = "SHA256" if use_uppercase_hash else "sha256"
 
         example_text = output_style.format(hash=example_hash, filename=example_file, algo=example_algo)
-        self.checksum_format_example_text.set_title(example_text)
+        self.checksum_format_example_text.set_title(f'<span letter_spacing="1200">{example_text}</span>')
 
-    def _on_format_selected(self, output_style: Gtk.ToggleButton, uppercase_hash: Gtk.CheckButton) -> None:
-        config_key_for_output_style = output_style.get_name()
-        index_for_output_style = self.setting_checksum_format_toggle_group.index(output_style)
-        self.update(config_key_for_output_style, index_for_output_style)
+    def _on_format_selected(self, button_output_style: Gtk.ToggleButton | None, button_uppercase: Gtk.CheckButton | None) -> None:
+        if button_output_style:
+            config_key_for_output_style = button_output_style.get_name()
+            new_value = self.setting_checksum_format_toggle_group.index(button_output_style)
+            self.update(config_key_for_output_style, new_value)
 
-        config_key_for_uppercase_hash = uppercase_hash.get_name()
-        use_uppercase_hash_bool = uppercase_hash.get_active()
-        self.update(config_key_for_uppercase_hash, use_uppercase_hash_bool)
+        if button_uppercase:
+            config_key_for_uppercase_hash = button_uppercase.get_name()
+            new_value = button_uppercase.get_active()
+            uppercase_hash_updated = self.update(config_key_for_uppercase_hash, new_value)
+
+            if uppercase_hash_updated:
+                self.emit("main-window-signal-handler", "call-row-data", "set_attr_uppercase_result", new_value)
 
         self._set_example_format_text(*self.get_formatted_params())
 
@@ -621,10 +632,10 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         success = self.update(config_key, new_value)
         if success:
             if config_key == "save-errors":
-                self.emit("call-main-window", ["trigger-on-items-changed"])
+                self.emit("on-items-changed", None)
 
             elif config_key == "relative-paths":
-                self.emit("call-main-window", ["trigger-path-update", new_value])
+                self.emit("main-window-signal-handler", "call-row-data", "set_attr_relative_path", new_value)
 
     def _on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec) -> None:
         new_value = int(spin_row.get_value())
@@ -907,6 +918,7 @@ class CalculateHashes:
 class RowData(GObject.Object):
     __gtype_name__ = "RowData"
     _use_relative_path: bool = False
+    _use_uppercase_result: bool = False
     noop_copy: bool = False
     noop_cmp: bool = False
 
@@ -919,49 +931,44 @@ class RowData(GObject.Object):
     def get_prefix(self) -> str:
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_title(self) -> str:
-        return self.title_display
-
-    def get_subtitle(self) -> str:
+    def get_result(self) -> str:
         raise NotImplementedError("Subclasses must implement this method")
 
     def get_search_fields(self) -> tuple[Any]:
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_formatted(self, use_relative_path: bool, use_uppercase_hash: bool | None, output_style: str | None) -> str:
+    def get_formatted(self, use_relative_path: bool, use_uppercase_result: bool, output_style: str | None) -> str:
         raise NotImplementedError("Subclasses must implement this method")
 
     @GObject.Property(type=str)
-    def title_display(self) -> str:
-        if self.use_relative_path:
+    def prop_path(self) -> str:
+        if self._use_relative_path:
             return GLib.markup_escape_text(self.rel_path)
         return GLib.markup_escape_text(self.path.as_posix())
 
     @GObject.Property(type=str)
-    def subtitle_display(self) -> str:
-        return GLib.markup_escape_text(self.get_subtitle())
+    def prop_result(self) -> str:
+        if self._use_uppercase_result:
+            return GLib.markup_escape_text(self.get_result().upper())
+        return GLib.markup_escape_text(self.get_result())
 
-    @property
-    def use_relative_path(self) -> bool:
-        return self._use_relative_path
-
-    @use_relative_path.setter
-    def use_relative_path(self, state: bool) -> None:
+    def set_attr_relative_path(self, state: bool) -> None:
         if self._use_relative_path != state:
             self._use_relative_path = state
-            self.notify("title_display")
+            self.notify("prop_path")
+
+    def set_attr_uppercase_result(self, state: bool) -> None:
+        if self._use_uppercase_result != state:
+            self._use_uppercase_result = state
+            self.notify("prop_result")
 
     def _get_rel_path(self):
         base_str = self.base_path.as_posix()
         path_str = self.path.as_posix()
         return f"{self.base_path.name}{path_str[len(base_str) :]}"
 
-    def signal_handler(self, emitter: Any, args: list) -> None:
-        args_copy = args.copy()
-        action = args_copy.pop(0)
-        if action == "trigger-path-update":
-            use_relative_path = args_copy.pop(0)
-            self.use_relative_path = use_relative_path
+    def signal_handler(self, emitter: Any, method: str, new_value: bool) -> None:
+        getattr(self, method)(new_value)
 
 
 class ResultRowData(RowData):
@@ -975,10 +982,10 @@ class ResultRowData(RowData):
     def get_prefix(self):
         return self.algo.upper().replace("_", "-")
 
-    def get_subtitle(self):
+    def get_result(self) -> str:
         return self.hash_value
 
-    def get_formatted(self, use_relative_path: bool, use_uppercase_hash: bool, output_style: str):
+    def get_formatted(self, use_relative_path: bool, use_uppercase_hash: bool, output_style: str) -> str:
         filename = self.rel_path if use_relative_path else self.path.as_posix()
         hash_value = self.hash_value.upper() if use_uppercase_hash else self.hash_value
         algo = self.algo.upper() if use_uppercase_hash else self.algo
@@ -998,12 +1005,13 @@ class ErrorRowData(RowData):
     def get_prefix(self):
         return "ERROR"
 
-    def get_subtitle(self):
+    def get_result(self):
         return self._error_message
 
-    def get_formatted(self, use_relative_path: bool, *args):
+    def get_formatted(self, use_relative_path: bool, use_uppercase_error_message: bool, output_style=None) -> str:
         filename = self.rel_path if use_relative_path else self.path.as_posix()
-        return f"{filename} -> {self._error_message}"
+        error_message = self._error_message.upper() if use_uppercase_error_message else self._error_message
+        return f"{filename} -> {error_message}"
 
     def get_search_fields(self) -> tuple[str, str]:
         return (self.path.as_posix().lower(), self._error_message)
@@ -1055,21 +1063,22 @@ class HashRow(Gtk.Box):
 
     def bind(self, row_data: RowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         self.prefix_label.set_text(row_data.get_prefix())
-        list_item.title_display_binding = row_data.bind_property("title_display", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
-        list_item.subtitle_display_binding = row_data.bind_property("subtitle_display", self.subtitle, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.path_to_title_binding = row_data.bind_property("prop_path", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.result_to_subtitle_binding = row_data.bind_property("prop_result", self.subtitle, "label", GObject.BindingFlags.SYNC_CREATE)
         list_item.row_data_signal_handler_id = parent.connect("call-row-data", row_data.signal_handler)
 
         list_item.copy_handler_id = self.button_copy.connect("clicked", parent.on_copy_row_requested, row_data, self._btn_css)
         list_item.delete_handler_id = self.button_delete.connect("clicked", parent.on_delete_row_requested, self, row_data, model)
         self.button_delete.set_sensitive(True)
 
-        row_data.use_relative_path = parent.pref.use_relative_paths()
+        row_data.set_attr_relative_path(parent.pref.use_relative_paths())
+        row_data.set_attr_uppercase_result(parent.pref.use_uppercase_hash())
 
     def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
-        list_item.title_display_binding.unbind()
-        list_item.title_display_binding = None
-        list_item.subtitle_display_binding.unbind()
-        list_item.subtitle_display_binding = None
+        list_item.path_to_title_binding.unbind()
+        list_item.path_to_title_binding = None
+        list_item.result_to_subtitle_binding.unbind()
+        list_item.result_to_subtitle_binding = None
         parent.disconnect(list_item.row_data_signal_handler_id)
 
         self.button_copy.disconnect(list_item.copy_handler_id)
@@ -1158,7 +1167,7 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.add_css_class("custom-row-dark")
         display_row.remove_css_class("custom-glow")
         display_row.title.set_text(row_data.path.name)
-        display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.hash_value}")
+        display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.prop_result}")
         display_row.set_margin_bottom(8)
         vertical_main_container.append(display_row)
 
@@ -1215,9 +1224,11 @@ class MultiHashDialog(Adw.AlertDialog):
 
 class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
-    __gsignals__ = {"call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,))}
     DEFAULT_WIDTH = 970
     DEFAULT_HEIGHT = 650
+    __gsignals__ = {
+        "call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str, bool)),
+    }
 
     def __init__(self, app: "QuickFileHasher"):
         super().__init__(application=app, title=APP_NAME)
@@ -1225,7 +1236,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.logger = get_logger(self.__class__.__name__)
         self.app = app
         self.pref = app.pref
-        self.pref.connect("call-main-window", self.signal_handler)
+        self.pref.connect("on-items-changed", self.on_items_changed)
+        self.pref.connect("main-window-signal-handler", self.signal_handler)
         self.connect("close-request", self._on_close_request)
 
         self._create_actions()
@@ -1235,15 +1247,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.cancel_event = threading.Event()
         self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
-    def signal_handler(self, emitter: Any, args: list) -> None:
-        args_copy = args.copy()
-        action = args_copy.pop(0)
-        if action == "trigger-on-items-changed":
-            self.on_items_changed()
-
-        elif action == "trigger-path-update":
-            use_relative_path = args_copy.pop(0)
-            self.emit("call-row-data", [action, use_relative_path])
+    def signal_handler(self, emitter: Any, signal: str, method: str, new_value: bool) -> None:
+        self.emit(signal, method, new_value)
 
     def _build_ui(self) -> None:
         self.toast_overlay = Adw.ToastOverlay()
@@ -1302,8 +1307,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop.connect("enter", lambda *_: (self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[1])
         self.drop.connect("leave", lambda *_: self.dnd_revealer.set_reveal_child(False))
 
-        def on_drop(ctrl, drop: Gdk.FileList, x, y, user_data=None) -> bool:
-            self.dnd_revealer.set_reveal_child(False)
+        def on_drop(ctrl, drop: Gdk.FileList, x, y) -> bool:
             try:
                 files = [Path(file.get_path()) for file in drop.get_files()]
                 self.start_job(None, files, repeat(self.pref.get_algorithm()), self.pref.get_working_config())
@@ -1311,6 +1315,8 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception as e:
                 self.add_toast(f"Drag & Drop failed: {e}")
                 return False
+            finally:
+                self.dnd_revealer.set_reveal_child(False)
 
         self.drop.connect("drop", on_drop)
         self.add_controller(self.drop)
@@ -1504,16 +1510,6 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
-    def signal_handler(self, emitter: Any, args: list) -> None:
-        args_copy = args.copy()
-        action = args_copy.pop(0)
-        if action == "trigger-on-items-changed":
-            self.on_items_changed()
-
-        elif action == "trigger-path-update":
-            use_relative_path = args_copy.pop(0)
-            self.emit("call-row-data", [action, use_relative_path])
-
     def start_job(
         self,
         base_paths: Iterable[Path] | None,
@@ -1592,9 +1588,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._calculate_hashes.reset_counters()
         self.button_cancel.set_visible(False)
-        self._hide_progress()
-
-    def _hide_progress(self) -> None:
         self._animate_opacity(self.progress_bar, 1, 0, 500)
         GLib.timeout_add(500, self.progress_bar.set_fraction, 0.0, priority=GLib.PRIORITY_DEFAULT)
         GLib.timeout_add(1000, self._scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
@@ -1763,7 +1756,7 @@ class MainWindow(Adw.ApplicationWindow):
         if row_data.noop_copy:
             return
         row_data.noop_copy = True
-        button.get_clipboard().set(row_data.get_subtitle())
+        button.get_clipboard().set(row_data.prop_result)
         icon_name = button.get_icon_name()
         button.set_icon_name("object-select-symbolic")
 
@@ -1786,15 +1779,15 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 clipboard_text: str = clipboard.read_text_finish(result).strip()
 
-                if clipboard_text == row_data.hash_value:
+                if clipboard_text.lower() == row_data.get_result():
                     row_widget.add_css_class("custom-success")
                     row_widget.set_icon_("object-select-symbolic")
-                    self.add_toast(f"✅ Clipboard hash matches <b>{row_data.get_title()}</b>!")
+                    self.add_toast(f"✅ Clipboard hash matches <b>{row_data.prop_path}</b>!")
 
                 else:
                     row_widget.add_css_class("custom-error")
                     row_widget.set_icon_("dialog-error-symbolic")
-                    self.add_toast(f"❌ The clipboard hash does <b>not</b> match <b>{row_data.get_title()}</b>!")
+                    self.add_toast(f"❌ The clipboard hash does not match <b>{row_data.prop_path}</b>!")
 
             except Exception as e:
                 self.add_toast(f"❌ Clipboard read error: {e}")
@@ -1905,10 +1898,13 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.add_toast("❌ Sort Disabled")
 
-    def _on_close_request(self, window: Adw.Window) -> bool:
+    def _on_close_request(self, window: Adw.Window) -> None:
         self.cancel_event.set()
         self.pref.disconnect_by_func(self.signal_handler)
-        self._on_clear_clicked(window)
+        self.pref.disconnect_by_func(self.on_items_changed)
+        self.results_model.remove_all()
+        self.errors_model.remove_all()
+        self.visible_rows = None
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL) -> None:
         toast = Adw.Toast(
@@ -1952,7 +1948,6 @@ class QuickFileHasher(Adw.Application):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
         self.logger = get_logger(self.__class__.__name__)
         self.pref = Preferences()
-        self.pref.connect("call-application", self.signal_handler)
 
         self._create_actions()
         self._create_options()
