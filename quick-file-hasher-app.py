@@ -769,10 +769,10 @@ class QueueUpdateHandler:
 
 
 class CalculateHashes:
-    def __init__(self, queue: QueueUpdateHandler, event: threading.Event):
+    def __init__(self, queue: QueueUpdateHandler, cancel_event: threading.Event):
         self.logger = get_logger(self.__class__.__name__)
         self.queue_handler = queue
-        self.cancel_event = event
+        self.cancel_event = cancel_event
         self._total_bytes = 0
         self._total_bytes_read = 0
 
@@ -818,7 +818,7 @@ class CalculateHashes:
                 self.logger.debug(f"Error processing {path.name}: {e}")
                 self.queue_handler.update_error(base_path, path, str(e))
 
-        if self._total_bytes == 0:
+        if not jobs["sizes"]:
             self.queue_handler.update_progress(1)
             self.queue_handler.update_toast("❌ Zero bytes. No files were hashed.")
 
@@ -843,7 +843,7 @@ class CalculateHashes:
                         self.queue_handler.update_error(base_path, current_path, "File is empty")
 
                 else:
-                    self._add_file_size(file_size)
+                    self._total_bytes += file_size
                     jobs["base_paths"].append(base_path)
                     jobs["paths"].append(current_path)
                     jobs["sizes"].append(file_size)
@@ -869,9 +869,12 @@ class CalculateHashes:
             self.logger.debug(f"Error processing {current_path.name}: {e}")
             self.queue_handler.update_error(base_path, current_path, str(e))
 
-    @property
-    def _current_progress(self) -> float:
-        return min(self._total_bytes_read / self._total_bytes, 1.0)
+    def _update_progress(self) -> float:
+        if self._total_bytes > 0:
+            p = min(self._total_bytes_read / self._total_bytes, 1.0)
+        else:
+            p = 1.0
+        self.queue_handler.update_progress(p)
 
     def _hash_task(self, base_path: Path, file: Path, algorithm: str, file_size: int, shake_length: int = 32) -> None:
         if self.cancel_event.is_set():
@@ -889,26 +892,23 @@ class CalculateHashes:
                 while chunk := f.read(chunk_size):
                     hash_obj.update(chunk)
                     bytes_read = len(chunk)
-                    self._total_bytes_read += bytes_read
                     hash_task_bytes_read += bytes_read
+                    self._add_bytes_read(bytes_read)
                     if self.cancel_event.is_set():
                         return
-                    self.queue_handler.update_progress(self._current_progress)
+                    self._update_progress()
 
             hash_value = hash_obj.hexdigest(shake_length) if "shake" in algorithm else hash_obj.hexdigest()
             self.queue_handler.update_result(base_path, file, hash_value, algorithm)
 
         except Exception as e:
-            self._total_bytes_read += file_size - hash_task_bytes_read
-
-            if self._total_bytes > 0:
-                self.queue_handler.update_progress(self._current_progress)
-
+            self._add_bytes_read(file_size - hash_task_bytes_read)
+            self._update_progress()
             self.queue_handler.update_error(base_path, file, str(e))
             self.logger.exception(f"Error processing {file.name}: {e}", stack_info=True)
 
-    def _add_file_size(self, bytes_: int) -> None:
-        self._total_bytes += bytes_
+    def _add_bytes_read(self, bytes_: int):
+        self._total_bytes_read += bytes_
 
     def reset_counters(self) -> None:
         self._total_bytes_read = 0
@@ -1245,6 +1245,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
+        self.job_in_progress = threading.Event()
         self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
     def signal_handler(self, emitter: Any, signal: str, method: str, new_value: bool) -> None:
@@ -1335,8 +1336,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.first_top_bar_box.append(self.button_save)
 
-        callback = lambda _: (self.cancel_event.set(), self.add_toast("❌ Jobs Cancelled"))
-        self.button_cancel = self._create_button("Cancel Jobs", None, None, "destructive-action", callback)
+        callback = lambda _: (self.cancel_event.set(), self.add_toast("❌ Job Cancelled"))
+        self.button_cancel = self._create_button("Cancel Job", None, None, "destructive-action", callback)
         self.button_cancel.set_visible(False)
         self.first_top_bar_box.append(self.button_cancel)
 
@@ -1510,6 +1511,18 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
+    def _timeout_add(self, interval: int, callback: Callable[..., bool], *args):
+        interval_seconds = interval / 1000
+
+        def loop():
+            while True:
+                keep_going = callback(*args)
+                if not keep_going:
+                    break
+                time.sleep(interval_seconds)
+
+        threading.Thread(target=loop, daemon=True).start()
+
     def start_job(
         self,
         base_paths: Iterable[Path] | None,
@@ -1518,6 +1531,12 @@ class MainWindow(Adw.ApplicationWindow):
         options: dict,
     ) -> None:
         self.cancel_event.clear()
+        if self.job_in_progress.is_set():
+            self.logger.debug("Job in progress… starting shortly.")
+            self._timeout_add(500, self.pending_job, base_paths, paths, hashing_algorithms, options)
+            return
+
+        self.job_in_progress.set()
         self.button_cancel.set_visible(True)
         self.progress_bar.set_opacity(1.0)
 
@@ -1526,25 +1545,21 @@ class MainWindow(Adw.ApplicationWindow):
             args=(base_paths or paths, paths, hashing_algorithms, options),
             daemon=True,
         ).start()
+
         self._timeout_add(10, self._process_queue)
 
-    def _timeout_add(self, interval: int, callback: Callable[..., bool], *args, **kwargs):
-        interval_seconds = interval / 1000
-
-        def loop():
-            while True:
-                keep_going = callback(*args, **kwargs)
-                if not keep_going:
-                    break
-                time.sleep(interval_seconds)
-
-        threading.Thread(target=loop, daemon=True).start()
+    def pending_job(self, *args):
+        if self.job_in_progress.is_set():
+            return True
+        GLib.idle_add(self.start_job, *args)
+        return False
 
     def _process_queue(self) -> bool:
         queue_empty = self.queue_handler.is_empty()
         job_done = self.progress_bar.get_fraction() == 1.0
+        canceled = self.cancel_event.is_set()
 
-        if self.cancel_event.is_set() or (queue_empty and job_done):
+        if canceled or (queue_empty and job_done):
             GLib.idle_add(self._processing_complete)
             return False
 
@@ -1583,14 +1598,19 @@ class MainWindow(Adw.ApplicationWindow):
         model.splice(model.get_n_items(), 0, rows)
 
     def _processing_complete(self) -> None:
-        if self.cancel_event.is_set():
-            self.queue_handler.reset()
-
-        self._calculate_hashes.reset_counters()
+        self.queue_handler.reset()
         self.button_cancel.set_visible(False)
-        self._animate_opacity(self.progress_bar, 1, 0, 500)
-        GLib.timeout_add(500, self.progress_bar.set_fraction, 0.0, priority=GLib.PRIORITY_DEFAULT)
-        GLib.timeout_add(1000, self._scroll_to_bottom, priority=GLib.PRIORITY_DEFAULT)
+        self._calculate_hashes.reset_counters()
+
+        def done(_):
+            self.progress_bar.set_fraction(0.0)
+            self._scroll_to_bottom()
+            self.job_in_progress.clear()
+
+        anim_target = Adw.CallbackAnimationTarget.new(lambda opacity: self.progress_bar.set_opacity(opacity))
+        anim = Adw.TimedAnimation.new(self, 1.0, 0.0, 250, anim_target)
+        anim.connect("done", done)
+        anim.play()
 
     def _update_badge_numbers(self) -> None:
         self.results_stack_page.set_badge_number(self.results_model.get_n_items())
@@ -1604,19 +1624,9 @@ class MainWindow(Adw.ApplicationWindow):
             widget=self,
             value_from=current_value,
             value_to=target_value,
-            duration=250,
+            duration=500,
             target=Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value)),
         ).play()
-
-    def _animate_opacity(self, widget: Gtk.Widget, from_value: float, to_value: float, duration: int) -> None:
-        animation = Adw.TimedAnimation.new(
-            self,
-            from_value,
-            to_value,
-            duration,
-            Adw.CallbackAnimationTarget.new(lambda opacity: widget.set_opacity(opacity)),
-        )
-        animation.play()
 
     def _txt_to_file(self, output: bytes | None) -> None:
         if output is None:
