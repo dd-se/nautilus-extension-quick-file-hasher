@@ -93,11 +93,14 @@ CHECKSUM_FORMATS: list[dict[str, str]] = [
 ]
 CSS = b"""
 toast { background-color: #000000; }
-.view-switcher button { background-color: #404040; color: white; transition: background-color 0.3s ease; }
-.view-switcher button:nth-child(1):hover,
+listview row:selected { background-color: shade(@accent_bg_color, 0.8); }
+.view-switcher button { background-color: #404040; color: white; margin: 0 6px; min-height: 35px; min-width: 200px; transition: background-color 0.3s ease; }
+.view-switcher button:nth-child(1):hover { background-color: #4a8de0; }
 .view-switcher button:nth-child(1):checked { background-color: #3074cf; }
-.view-switcher button:nth-child(2):hover,
-.view-switcher button:nth-child(2):checked { background-color: #c7162b; }
+.view-switcher button:nth-child(2):hover { background-color: #20a13a; }
+.view-switcher button:nth-child(2):checked { background-color: #0E8825; }
+.view-switcher button:nth-child(3):hover { background-color: #e03445; }
+.view-switcher button:nth-child(3):checked { background-color: #c7162b; }
 .no-background { background-color: transparent; }
 .search-bg-color { background-color: shade(@theme_bg_color, 0.8); }
 .custom-row-padding-large { padding-top: 8px; padding-left : 8px; padding-right : 8px; padding-bottom: 8px; }
@@ -174,13 +177,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         recursive_hash_item.connect("activate", self.nautilus_launch_app, files, hash_name, True)
         return recursive_hash_item
 
-    def _add_hash_items(
-        self,
-        caller: str,
-        files: list[str],
-        simple_submenu: Nautilus.Menu,
-        recursive_submenu: Nautilus.Menu | None = None,
-    ) -> None:
+    def _add_hash_items(self, caller: str, files: list[str], simple_submenu: Nautilus.Menu, recursive_submenu: Nautilus.Menu | None = None) -> None:
         for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
             # Hash Simple ()
             simple_hash_item = self._simple_hash_item(caller, hash_name, files)
@@ -241,7 +238,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         has_dir = False
         validated_paths = []
         for obj in file_objects:
-            if obj.is_directory():
+            if not has_dir and obj.is_directory():
                 has_dir = True
             if valid_path := obj.get_location().get_path():
                 validated_paths.append(valid_path)
@@ -501,7 +498,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             toggle_group.append(toggle)
             self.setting_checksum_format_toggle_group.append(toggle)
 
-        self._setting_widgets[self.setting_uppercase_check_button.get_name()] = self.setting_uppercase_check_button
+        self._setting_widgets[name_uppercase_hash] = self.setting_uppercase_check_button
         self._setting_widgets[name_output_style] = self.setting_checksum_format_toggle_group
 
         group.add(output_format_row)
@@ -586,6 +583,8 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
                     if 0 <= value < len(widget):
                         toggle: Gtk.ToggleButton = widget[value]
                         toggle.set_active(True)
+                else:
+                    self.logger.debug(f"{widget.get_name()}, {type(widget)} failed.")
         return True
 
     def _persist_preferences(self) -> None:
@@ -646,6 +645,82 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         selected_hashing_algorithm = algo.get_selected_item().get_string()
         config_key = algo.get_name()
         self.update(config_key, selected_hashing_algorithm)
+
+
+class ChecksumRow:
+    patterns = [
+        ("bsd", re.compile(r"^([\w-]+)\s+\((.+)\)\s*=\s*([A-Fa-f0-9]{8,128})$")),
+        ("colon3", re.compile(r"^(.*)\s*:\s*([A-Fa-f0-9]{8,128})\s*:\s*(.*)$")),
+        ("colon2", re.compile(r"^(.*)\s*:\s*([A-Fa-f0-9]{8,128})$")),
+        ("gnu", re.compile(r"^([A-Fa-f0-9]{8,128})\s+[* ]?(.*\S)$")),
+    ]
+
+    def __init__(self, path: Path, hash_value: str, algo: str | None, line_no: int):
+        self.path = path
+        self.hash_value = hash_value
+        self.algo = algo
+        self.line_no: int = line_no
+
+    def __hash__(self):
+        return hash((self.path.name, self.hash_value))
+
+    def __eq__(self, other: "ResultRowData") -> bool:
+        if self.path.name == other.path.name and self.hash_value == other.hash_value:
+            other.line_no = self.line_no
+            return True
+        return False
+
+    def __repr__(self) -> str:
+        return f"ChecksumRow(filename={self.path!r}, hash={self.hash_value!r}, algo={self.algo!r})"
+
+    @staticmethod
+    def parser(lines: list[str]):
+        checksum_rows: set["ChecksumRow"] = set()
+        for line_no, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line or line.startswith(";") or line.startswith("#"):
+                continue
+
+            for name, pat in ChecksumRow.patterns:
+                if m := pat.match(line):
+                    if name == "bsd":
+                        algo, filename, hash_value = m.groups()
+
+                    elif name == "colon3":
+                        filename, hash_value, algo = m.groups()
+
+                    elif name == "colon2":
+                        filename, hash_value = m.groups()
+                        algo = None
+
+                    elif name == "gnu":
+                        hash_value, filename = m.groups()
+                        algo = None
+
+                    row = ChecksumRow(
+                        Path(filename.strip()),
+                        hash_value.strip().lower(),
+                        algo.strip().lower() if algo else None,
+                        line_no,
+                    )
+                    checksum_rows.add(row)
+                    break
+            else:
+                print("Unexpected line:", line)
+
+        return checksum_rows
+
+    @staticmethod
+    def parse_checksum_file(file_path: Path, callback: Callable[[set["ChecksumRow"]], None]) -> set["ChecksumRow"]:
+        with file_path.open() as f:
+            lines = f.read().splitlines()
+        checksum_rows = ChecksumRow.parser(lines)
+        GLib.idle_add(callback, checksum_rows)
+
+    @staticmethod
+    def parse_string(content: str, callback: Callable[[set["ChecksumRow"]], None]) -> set["ChecksumRow"]:
+        checksum_rows = ChecksumRow.parser(content.splitlines())
+        GLib.idle_add(callback, checksum_rows)
 
 
 class IgnoreRule:
@@ -921,6 +996,7 @@ class RowData(GObject.Object):
     _use_uppercase_result: bool = False
     noop_copy: bool = False
     noop_cmp: bool = False
+    _model: str = None
 
     def __init__(self, base_path: Path, path: Path, **kwargs):
         super().__init__(**kwargs)
@@ -973,11 +1049,26 @@ class RowData(GObject.Object):
 
 class ResultRowData(RowData):
     __gtype_name__ = "ResultRowData"
+    _model = "results_model"
+    # -1 for new row, 0 eq no match and >0 is a match
+    line_no: int = GObject.Property(type=int, default=-1)
 
     def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
         super().__init__(base_path, path, **kwargs)
         self.hash_value = hash_value
         self.algo = algo
+
+    def __hash__(self):
+        return hash((self.path.name, self.hash_value))
+
+    def __eq__(self, other: ChecksumRow) -> bool:
+        if self.path.name == other.path.name and self.hash_value == other.hash_value:
+            self.line_no = other.line_no
+            return True
+        return False
+
+    def __repr__(self) -> str:
+        return f"ResultRowData(path={self.path!r}, hash={self.hash_value!r}, algo={self.algo!r})"
 
     def get_prefix(self):
         return self.algo.upper().replace("_", "-")
@@ -994,9 +1085,13 @@ class ResultRowData(RowData):
     def get_search_fields(self) -> tuple[str, str, str]:
         return (self.path.as_posix().lower(), self.hash_value, self.algo)
 
+    def set_prop_line_no(self, number: int):
+        self.line_no = number
+
 
 class ErrorRowData(RowData):
     __gtype_name__ = "ErrorRowData"
+    _model = "errors_model"
 
     def __init__(self, base_path: Path, path: Path, error_message: str, **kwargs):
         super().__init__(base_path, path, **kwargs)
@@ -1017,8 +1112,8 @@ class ErrorRowData(RowData):
         return (self.path.as_posix().lower(), self._error_message)
 
 
-class HashRow(Gtk.Box):
-    __gtype_name__ = "HashRow"
+class WidgetHashRow(Gtk.Box):
+    __gtype_name__ = "WidgetHashRow"
     _btn_css: str | None = None
     button_copy: Gtk.Button
     button_delete: Gtk.Button
@@ -1074,7 +1169,7 @@ class HashRow(Gtk.Box):
         row_data.set_attr_relative_path(parent.pref.use_relative_paths())
         row_data.set_attr_uppercase_result(parent.pref.use_uppercase_hash())
 
-    def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
+    def unbind(self, row_data: RowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         list_item.path_to_title_binding.unbind()
         list_item.path_to_title_binding = None
         list_item.result_to_subtitle_binding.unbind()
@@ -1088,8 +1183,8 @@ class HashRow(Gtk.Box):
         self.button_delete.set_sensitive(False)
 
 
-class HashResultRow(HashRow):
-    __gtype_name__ = "HashResultRow"
+class WidgetHashResultRow(WidgetHashRow):
+    __gtype_name__ = "WidgetHashResultRow"
     _icon_name = "dialog-password-symbolic"
     _btn_css = "success"
 
@@ -1117,14 +1212,69 @@ class HashResultRow(HashRow):
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent.on_multi_hash_requested, row_data)
         list_item.compare_handler_id = self.button_compare.connect("clicked", parent.on_clipboard_compare_requested, self, row_data)
 
-    def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
-        super().unbind(list_item, parent)
+    def unbind(self, row_data: ResultRowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
+        super().unbind(row_data, list_item, parent)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
         self.button_compare.disconnect(list_item.compare_handler_id)
 
 
-class HashErrorRow(HashRow):
-    __gtype_name__ = "HashErrorRow"
+class WidgetChecksumResultRow(WidgetHashResultRow):
+    __gtype_name__ = "WidgetChecksumResultRow"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.prefix_icon.set_from_icon_name(self._icon_name)
+        self.remove(self.suffix_box)
+        self.suffix_label = Gtk.Label(valign=Gtk.Align.CENTER)
+        self.append(self.suffix_label)
+
+    def reset_css(self):
+        super().reset_css()
+        self.suffix_label.remove_css_class("custom-success")
+        self.suffix_label.remove_css_class("custom-error")
+
+        self.prefix_icon.remove_css_class("custom-success")
+        self.prefix_icon.remove_css_class("custom-error")
+
+    def on_reset_request(self):
+        self.reset_css()
+        self.reset_icon()
+        self.suffix_label.set_text("")
+
+    def on_match_changed(self, row_data: ResultRowData, _):
+        if row_data.line_no == -1:
+            self.on_reset_request()
+        elif row_data.line_no > 0:
+            self.suffix_label.set_text(f"Matched line: {row_data.line_no}")
+            self.suffix_label.add_css_class("custom-success")
+
+            self.prefix_icon.add_css_class("custom-success")
+            self.set_icon_("object-select-symbolic")
+
+            self.suffix_label.remove_css_class("custom-error")
+            self.prefix_icon.remove_css_class("custom-error")
+        else:
+            self.suffix_label.set_text("No match found")
+            self.suffix_label.add_css_class("custom-error")
+
+            self.prefix_icon.add_css_class("custom-error")
+            self.set_icon_("dialog-error-symbolic")
+
+            self.suffix_label.remove_css_class("custom-success")
+            self.prefix_icon.remove_css_class("custom-success")
+
+    def bind(self, row_data, list_item, model, parent):
+        super().bind(row_data, list_item, model, parent)
+        list_item.notify_binding = row_data.connect("notify::line-no", self.on_match_changed)
+        self.on_match_changed(row_data, None)
+
+    def unbind(self, row_data, list_item, parent):
+        super().unbind(row_data, list_item, parent)
+        row_data.disconnect(list_item.notify_binding)
+
+
+class WidgetHashErrorRow(WidgetHashRow):
+    __gtype_name__ = "WidgetHashErrorRow"
     _icon_name = "dialog-error-symbolic"
     _btn_css = None
 
@@ -1139,8 +1289,37 @@ class HashErrorRow(HashRow):
     def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
 
-    def unbind(self, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
-        super().unbind(list_item, parent)
+    def unbind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
+        super().unbind(row_data, list_item, parent)
+
+
+class CompareBanner(Gtk.Revealer):
+    def __init__(self):
+        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=250, halign=Gtk.Align.CENTER)
+        self.set_visible(False)
+        self.set_reveal_child(False)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, margin_bottom=6)
+
+        self.label = Gtk.Label()
+        self.box.append(self.label)
+
+        button_close = Gtk.Button(halign=Gtk.Align.CENTER)
+        button_close.add_css_class("flat")
+        button_close.set_icon_name("window-close-symbolic")
+        button_close.set_tooltip_text("Dismiss")
+        button_close.connect("clicked", self.close)
+
+        self.box.append(button_close)
+        self.set_child(self.box)
+
+    def close(self, _):
+        self.set_reveal_child(False)
+        GLib.timeout_add(2000, self.set_visible, False)
+
+    def show_message(self, text: str):
+        self.set_visible(True)
+        self.label.set_text(text)
+        self.set_reveal_child(True)
 
 
 class MultiHashDialog(Adw.AlertDialog):
@@ -1151,7 +1330,6 @@ class MultiHashDialog(Adw.AlertDialog):
         self.set_heading(heading)
         self.set_body(body)
         self.set_body_use_markup(True)
-        self.set_presentation_mode(Adw.DialogPresentationMode.BOTTOM_SHEET)
         self.add_response("cancel", "Cancel")
         self.add_response("compute", "Compute")
         self.set_response_appearance("compute", Adw.ResponseAppearance.SUGGESTED)
@@ -1161,7 +1339,7 @@ class MultiHashDialog(Adw.AlertDialog):
         vertical_main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
         self.set_extra_child(vertical_main_container)
 
-        display_row = HashRow()
+        display_row = WidgetHashRow()
         display_row.remove(display_row.prefix_label)
         display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
         display_row.add_css_class("custom-row-dark")
@@ -1180,8 +1358,8 @@ class MultiHashDialog(Adw.AlertDialog):
         select_all_button = Gtk.Button(label="Select All", css_classes=["flat"])
         horizontal_container_buttons.append(select_all_button)
 
-        deselect_all_button = Gtk.Button(label="Deselect All", css_classes=["flat"])
-        horizontal_container_buttons.append(deselect_all_button)
+        unselect_all_button = Gtk.Button(label="Unselect All", css_classes=["flat"])
+        horizontal_container_buttons.append(unselect_all_button)
 
         check_buttons: list[Gtk.CheckButton] = []
         can_compute = lambda *_: self.set_response_enabled("compute", any(c.get_active() for c in check_buttons))
@@ -1205,7 +1383,7 @@ class MultiHashDialog(Adw.AlertDialog):
             count += 1
 
         select_all_button.connect("clicked", on_button_click, True)
-        deselect_all_button.connect("clicked", on_button_click, False)
+        unselect_all_button.connect("clicked", on_button_click, False)
 
         def on_response(_, response_id):
             if response_id == "compute":
@@ -1226,13 +1404,12 @@ class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
     DEFAULT_WIDTH = 970
     DEFAULT_HEIGHT = 650
-    __gsignals__ = {
-        "call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str, bool)),
-    }
+    __gsignals__ = {"call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str, bool))}
 
     def __init__(self, app: "QuickFileHasher"):
         super().__init__(application=app, title=APP_NAME)
         self.set_default_size(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
+
         self.logger = get_logger(self.__class__.__name__)
         self.app = app
         self.pref = app.pref
@@ -1243,6 +1420,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._create_actions()
         self._build_ui()
 
+        self.checksum_rows: set[ChecksumRow] = set()
+        self.visible_rows: set[RowData] = set()
+        self.selected_row_datas: list[ResultRowData] = []
         self.queue_handler = QueueUpdateHandler()
         self.cancel_event = threading.Event()
         self.job_in_progress = threading.Event()
@@ -1267,16 +1447,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         self.overlay.set_child(self.toolbar_view)
 
-        self._setup_first_top_bar()
-        self.toolbar_view.add_top_bar(self.first_top_bar_box)
+        self._setup_top_bar()
+        self.toolbar_view.add_top_bar(self.header_bar_box)
 
-        self._setup_second_top_bar()
-        self.toolbar_view.add_top_bar(self.second_top_bar_box)
+        self.view_switcher = Adw.ViewSwitcher(
+            halign=Gtk.Align.CENTER,
+            policy=Adw.ViewSwitcherPolicy.WIDE,
+            css_classes=["view-switcher"],
+            margin_bottom=8,
+        )
+        self.toolbar_view.add_top_bar(self.view_switcher)
 
         self._setup_content()
         self.toolbar_view.set_content(self.content_overlay)
 
-        self._setup_bottom_bar()
+        self.progress_bar = Gtk.ProgressBar(opacity=0, margin_top=2)
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
     def _setup_search(self) -> None:
@@ -1322,70 +1507,47 @@ class MainWindow(Adw.ApplicationWindow):
         self.drop.connect("drop", on_drop)
         self.add_controller(self.drop)
 
-    def _setup_first_top_bar(self) -> None:
-        self.first_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=10)
+    def _setup_top_bar(self) -> None:
+        self.header_bar_box = Gtk.CenterBox(orientation=Gtk.Orientation.HORIZONTAL, margin_bottom=10)
 
-        self.button_select_files = self._create_button("Select Files", "document-open-symbolic", "Select files to add", "suggested-action", self._on_select_files_or_folders_clicked, True)
-        self.first_top_bar_box.append(self.button_select_files)
+        button_box = Gtk.Box(spacing=6, css_classes=["toolbar"])
+        self.header_bar_box.set_start_widget(button_box)
 
-        self.button_select_folders = self._create_button("Select Folders", "folder-symbolic", "Select folders to add", "suggested-action", self._on_select_files_or_folders_clicked, False)
-        self.first_top_bar_box.append(self.button_select_folders)
+        self.button_select_files = Gtk.Button()
+        self.button_select_files.set_child(Adw.ButtonContent(icon_name="document-open-symbolic", label="Select Files", tooltip_text="Select files for compute"))
+        self.button_select_files.connect("clicked", self._on_select_files_or_folders_clicked, True)
+        button_box.append(self.button_select_files)
 
-        self.button_save = self._create_button("Save", "document-save-symbolic", "Save results to file", "suggested-action", self._on_save_clicked)
-        self.button_save.set_sensitive(False)
+        self.button_select_folders = Gtk.Button()
+        self.button_select_folders.set_child(Adw.ButtonContent(icon_name="folder-symbolic", label="Select Folders", tooltip_text="Select folder contents for compute"))
+        self.button_select_folders.connect("clicked", self._on_select_files_or_folders_clicked, False)
+        button_box.append(self.button_select_folders)
 
-        self.first_top_bar_box.append(self.button_save)
+        self.button_save = Gtk.Button(sensitive=False)
+        self.button_save.set_child(Adw.ButtonContent(icon_name="document-save-symbolic", label="Save", tooltip_text="Save results to file"))
+        self.button_save.connect("clicked", self._on_save_clicked)
+        button_box.append(self.button_save)
 
-        callback = lambda _: (self.cancel_event.set(), self.add_toast("❌ Job Cancelled"))
-        self.button_cancel = self._create_button("Cancel Job", None, None, "destructive-action", callback)
-        self.button_cancel.set_visible(False)
-        self.first_top_bar_box.append(self.button_cancel)
+        self.button_cancel = Gtk.Button(visible=False, label="Cancel Job", css_classes=["destructive-action"])
+        self.button_cancel.connect("clicked", lambda _: (self.cancel_event.set(), self.add_toast("❌ Job Cancelled")))
+        button_box.append(self.button_cancel)
 
-        spacer = Gtk.Box(hexpand=True)
-        self.first_top_bar_box.append(spacer)
-
-        self._setup_header_bar()
-        self.first_top_bar_box.append(self.header_bar)
-
-    def _setup_second_top_bar(self) -> None:
-        self.second_top_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_bottom=8)
-
-        self.view_switcher = Adw.ViewSwitcher(hexpand=True, policy=Adw.ViewSwitcherPolicy.WIDE, css_classes=["view-switcher"])
-        self.second_top_bar_box.append(self.view_switcher)
-
-        spacer = Gtk.Box(hexpand=True)
-        self.second_top_bar_box.append(spacer)
-
-        self.button_copy_all = self._create_button("Copy", None, "Copy results to clipboard", "suggested-action", self._on_copy_all_clicked)
-        self.button_copy_all.set_sensitive(False)
-        self.second_top_bar_box.append(self.button_copy_all)
-
-        self.toggle_button_sort = Gtk.ToggleButton(
-            label="Sort",
-            tooltip_text="Sort results by path",
-            css_classes=["custom-toggle-btn"],
-            sensitive=False,
-            valign=Gtk.Align.CENTER,
-        )
-        self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
-        self.second_top_bar_box.append(self.toggle_button_sort)
-
-        self.button_clear = self._create_button("Clear", None, "Clear all results", "destructive-action", self._on_clear_clicked)
-        self.button_clear.set_sensitive(False)
-        self.second_top_bar_box.append(self.button_clear)
-
-    def _setup_header_bar(self) -> None:
         self.header_bar = Adw.HeaderBar(
             title_widget=Gtk.Label(label=f"<big><b>{APP_NAME}</b></big>", use_markup=True),
         )
         self._setup_menu()
         self._setup_search_button()
 
+        self.header_bar_box.set_end_widget(self.header_bar)
+
     def _setup_results_view(self) -> None:
+        self.results_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
+
         self.results_model = Gio.ListStore.new(ResultRowData)
         self.results_model.connect("items-changed", self._on_items_changed)
 
-        self.results_custom_sorter = Gtk.CustomSorter.new(self._sort_by_hierarchy, self.toggle_button_sort)
+        self.results_custom_sorter = Gtk.CustomSorter.new(self._sort_by_hierarchy, None)
         self.results_model_sorted = Gtk.SortListModel.new(self.results_model, self.results_custom_sorter)
 
         self.results_custom_filter = Gtk.CustomFilter.new(self._filter_func)
@@ -1393,16 +1555,112 @@ class MainWindow(Adw.ApplicationWindow):
         self.search_entry.connect("search-changed", self._on_search_changed, self.results_model, self.results_custom_filter)
 
         self.results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
-        self.results_model_selection.connect("selection-changed", self._on_selection_changed)
 
         factory = Gtk.SignalListItemFactory()
-        factory.connect("setup", self._on_factory_setup, "result")
+        factory.connect("setup", self._on_factory_setup, WidgetHashResultRow)
         factory.connect("bind", self._on_factory_bind)
         factory.connect("unbind", self._on_factory_unbind)
         factory.connect("teardown", self._on_factory_teardown)
-        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["no-background"])
+        self.results_list_view = Gtk.ListView(model=self.results_model_selection, factory=factory, css_classes=["no-background", "rich-list"])
 
-        self.results_scrolled_window = Gtk.ScrolledWindow(child=self.results_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+        self.results_scrolled_window = Gtk.ScrolledWindow(
+            child=self.results_list_view,
+            hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            hexpand=True,
+            vexpand=True,
+        )
+
+        self.button_copy_all = Gtk.Button(sensitive=False)
+        self.button_copy_all.set_child(Adw.ButtonContent(icon_name="edit-copy-symbolic", label="Copy to clipboard", tooltip_text="Copy all results to clipboard"))
+        self.button_copy_all.connect("clicked", self._on_copy_all_clicked)
+
+        self.toggle_button_sort = Gtk.ToggleButton(
+            tooltip_text="Sort results by path",
+            css_classes=["custom-toggle-btn"],
+            sensitive=False,
+            valign=Gtk.Align.CENTER,
+        )
+        self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
+        self.toggle_button_sort.set_child(Adw.ButtonContent(icon_name="media-playlist-shuffle-symbolic", label="Sort", tooltip_text="Sort results by path hierarchy"))
+
+        self.button_clear = Gtk.Button(sensitive=False)
+        self.button_clear.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear results", tooltip_text="Clear all results and errors"))
+        self.button_clear.connect("clicked", self._on_clear_clicked)
+
+        button_row.append(self.button_copy_all)
+        button_row.append(self.toggle_button_sort)
+        button_row.append(self.button_clear)
+
+        self.results_container.append(button_row)
+        self.results_container.append(self.results_scrolled_window)
+
+    def _setup_checksum_view(self) -> None:
+        self.checksums_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
+
+        self.checksums_selection_model = Gtk.MultiSelection.new(self.results_model_filtered)
+        self.checksums_selection_model.connect("selection-changed", self._on_checksum_selection_changed)
+
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._on_factory_setup, WidgetChecksumResultRow)
+        factory.connect("bind", self._on_factory_bind)
+        factory.connect("unbind", self._on_factory_unbind)
+        factory.connect("teardown", self._on_factory_teardown)
+        self.checksums_list_view = Gtk.ListView(model=self.checksums_selection_model, factory=factory, css_classes=["no-background", "rich-list"])
+
+        self.checksums_scrolled_window = Gtk.ScrolledWindow(
+            child=self.checksums_list_view,
+            hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            hexpand=True,
+            vexpand=True,
+        )
+
+        self.button_show_no_matches = Gtk.Button()
+        self.button_show_no_matches.set_child(Adw.ButtonContent(icon_name="dialog-question-symbolic", label="Show Missing"))
+        self.button_show_no_matches.set_tooltip_text("Show lines without a match.")
+        self.button_show_no_matches.connect("clicked", lambda _: (self.search_entry.set_visible(True), self.search_entry.set_text("#missing#")))
+
+        self.button_compare_checksums_file = Gtk.Button(sensitive=False)
+        self.button_compare_checksums_file.set_child(Adw.ButtonContent(icon_name="object-select-symbolic", label="Compare"))
+        self.button_compare_checksums_file.set_tooltip_text("Compare your generated hashes against the loaded checksum file/clipboard.")
+        self.button_compare_checksums_file.connect("clicked", self._on_compare_checksum_file_or_clipboard)
+
+        self.button_upload_checksums_file = Gtk.Button()
+        self.button_upload_checksums_file.set_child(Adw.ButtonContent(icon_name="document-open-symbolic", label="Load Checksum File"))
+        self.button_upload_checksums_file.set_tooltip_text("Select a checksum file to compare against your results.")
+        self.button_upload_checksums_file.connect("clicked", self._on_upload_checksum_file)
+
+        self.button_paste_checksums_clipboard = Gtk.Button()
+        self.button_paste_checksums_clipboard.set_child(Adw.ButtonContent(icon_name="edit-copy-symbolic", label="Paste Clipboard"))
+        self.button_paste_checksums_clipboard.set_tooltip_text("Paste checksums from the clipboard and compare them with your results.")
+        self.button_paste_checksums_clipboard.connect("clicked", self._on_upload_checksum_rows_clipboard)
+
+        button_select_all = Gtk.Button()
+        button_select_all.set_child(Adw.ButtonContent(icon_name="edit-select-all-symbolic", label="Select All"))
+        button_select_all.connect("clicked", lambda _: self.checksums_selection_model.select_all())
+
+        button_unselect_all = Gtk.Button()
+        button_unselect_all.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Unselect All"))
+        button_unselect_all.connect("clicked", lambda _: self.checksums_selection_model.unselect_all())
+
+        self.button_checksums_reset = Gtk.Button()
+        self.button_checksums_reset.set_child(Adw.ButtonContent(icon_name="edit-undo-symbolic", label="Reset"))
+        self.button_checksums_reset.connect("clicked", self._on_reset_checksums_request)
+
+        button_row.append(self.button_show_no_matches)
+        button_row.append(self.button_compare_checksums_file)
+        button_row.append(self.button_paste_checksums_clipboard)
+        button_row.append(self.button_upload_checksums_file)
+        button_row.append(button_select_all)
+        button_row.append(button_unselect_all)
+        button_row.append(self.button_checksums_reset)
+
+        self.checksums_container.append(button_row)
+        self.banner_compare = CompareBanner()
+        self.checksums_container.append(self.banner_compare)
+        self.checksums_container.append(self.checksums_scrolled_window)
 
     def _setup_errors_view(self) -> None:
         self.errors_model = Gio.ListStore.new(ErrorRowData)
@@ -1413,29 +1671,32 @@ class MainWindow(Adw.ApplicationWindow):
         self.search_entry.connect("search-changed", self._on_search_changed, self.errors_model, self.errors_custom_filter)
 
         self.errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
-        self.errors_selection_model.connect("selection-changed", self._on_selection_changed)
 
         factory_err = Gtk.SignalListItemFactory()
-        factory_err.connect("setup", self._on_factory_setup, "error")
+        factory_err.connect("setup", self._on_factory_setup, WidgetHashErrorRow)
         factory_err.connect("bind", self._on_factory_bind)
         factory_err.connect("unbind", self._on_factory_unbind)
         factory_err.connect("teardown", self._on_factory_teardown)
-        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["no-background"])
+        self.errors_list_view = Gtk.ListView(model=self.errors_selection_model, factory=factory_err, css_classes=["no-background", "rich-list"])
 
         self.errors_scrolled_window = Gtk.ScrolledWindow(child=self.errors_list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
 
     def _setup_content(self) -> None:
         self.content_overlay = Gtk.Overlay()
 
-        self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
+        self.clamp = Adw.Clamp(maximum_size=1200)
         self.view_stack = Adw.ViewStack(visible=False)
         self.view_switcher.set_stack(self.view_stack)
+        self.clamp.set_child(self.view_stack)
+        self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
 
-        self.content_overlay.add_overlay(self.view_stack)
+        self.content_overlay.set_child(self.clamp)
         self.content_overlay.add_overlay(self.empty_placeholder)
 
         self._setup_results_view()
-        self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_scrolled_window, "results", "Results", "view-list-symbolic")
+        self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_container, "results", "Results", "view-list-symbolic")
+        self._setup_checksum_view()
+        self.checksums_stack_page = self.view_stack.add_titled_with_icon(self.checksums_container, "checksum-results", "Checksum", "object-select-symbolic")
         self._setup_errors_view()
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_scrolled_window, "errors", "Errors", "dialog-error-symbolic")
 
@@ -1459,39 +1720,28 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_show_searchbar.connect("clicked", lambda _: self._on_click_show_searchbar(not self.search_entry.is_visible()))
         self.header_bar.pack_end(self.button_show_searchbar)
 
-    def _setup_bottom_bar(self) -> None:
-        self.progress_bar = Gtk.ProgressBar(opacity=0, margin_top=2)
-
-    def _create_button(self, label: str, icon_name: str, tooltip_text: str, css_class: str, callback: Callable | None, *args) -> Gtk.Button:
-        button = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text=tooltip_text)
-        if css_class:
-            button.add_css_class(css_class)
-
-        if callback:
-            button.connect("clicked", callback, *args)
-
-        if icon_name:
-            button_content = Adw.ButtonContent(icon_name=icon_name, label=label)
-            button.set_child(button_content)
-
-        else:
-            button.set_label(label)
-
-        return button
-
     def _modify_placeholder(self, current_page_name: str) -> bool:
-        title = "No Results" if current_page_name == "results" else "No Errors"
+        if current_page_name == "results":
+            title = "No Results"
+            icon_name = "text-x-generic-symbolic"
+            description = "Select files or folders to calculate their hashes."
+        elif current_page_name == "errors":
+            title = "No Errors"
+            icon_name = "object-select-symbolic"
+            description = " "
+        else:
+            title = "Nothing to verify"
+            icon_name = "view-list-symbolic"
+            description = " "
         current_title = self.empty_placeholder.get_title()
         if current_title == title:
             return False
-        icon_name = "text-x-generic-symbolic" if current_page_name == "results" else "object-select-symbolic"
-        description = "Select files or folders to calculate their hashes." if current_page_name == "results" else " "
         self.empty_placeholder.set_title(title)
         self.empty_placeholder.set_icon_name(icon_name)
         self.empty_placeholder.set_description(description)
         return True
 
-    def _sort_by_hierarchy(self, row1: ResultRowData, row2: ResultRowData, sort_enabled: Gtk.ToggleButton) -> int:
+    def _sort_by_hierarchy(self, row1: ResultRowData, row2: ResultRowData, _) -> int:
         """
         - /folder/a.txt
         - /folder/z.txt
@@ -1499,7 +1749,7 @@ class MainWindow(Adw.ApplicationWindow):
         - /folder/subfolder_b/file.txt
         - /folder/subfolder_y/
         """
-        if not sort_enabled.get_active():
+        if not self.toggle_button_sort.get_active():
             return 0
 
         p1, p2 = row1.path, row2.path
@@ -1688,22 +1938,24 @@ class MainWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_factory_setup(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem, kind: str) -> None:
-        row_widget = HashResultRow() if kind == "result" else HashErrorRow()
-        list_item.set_selectable(False)
+    def _on_factory_setup(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem, obj: WidgetHashRow) -> None:
+        row_widget = obj()
+        selectable = isinstance(row_widget, WidgetChecksumResultRow)
+        list_item.set_selectable(selectable)
         list_item.set_activatable(False)
         list_item.set_focusable(False)
         list_item.set_child(row_widget)
 
     def _on_factory_bind(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
-        row_widget: HashResultRow | HashErrorRow = list_item.get_child()
-        row_data: ResultRowData | ErrorRowData = list_item.get_item()
-        model = self.results_model if isinstance(row_widget, HashResultRow) else self.errors_model
+        row_widget: WidgetHashRow = list_item.get_child()
+        row_data: RowData = list_item.get_item()
+        model = getattr(self, row_data._model)
         row_widget.bind(row_data, list_item, model, self)
 
     def _on_factory_unbind(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
-        row_widget: HashResultRow | HashErrorRow = list_item.get_child()
-        row_widget.unbind(list_item, self)
+        row_widget: WidgetHashRow = list_item.get_child()
+        row_data: RowData = list_item.get_item()
+        row_widget.unbind(row_data, list_item, self)
 
     def _on_factory_teardown(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem) -> None:
         list_item.set_child(None)
@@ -1717,6 +1969,12 @@ class MainWindow(Adw.ApplicationWindow):
         save_errors = self.pref.save_errors()
         current_page_name = self.view_stack.get_visible_child_name()
 
+        has_selected_rows = len(self.selected_row_datas) > 0
+        has_checksum_rows = len(self.checksum_rows) > 0
+        self.button_compare_checksums_file.set_sensitive(has_selected_rows and has_checksum_rows)
+        self.button_show_no_matches.set_sensitive(has_selected_rows and has_checksum_rows)
+        self.button_checksums_reset.set_sensitive(has_checksum_rows)
+
         can_save_or_copy = has_results or (has_errors and save_errors)
         can_clear_or_search = has_results or has_errors
         self.button_save.set_sensitive(can_save_or_copy)
@@ -1726,7 +1984,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_show_searchbar.set_sensitive(can_clear_or_search)
         self._update_badge_numbers()
 
-        show_empty = (current_page_name == "results" and not has_results) or (current_page_name == "errors" and not has_errors)
+        show_empty = (current_page_name in ("results", "checksum-results") and not has_results) or (current_page_name == "errors" and not has_errors)
         target_modified = False
         if show_empty:
             target_modified = self._modify_placeholder(current_page_name)
@@ -1734,30 +1992,85 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             target = self.view_stack
 
+        def toggle_visiblity():
+            self.view_stack.set_visible(not show_empty)
+            self.empty_placeholder.set_visible(show_empty)
+
         if not target.is_visible() or (view_stack and param) or (target.is_visible() and target_modified):
-            Adw.TimedAnimation(
-                widget=self,
-                value_from=0.3,
-                value_to=1.0,
-                duration=250,
-                target=Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity)),
-            ).play()
+            anim_target = Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity))
+            anim = Adw.TimedAnimation(widget=target, value_from=0.3, value_to=1.0, duration=250, target=anim_target)
+            anim.connect("done", lambda _: toggle_visiblity())
+            anim.play()
+        else:
+            toggle_visiblity()
 
-        self.view_stack.set_visible(not show_empty)
-        self.empty_placeholder.set_visible(show_empty)
+    def _add_checksum_rows(self, checksum_row: set[ChecksumRow] | None):
+        if checksum_row:
+            toast = "✅ Success"
+            self.checksum_rows = checksum_row
+        else:
+            toast = "❌ Something went wrong."
+            self.checksum_rows.clear()
+        self.add_toast(toast)
+        self.on_items_changed()
 
-    def _on_selection_changed(self, selection_model: Gtk.MultiSelection, position: int, n_items: int) -> None:
-        selected_items = []
+    def _on_reset_checksums_request(self, button: Gtk.Button):
+        self.checksums_selection_model.select_all()
+        self.checksum_rows.clear()
+        self.banner_compare.close(None)
+        self.add_toast("✅ Reset")
+        for row_data in self.selected_row_datas:
+            row_data.line_no = -1
+        self.checksums_selection_model.unselect_all()
+
+    def _on_compare_checksum_file_or_clipboard(self, _: Gtk.Button) -> None:
+        matches = 0
+        mismatches = 0
+        for row_data in self.selected_row_datas:
+            if row_data in self.checksum_rows:
+                matches += 1
+            else:
+                mismatches += 1
+                row_data.line_no = 0
+        self.banner_compare.show_message(f"✔ Match: {matches},  ✖ No Match: {mismatches}")
+
+    def _on_upload_checksum_file(self, _: Gtk.Button) -> None:
+        file_dialog = Gtk.FileDialog(title="Select File")
+        text_filter = Gtk.FileFilter(name="Plain Text File", mime_types=["text/plain"])
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(text_filter)
+        file_dialog.set_filters(filters)
+        file_dialog.set_default_filter(text_filter)
+
+        def on_files_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
+            if not gio_task.had_error():
+                file: Gio.File = file_dialog.open_finish(gio_task)
+                path = Path(file.get_path())
+                threading.Thread(target=ChecksumRow.parse_checksum_file, args=(path, self._add_checksum_rows), daemon=True).start()
+
+        file_dialog.open(parent=self, callback=on_files_dialog_dismissed)
+
+    def _on_upload_checksum_rows_clipboard(self, button: Gtk.Button) -> None:
+        def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
+            try:
+                clipboard_text = clipboard.read_text_finish(result).strip()
+                threading.Thread(target=ChecksumRow.parse_string, args=(clipboard_text, self._add_checksum_rows), daemon=True).start()
+            except Exception as e:
+                self.add_toast(f"Clipboard read failed: {e}")
+
+        clipboard = button.get_clipboard()
+        clipboard.read_text_async(None, handle_clipboard_comparison)
+
+    def _on_checksum_selection_changed(self, selection_model: Gtk.MultiSelection, position: int, n_items: int) -> None:
+        self.selected_row_datas: list[ResultRowData] = []
         model = selection_model.get_model()
 
         for i in range(model.get_n_items()):
             if selection_model.is_selected(i):
-                item = model.get_item(i)
-                selected_items.append(item)
+                item: ResultRowData = model.get_item(i)
+                self.selected_row_datas.append(item)
 
-        print("Selected items:")
-        for item in selected_items:
-            print(item)
+        self.on_items_changed()
 
     def on_multi_hash_requested(self, _: Gtk.Button, row: ResultRowData) -> None:
         MultiHashDialog(self, row, self.pref.get_working_config())
@@ -1780,7 +2093,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         GLib.timeout_add(1500, reset)
 
-    def on_clipboard_compare_requested(self, _: Gtk.Button, row_widget: HashResultRow, row_data: ResultRowData) -> None:
+    def on_clipboard_compare_requested(self, _: Gtk.Button, row_widget: WidgetHashResultRow, row_data: ResultRowData) -> None:
         if row_data.noop_cmp:
             return
         row_data.noop_cmp = True
@@ -1814,7 +2127,7 @@ class MainWindow(Adw.ApplicationWindow):
         clipboard = self.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
-    def on_delete_row_requested(self, button: Gtk.Button, row_widget: HashRow, row_data: RowData, model: Gio.ListStore) -> None:
+    def on_delete_row_requested(self, button: Gtk.Button, row_widget: WidgetHashRow, row_data: RowData, model: Gio.ListStore) -> None:
         button.set_sensitive(False)
 
         found, position = model.find(row_data)
@@ -1884,11 +2197,14 @@ class MainWindow(Adw.ApplicationWindow):
     def _background_filter(self, model: Gio.ListStore, custom_filter: Gtk.Filter) -> None:
         visible_rows = set()
         if self.search_query:
-            terms = self.search_query.split()
-            for row in model:
-                fields = row.get_search_fields()
-                if all(any(term in field for field in fields) for term in terms):
-                    visible_rows.add(row)
+            if self.search_query == "#missing#":
+                visible_rows = {row for row in model if row.line_no == 0}
+            else:
+                terms = self.search_query.split()
+                for row in model:
+                    fields = row.get_search_fields()
+                    if all(any(term in field for field in fields) for term in terms):
+                        visible_rows.add(row)
 
         GLib.idle_add(self._update_filter, custom_filter, visible_rows)
 
@@ -1915,6 +2231,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.results_model.remove_all()
         self.errors_model.remove_all()
         self.visible_rows = None
+        self.checksum_rows = None
+        self.selected_row_datas = None
 
     def add_toast(self, toast_label: str, timeout: int = 2, priority=Adw.ToastPriority.NORMAL) -> None:
         toast = Adw.Toast(
