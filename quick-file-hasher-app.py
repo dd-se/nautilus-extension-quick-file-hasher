@@ -696,6 +696,7 @@ class ChecksumRow:
     @staticmethod
     def parser(lines: list[str]):
         checksum_rows: dict[tuple[str, str], ChecksumRow] = {}
+        errors: list[ErrorRowData] = []
         for line_no, line in enumerate(lines, 1):
             line = line.strip()
             if not line or line.startswith(";") or line.startswith("#"):
@@ -726,21 +727,24 @@ class ChecksumRow:
                     checksum_rows[row.get_key()] = row
                     break
             else:
-                ChecksumRow._logger.debug(f"Unexpected line: {line}")
+                path = Path("Checksum row")
+                msg = f"Unexpected line at {line_no}: {line}"
+                errors.append(ErrorRowData(path, path, msg))
+                ChecksumRow._logger.debug(msg)
 
-        return checksum_rows
+        return (checksum_rows, errors)
 
     @staticmethod
     def parse_checksum_file(file_path: Path, callback: Callable[[dict[tuple[str, str], "ChecksumRow"]], None]) -> None:
         with file_path.open() as f:
             lines = f.read().splitlines()
-        checksum_rows = ChecksumRow.parser(lines)
-        GLib.idle_add(callback, checksum_rows)
+        checksum_rows, errors = ChecksumRow.parser(lines)
+        GLib.idle_add(callback, checksum_rows, errors)
 
     @staticmethod
     def parse_string(content: str, callback: Callable[[dict[tuple[str, str], "ChecksumRow"]], None]) -> None:
-        checksum_rows = ChecksumRow.parser(content.splitlines())
-        GLib.idle_add(callback, checksum_rows)
+        checksum_rows, errors = ChecksumRow.parser(content.splitlines())
+        GLib.idle_add(callback, checksum_rows, errors)
 
 
 class IgnoreRule:
@@ -1424,7 +1428,6 @@ class SearchProvider(Gtk.Button):
             self._search_terms = search_text.split()
 
         custom_filter.changed(Gtk.FilterChange.DIFFERENT)
-        self.logger.debug(self._search_terms)
 
     def _has_match(self, row: RowData) -> bool:
         if not self._search_terms:
@@ -2148,14 +2151,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
-    def checksum_add_rows(self, checksum_rows: dict[tuple[str, str], "ChecksumRow"] | None):
+    def checksum_add_rows(self, checksum_rows: dict[tuple[str, str], "ChecksumRow"] | None, errors: list[ErrorRowData] | None):
         """Callback"""
         if checksum_rows:
             toast = "✅ Success"
             self.checksum_rows = checksum_rows
         else:
-            toast = "❌ Something went wrong."
             self.checksum_rows.clear()
+
+        if errors:
+            toast = "❌ Something went wrong. Check 'Errors' view."
+            self.errors_model.splice(self.errors_model.get_n_items(), 0, errors)
+
         self.add_toast(toast)
         self.on_items_changed()
 
@@ -2237,7 +2244,7 @@ class MainWindow(Adw.ApplicationWindow):
         if row_data.noop_copy:
             return
         row_data.noop_copy = True
-        button.get_clipboard().set(row_data.prop_result)
+        button.get_clipboard().set(row_data.get_result())
         icon_name = button.get_icon_name()
         button.set_icon_name("object-select-symbolic")
 
