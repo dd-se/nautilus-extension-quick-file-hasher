@@ -98,13 +98,20 @@ listview row:selected { background-color: shade(@accent_bg_color, 0.8); }
 .custom-success { color: #57EB72; }
 .custom-error { color: #FF938C; }
 
-.view-switcher button { background-color: shade(@theme_bg_color, 1.32); color: white; margin: 0 6px; min-height: 35px; min-width: 200px; transition: background-color 0.3s ease; }
-.view-switcher button:nth-child(1):hover { background-color: #4a8de0; }
-.view-switcher button:nth-child(1):checked { background-color: #3074cf; }
-.view-switcher button:nth-child(2):hover { background-color: #20a13a; }
-.view-switcher button:nth-child(2):checked { background-color: #0E8825; }
-.view-switcher button:nth-child(3):hover { background-color: #e03445; }
-.view-switcher button:nth-child(3):checked { background-color: #c7162b; }
+.view-switcher button {
+    background-color: shade(@theme_bg_color, 1.32);
+    color: @theme_fg_color;
+    margin: 0 6px;
+    min-height: 35px;
+    min-width: 200px;
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+.view-switcher button:nth-child(1):hover { background-color: #4a8de0; color: @accent_fg_color; }
+.view-switcher button:nth-child(1):checked { background-color: #3074cf; color: @accent_fg_color; }
+.view-switcher button:nth-child(2):hover { background-color: #20a13a; color: @accent_fg_color; }
+.view-switcher button:nth-child(2):checked { background-color: #0E8825; color: @accent_fg_color; }
+.view-switcher button:nth-child(3):hover { background-color: #e03445; color: @accent_fg_color; }
+.view-switcher button:nth-child(3):checked { background-color: #c7162b; color: @accent_fg_color; }
 
 .no-background { background-color: transparent; }
 .background-light { background-color: shade(@theme_bg_color, 1.32); }
@@ -125,6 +132,7 @@ listview row:selected { background-color: shade(@accent_bg_color, 0.8); }
 .rounded-top { border-top-left-radius: 8px; border-top-right-radius: 8px; }
 .rounded-top-small { border-top-left-radius: 4px; border-top-right-radius: 4px; }
 .rounded-bottom { border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
+.rounded-bottom-small { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
 """
 
 css_provider = Gtk.CssProvider()
@@ -147,7 +155,6 @@ def get_logger(name: str) -> logging.Logger:
 
 
 Adw.init()
-Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -1325,7 +1332,14 @@ class SearchProvider(Gtk.Button):
         self.connect("clicked", lambda _: self.show_search_bar(not self.get_search_bar().is_visible()))
         self._setup_search()
 
-    def get_search_bar(self):
+    def toggle_option(self, name: str) -> None:
+        if opt := self._setting_search_option_widgets.get(name):
+            opt.set_active(not opt.get_active())
+            self.logger.debug(f"Search option '{name}' toggled to '{opt.get_active()}'")
+        else:
+            self.logger.debug(f"Search option '{name}' not found")
+
+    def get_search_bar(self) -> Gtk.Box:
         return self._content
 
     def _setup_search(self) -> None:
@@ -1353,13 +1367,13 @@ class SearchProvider(Gtk.Button):
     def _create_options_box(self) -> Gtk.Box:
         options_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_end=8)
 
-        self._setting_search_option_widgets: list[Gtk.CheckButton] = []
+        self._setting_search_option_widgets: dict[str, Gtk.CheckButton] = {}
 
         for name, label, tooltip_text in self.SEARCH_OPTIONS:
             checkbutton = Gtk.CheckButton(name=name, label=label, tooltip_text=tooltip_text)
             checkbutton.connect("toggled", self._on_option_toggled)
             options_box.append(checkbutton)
-            self._setting_search_option_widgets.append(checkbutton)
+            self._setting_search_option_widgets[name] = checkbutton
 
         return options_box
 
@@ -1380,8 +1394,6 @@ class SearchProvider(Gtk.Button):
             self._search_entry.grab_focus()
         else:
             self._search_entry.set_text("")
-            for widget in self._setting_search_option_widgets:
-                widget.set_active(False)
 
     def _on_option_toggled(self, button: Gtk.CheckButton) -> None:
         key = button.get_name()
@@ -1475,7 +1487,7 @@ class CompareBanner(Gtk.Revealer):
         self.prefix.append(widget)
 
     def show_results(self, matches: int, no_matches: int) -> None:
-        self.content_label.set_text(f"✔ Match: {matches:<4} ✖ No Match: {no_matches}")
+        self.content_label.set_text(f"✔ Match: {matches:<10} ✖ No Match: {no_matches}")
         self.set_reveal_child(True)
 
     def close(self):
@@ -1780,6 +1792,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_checksum_reset.connect("clicked", self._on_checksum_results_reset_request, checksum_results_selection_model)
 
         self.checksum_banner_compare = CompareBanner()
+        button_hide_matches = Gtk.Button(css_classes=["flat", "rounded-top-small", "rounded-bottom"])
+        button_hide_matches.set_child(Adw.ButtonContent(icon_name="edit-find-symbolic", label="Toggle Hide Matches", tooltip_text=self.search_provider.SEARCH_OPTIONS[2][2]))
+        button_hide_matches.connect("clicked", lambda _: self.search_provider.toggle_option("hide-checksum-matches"))
+        self.checksum_banner_compare.add_prefix(button_hide_matches)
 
         button_row.append(self.button_checksum_compare)
         button_row.append(button_checksum_paste_clipboard)
@@ -2132,11 +2148,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
-    def checksum_add_rows(self, checksum_row: dict[tuple[str, str], "ChecksumRow"] | None):
+    def checksum_add_rows(self, checksum_rows: dict[tuple[str, str], "ChecksumRow"] | None):
         """Callback"""
-        if checksum_row:
+        if checksum_rows:
             toast = "✅ Success"
-            self.checksum_rows = checksum_row
+            self.checksum_rows = checksum_rows
         else:
             toast = "❌ Something went wrong."
             self.checksum_rows.clear()
@@ -2167,7 +2183,7 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(set_row_data_line_no, row_data, 0)
                 no_matches += 1
 
-        self.checksum_banner_compare.show_results(matches, no_matches)
+        GLib.idle_add(self.checksum_banner_compare.show_results, matches, no_matches)
 
     def _on_checksum_file_upload(self, _: Gtk.Button) -> None:
         file_dialog = Gtk.FileDialog(title="Select File")
