@@ -1082,7 +1082,7 @@ class ResultRowData(RowData):
 
     def get_search_fields(self, lower: bool = False) -> tuple[str, str, str]:
         path_str = self.path.as_posix().lower() if lower else self.path.as_posix()
-        return (path_str, self.hash_value, self.algo)
+        return (path_str, self.hash_value, self.algo.replace("_", "-"))
 
     def get_key(self):
         return (self.path.name, self.hash_value)
@@ -1199,7 +1199,7 @@ class WidgetHashResultRow(WidgetHashRow):
         self.button_multi_hash = self._create_button(None, "Select and compute multiple hash algorithms for this file", None)
         self.button_multi_hash.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_copy = self._create_button("edit-copy-symbolic", "Copy hash", None)
-        self.button_compare = self._create_button("edit-paste-symbolic", "Compare with clipboard", None)
+        self.button_compare = self._create_button("edit-paste-symbolic", "Compare hash with clipboard", None)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
     def set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
@@ -1393,13 +1393,13 @@ class SearchProvider(Gtk.Button):
         self.logger.debug(f"Search connected to '{current_page_name}'")
 
     def _on_search_changed(self, entry: Gtk.SearchEntry, custom_filter: Gtk.Filter) -> None:
-        if self._search_options.get("case-sensitive"):
-            search_text = entry.get_text()
-        else:
-            search_text = entry.get_text().lower()
+        search_text = entry.get_text().strip()
+
+        if not self._search_options.get("case-sensitive"):
+            search_text = search_text.lower()
 
         if self._search_options.get("exact-match"):
-            self._search_terms = [search_text]
+            self._search_terms = [search_text] if search_text else []
         else:
             self._search_terms = search_text.split()
 
@@ -1412,7 +1412,7 @@ class SearchProvider(Gtk.Button):
         fields = row.get_search_fields(lower=not self._search_options.get("case-sensitive"))
 
         if self._search_options.get("exact-match"):
-            return any(self._search_terms[0] in field for field in fields)
+            return any(self._search_terms[0] == field for field in fields)
 
         return all(any(term in field for field in fields) for term in self._search_terms)
 
@@ -1553,8 +1553,8 @@ class MultiHashDialog(Adw.AlertDialog):
 
 class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
-    DEFAULT_WIDTH = 970
-    DEFAULT_HEIGHT = 650
+    DEFAULT_WIDTH = 960
+    DEFAULT_HEIGHT = 540
     __gsignals__ = {"call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str, bool))}
 
     def __init__(self, app: "QuickFileHasher"):
