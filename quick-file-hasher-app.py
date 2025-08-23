@@ -93,11 +93,8 @@ CHECKSUM_FORMATS: list[dict[str, str]] = [
 ]
 CSS = b"""
 toast { background-color: #000000; }
-listview row:selected { background-color: shade(@accent_bg_color, 0.8); }
-
 .custom-success { color: #57EB72; }
 .custom-error { color: #FF938C; }
-
 .view-switcher button {
     background-color: shade(@theme_bg_color, 1.32);
     color: @theme_fg_color;
@@ -112,21 +109,16 @@ listview row:selected { background-color: shade(@accent_bg_color, 0.8); }
 .view-switcher button:nth-child(2):checked { background-color: #0E8825; color: @accent_fg_color; }
 .view-switcher button:nth-child(3):hover { background-color: #e03445; color: @accent_fg_color; }
 .view-switcher button:nth-child(3):checked { background-color: #c7162b; color: @accent_fg_color; }
-
 .no-background { background-color: transparent; }
 .background-light { background-color: shade(@theme_bg_color, 1.32); }
 .background-dark { background-color: rgba(0, 0, 0, 0.2); }
-
 .padding-small { padding-top: 2px; padding-left : 2px; padding-right : 2px; padding-bottom: 2px; }
 .padding-large { padding-top: 8px; padding-left : 8px; padding-right : 8px; padding-bottom: 8px; }
-
 .dnd-overlay { background-color: alpha(@accent_bg_color, 0.5); color: @accent_fg_color; }
 .custom-toggle-btn:checked { background: shade(@theme_selected_bg_color,0.9); }
 .custom-banner-theme { background-color: shade(@theme_bg_color, 1.32); color: @accent_fg_color; font-weight: bold; }
-
-.custom-glow { transition: background-color 200ms ease; }
-.custom-glow:hover { background-color: shade(@theme_bg_color, 1.60); }
-
+.widget-hash-row { background-color: @card_bg_color; box-shadow: 0 1px 1px alpha(@card_shade_color, 0.5); transition: background-color 200ms ease;}
+.widget-hash-row:hover {  background-color: alpha(@card_bg_color,1.4); }
 .border-small { border: 1px solid shade(@theme_bg_color, 0.8); }
 .rounded-medium { border-radius: 6px; }
 .rounded-top { border-top-left-radius: 8px; border-top-right-radius: 8px; }
@@ -424,7 +416,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             "Relative Paths",
             "Display results using paths relative to the current working directory",
         )
-        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_format_text(*self.get_formatted_params()))
+        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_output_format_text(*self.get_formatted_params()))
         saving_group.add(child=self.setting_relative_path)
 
         self._create_checksum_format_toggle_group(saving_page)
@@ -620,7 +612,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         else:
             self.send_toast("Something went wrong!")
 
-    def _set_example_format_text(self, use_relative_paths: bool, use_uppercase_hash: bool, output_style: str) -> None:
+    def _set_example_output_format_text(self, use_relative_paths: bool, use_uppercase_hash: bool, output_style: str) -> None:
         example_file = "example.txt" if use_relative_paths else "/folder/example.txt"
         example_hash = "FDFBA9FC68" if use_uppercase_hash else "fdfba9fc68"
         example_algo = "SHA256" if use_uppercase_hash else "sha256"
@@ -642,7 +634,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             if uppercase_hash_updated:
                 self.emit("main-window-signal-handler", "call-row-data", "set_attr_uppercase_result", new_value)
 
-        self._set_example_format_text(*self.get_formatted_params())
+        self._set_example_output_format_text(*self.get_formatted_params())
 
     def _on_switch_row_changed(self, switch_row: Adw.SwitchRow, param: GObject.ParamSpec) -> None:
         new_value = switch_row.get_active()
@@ -675,35 +667,17 @@ class ChecksumRow:
         ("gnu", re.compile(r"^([A-Fa-f0-9]{8,128})\s+[* ]?(.*\S)$")),
     ]
 
-    def __init__(self, path: Path, hash_value: str, algo: str | None, line_no: int):
-        self.path = path
-        self.hash_value = hash_value
-        self.algo = algo
-        self.line_no = line_no
-
-    def __hash__(self) -> int:
-        return hash((self.path.name, self.hash_value))
-
-    def __eq__(self, other: "ResultRowData") -> bool:
-        return self.path.name == other.path.name and self.hash_value == other.hash_value
-
-    def __repr__(self) -> str:
-        return f"ChecksumRow(filename={self.path!r}, hash={self.hash_value!r}, algo={self.algo!r})"
-
-    def get_key(self) -> tuple[str, str]:
-        return (self.path.name, self.hash_value)
-
     @staticmethod
     def parser(lines: list[str]):
-        checksum_rows: dict[tuple[str, str], ChecksumRow] = {}
+        checksum_rows: dict[tuple[str, str], dict[str, Any]] = {}
         errors: list[ErrorRowData] = []
         for line_no, line in enumerate(lines, 1):
             line = line.strip()
             if not line or line.startswith(";") or line.startswith("#"):
                 continue
 
-            for name, pat in ChecksumRow.patterns:
-                if m := pat.match(line):
+            for name, pattern in ChecksumRow.patterns:
+                if m := pattern.match(line):
                     if name == "bsd":
                         algo, filename, hash_value = m.groups()
 
@@ -718,13 +692,16 @@ class ChecksumRow:
                         hash_value, filename = m.groups()
                         algo = None
 
-                    row = ChecksumRow(
-                        Path(filename.strip()),
-                        hash_value.strip().lower(),
-                        algo.strip().lower() if algo else None,
-                        line_no,
-                    )
-                    checksum_rows[row.get_key()] = row
+                    filename = Path(filename.strip())
+                    hash_value = hash_value.strip().lower()
+                    algo = algo.strip().lower() if algo else None
+
+                    checksum_rows[(filename.name, hash_value)] = {
+                        "path": filename,
+                        "hash_value": hash_value,
+                        "algo": algo,
+                        "line_no": line_no,
+                    }
                     break
             else:
                 path = Path("Checksum row")
@@ -735,14 +712,14 @@ class ChecksumRow:
         return (checksum_rows, errors)
 
     @staticmethod
-    def parse_checksum_file(file_path: Path, callback: Callable[[dict[tuple[str, str], "ChecksumRow"]], None]) -> None:
+    def parse_checksum_file(file_path: Path, callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None]) -> None:
         with file_path.open() as f:
             lines = f.read().splitlines()
         checksum_rows, errors = ChecksumRow.parser(lines)
         GLib.idle_add(callback, checksum_rows, errors)
 
     @staticmethod
-    def parse_string(content: str, callback: Callable[[dict[tuple[str, str], "ChecksumRow"]], None]) -> None:
+    def parse_string(content: str, callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None]) -> None:
         checksum_rows, errors = ChecksumRow.parser(content.splitlines())
         GLib.idle_add(callback, checksum_rows, errors)
 
@@ -1148,13 +1125,12 @@ class WidgetHashRow(Gtk.Box):
     def __init__(self, **kwargs):
         super().__init__(
             orientation=Gtk.Orientation.HORIZONTAL,
-            css_classes=["background-light", "rounded-medium", "padding-large", "custom-glow"],
+            css_classes=["widget-hash-row", "rounded-medium", "padding-large"],
             spacing=12,
             **kwargs,
         )
         self.prefix_icon = Gtk.Image(margin_start=4)
-        self.prefix_label = Gtk.Label(width_chars=MAX_WIDTH)
-        self.prefix_label.add_css_class("dim-label")
+        self.prefix_label = Gtk.Label(width_chars=MAX_WIDTH, css_classes=["dim-label"])
         self.append(self.prefix_icon)
         self.append(self.prefix_label)
 
@@ -1518,7 +1494,7 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.remove(display_row.prefix_label)
         display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
         display_row.add_css_class("background-dark")
-        display_row.remove_css_class("custom-glow")
+        display_row.remove_css_class("widget-hash-row")
         display_row.title.set_text(row_data.path.name)
         display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.prop_result}")
         display_row.set_margin_bottom(8)
@@ -1593,7 +1569,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._pref_main_window_signal_id = self.pref.connect("main-window-signal-handler", self.signal_handler)
         self.connect("close-request", self._on_close_request)
 
-        self.checksum_rows: dict[tuple[str, str], "ChecksumRow"] = {}
+        self.checksum_rows: dict[tuple[str, str], dict[str, Any]] = {}
         self.rows_selected: list[ResultRowData] = []
 
         self.cancel_event = threading.Event()
@@ -2151,7 +2127,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
-    def checksum_add_rows(self, checksum_rows: dict[tuple[str, str], "ChecksumRow"] | None, errors: list[ErrorRowData] | None):
+    def checksum_add_rows(self, checksum_rows: dict[tuple[str, str], dict[str, Any]] | None, errors: list[ErrorRowData] | None):
         """Callback"""
         if checksum_rows:
             toast = "✅ Success"
@@ -2184,7 +2160,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         for row_data in self.rows_selected:
             if checksum_row := self.checksum_rows.get(row_data.get_key()):
-                GLib.idle_add(set_row_data_line_no, row_data, checksum_row.line_no)
+                GLib.idle_add(set_row_data_line_no, row_data, checksum_row["line_no"])
                 matches += 1
             else:
                 GLib.idle_add(set_row_data_line_no, row_data, 0)
