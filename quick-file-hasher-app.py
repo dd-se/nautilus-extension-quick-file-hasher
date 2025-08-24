@@ -1127,7 +1127,6 @@ class WidgetHashRow(Gtk.Box):
         super().__init__(
             orientation=Gtk.Orientation.HORIZONTAL,
             css_classes=["widget-hash-row", "rounded-medium", "padding-large"],
-            spacing=12,
             **kwargs,
         )
         self.prefix_icon = Gtk.Image(margin_start=4)
@@ -1163,7 +1162,10 @@ class WidgetHashRow(Gtk.Box):
     def bind(self, row_data: RowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         self.prefix_label.set_text(row_data.get_prefix())
         list_item.path_to_title_binding = row_data.bind_property("prop_path", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
+        list_item.path_to_title_tooltip_text_binding = row_data.bind_property("prop_path", self.title, "tooltip-text", GObject.BindingFlags.SYNC_CREATE)
         list_item.result_to_subtitle_binding = row_data.bind_property("prop_result", self.subtitle, "label", GObject.BindingFlags.SYNC_CREATE)
+        # list_item.result_to_subtitle_tooltip_text_binding = row_data.bind_property("prop_result", self.subtitle, "tooltip-text", GObject.BindingFlags.SYNC_CREATE)
+
         list_item.row_data_signal_handler_id = parent.connect("call-row-data", row_data.signal_handler)
 
         if not isinstance(self, WidgetChecksumResultRow):
@@ -1177,8 +1179,13 @@ class WidgetHashRow(Gtk.Box):
     def unbind(self, row_data: RowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         list_item.path_to_title_binding.unbind()
         list_item.path_to_title_binding = None
+        list_item.path_to_title_tooltip_text_binding.unbind()
+        list_item.path_to_title_tooltip_text_binding = None
+
         list_item.result_to_subtitle_binding.unbind()
         list_item.result_to_subtitle_binding = None
+        # list_item.result_to_subtitle_tooltip_text_binding.unbind()
+        # list_item.result_to_subtitle_tooltip_text_binding = None
         parent.disconnect(list_item.row_data_signal_handler_id)
 
         if not isinstance(self, WidgetChecksumResultRow):
