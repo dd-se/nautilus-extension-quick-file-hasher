@@ -1317,9 +1317,17 @@ class SearchProvider(Gtk.Button):
         self._view_stack: Adw.ViewStack | None = None
         self._models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]] = None
 
-        self.connect("clicked", lambda _: self.show_search_bar(not self.get_search_bar().is_visible()))
+        self.connect("clicked", lambda _: self.set_search_bar_visible(not self.get_search_bar().is_visible()))
         self._setup_status_page()
         self._setup_search()
+
+    def complete_setup(self, view_stack: Adw.ViewStack, models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]]) -> None:
+        self._view_stack = view_stack
+        self._models_n_filters = models_n_filters
+        self._connect_search_to_view()
+
+        view_stack.connect("notify::visible-child", self._connect_search_to_view)
+        view_stack.connect("notify::visible-child", self.on_filtered_items_changed)
 
     def get_status_page(self) -> Gtk.Revealer:
         return self._refine_your_search_revealer
@@ -1385,26 +1393,6 @@ class SearchProvider(Gtk.Button):
 
         return options_box
 
-    def complete_setup(self, view_stack: Adw.ViewStack, models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]]) -> None:
-        self._view_stack = view_stack
-        self._models_n_filters = models_n_filters
-        self._connect_search_to_view()
-
-        view_stack.connect("notify::visible-child", self._connect_search_to_view)
-        view_stack.connect("notify::visible-child", self.on_filtered_items_changed)
-
-    def show_search_bar(self, show: bool) -> None:
-        if not self.is_sensitive():
-            self.get_root().add_toast("🔍 No Results. Search is unavailable.")
-            return
-
-        self.get_search_bar().set_visible(show)
-
-        if show:
-            self._search_entry.grab_focus()
-        else:
-            self._search_entry.set_text("")
-
     def _on_option_toggled(self, button: Gtk.CheckButton) -> None:
         key = button.get_name()
         new_value = button.get_active()
@@ -1436,17 +1424,44 @@ class SearchProvider(Gtk.Button):
 
         custom_filter.changed(Gtk.FilterChange.DIFFERENT)
 
-    def on_filtered_items_changed(self, *args):
+    def on_filtered_items_changed(self, *args) -> None:
         current_page_name = self._view_stack.get_visible_child_name()
         model, model_filtered, _ = self._models_n_filters.get(current_page_name)
 
         has_items = model.get_n_items() > 0
         has_items_filtered = model_filtered.get_n_items() > 0
+        self._set_search_button_sensitive(has_items)
         has_search = self._has_search()
 
+        self._set_status_page_reveal(has_items and not has_items_filtered and has_search)
+        self.logger.debug(f"Caller: '{args[0]._name_}'")
+
+    def set_search_bar_visible(self, visible: bool) -> None:
+        if not self.is_sensitive():
+            self.get_root().add_toast("🔍 Search is not available")
+            return
+
+        self._set_search_bar_visible(visible)
+
+        if visible:
+            self._search_entry.grab_focus()
+        else:
+            self.grab_focus()
+            self._search_entry.set_text("")
+
+    def _set_search_bar_visible(self, visible: bool) -> None:
+        search_bar = self.get_search_bar()
+        search_bar.set_visible(visible)
+
+    def _set_status_page_reveal(self, reveal: bool) -> None:
         search_status_page = self.get_status_page()
-        search_status_page.set_reveal_child(has_items and not has_items_filtered and has_search)
-        self.logger.debug(f"Caller : '{type(args[0])}'")
+        search_status_page.set_can_target(reveal)
+        search_status_page.set_reveal_child(reveal)
+
+    def _set_search_button_sensitive(self, sensitive: bool) -> None:
+        if self.get_search_bar().is_visible() and not sensitive:
+            self.set_search_bar_visible(False)
+        self.set_sensitive(sensitive)
 
     def _has_match(self, row: RowData) -> bool:
         if not self._search_terms:
@@ -1533,31 +1548,17 @@ class MultiHashDialog(Adw.AlertDialog):
         vertical_main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
         self.set_extra_child(vertical_main_container)
 
-        display_row = WidgetHashRow()
-        display_row.remove(display_row.prefix_label)
-        display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
-        display_row.add_css_class("background-dark")
-        display_row.remove_css_class("widget-hash-row")
-        display_row.title.set_text(row_data.path.name)
-        display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.prop_result}")
-        display_row.set_margin_bottom(8)
-        vertical_main_container.append(display_row)
+        display_row = self.get_display_row(row_data)
 
         horizontal_container_check_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        vertical_main_container.append(horizontal_container_check_buttons)
-
         horizontal_container_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=6, margin_top=10)
-        vertical_main_container.append(horizontal_container_buttons)
-
         select_all_button = Gtk.Button(label="Select All", css_classes=["flat"])
-        horizontal_container_buttons.append(select_all_button)
-
         unselect_all_button = Gtk.Button(label="Unselect All", css_classes=["flat"])
-        horizontal_container_buttons.append(unselect_all_button)
-
         check_buttons: list[Gtk.CheckButton] = []
         can_compute = lambda *_: self.set_response_enabled("compute", any(c.get_active() for c in check_buttons))
         on_button_click = lambda _, state: list(c.set_active(state) for c in check_buttons)
+        select_all_button.connect("clicked", on_button_click, True)
+        unselect_all_button.connect("clicked", on_button_click, False)
 
         count = 0
         for algo in AVAILABLE_ALGORITHMS:
@@ -1571,13 +1572,9 @@ class MultiHashDialog(Adw.AlertDialog):
             check_button = Gtk.CheckButton(label=algo.replace("_", "-").upper())
             check_button.algo = algo
             check_button.connect("notify::active", can_compute)
-
             check_buttons.append(check_button)
             current_check_box_container.append(check_button)
             count += 1
-
-        select_all_button.connect("clicked", on_button_click, True)
-        unselect_all_button.connect("clicked", on_button_click, False)
 
         def on_response(_, response_id):
             if response_id == "compute":
@@ -1590,8 +1587,26 @@ class MultiHashDialog(Adw.AlertDialog):
                     working_config,
                 )
 
+        vertical_main_container.append(display_row)
+        vertical_main_container.append(horizontal_container_check_buttons)
+        vertical_main_container.append(horizontal_container_buttons)
+        horizontal_container_buttons.append(select_all_button)
+        horizontal_container_buttons.append(unselect_all_button)
+
         self.connect("response", on_response)
         self.present(parent)
+
+    def get_display_row(self, row_data: ResultRowData) -> WidgetHashRow:
+        display_row = WidgetHashRow()
+        display_row.set_spacing(12)
+        display_row.remove(display_row.prefix_label)
+        display_row.prefix_icon.set_from_icon_name("folder-documents-symbolic")
+        display_row.add_css_class("background-dark")
+        display_row.remove_css_class("widget-hash-row")
+        display_row.title.set_text(row_data.path.name)
+        display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.prop_result}")
+        display_row.set_margin_bottom(8)
+        return display_row
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1738,6 +1753,7 @@ class MainWindow(Adw.ApplicationWindow):
         button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
 
         self.results_model = Gio.ListStore.new(ResultRowData)
+        self.results_model._name_ = "Results Model"
         self.results_model.connect("items-changed", self._on_items_changed)
 
         self.results_custom_sorter = Gtk.CustomSorter.new(self._sort_by_hierarchy, None)
@@ -1745,6 +1761,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.results_custom_filter = Gtk.CustomFilter.new(self.search_provider.results_filter_func)
         self.results_model_filtered = Gtk.FilterListModel.new(results_model_sorted, self.results_custom_filter)
+        self.results_model_filtered._name_ = "Results Model Filtered"
         self.results_model_filtered.connect("items-changed", self.search_provider.on_filtered_items_changed)
 
         results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
@@ -1833,10 +1850,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.errors_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
         self.errors_model = Gio.ListStore.new(ErrorRowData)
+        self.errors_model._name_ = "Errors Model"
         self.errors_model.connect("items-changed", self._on_items_changed)
 
         self.errors_custom_filter = Gtk.CustomFilter.new(self.search_provider.errors_filter_func)
         self.errors_model_filtered = Gtk.FilterListModel.new(self.errors_model, self.errors_custom_filter)
+        self.errors_model_filtered._name_ = "Errors Model Filtered"
         self.errors_model_filtered.connect("items-changed", self.search_provider.on_filtered_items_changed)
 
         errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
@@ -1852,6 +1871,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.clamp = Adw.Clamp()
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
         self.view_stack = Adw.ViewStack(visible=False)
+        self.view_stack._name_ = "View Stack"
         self.view_switcher.set_stack(self.view_stack)
 
         self.content_overlay.add_overlay(self.empty_placeholder)
@@ -2134,7 +2154,7 @@ class MainWindow(Adw.ApplicationWindow):
         list_item.set_child(None)
 
     def _on_items_changed(self, model: Gio.ListStore, position: int, removed: int, added: int) -> None:
-        self.on_items_changed()
+        self.on_items_changed(model)
 
     def _animate_target(self, anim_target: Gtk.Widget, value_from=0, value_to=1, duration=175):
         target = Adw.PropertyAnimationTarget.new(anim_target, "opacity")
@@ -2143,7 +2163,7 @@ class MainWindow(Adw.ApplicationWindow):
         anim.play()
 
     def on_items_changed(self, view_stack: Adw.ViewStack = None, param: GObject.ParamSpec = None) -> None:
-        self.logger.debug(f"Caller : {type(view_stack)}")
+        self.logger.debug(f"Caller: '{view_stack._name_}'")
 
         current_page_name = self.view_stack.get_visible_child_name()
         has_results = self.results_model.get_n_items() > 0
@@ -2162,12 +2182,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_copy_all.set_sensitive(can_save_or_copy)
         self.toggle_button_sort.set_sensitive(has_results)
         self.button_clear.set_sensitive(can_clear_or_search)
-        self.search_provider.set_sensitive(can_clear_or_search)
 
         self._update_badge_numbers()
 
         show_empty = (current_page_name in ("results", "checksum-results") and not has_results) or (current_page_name == "errors" and not has_errors)
-
         if show_empty:
             self._modify_placeholder(current_page_name)
             target = self.empty_placeholder
@@ -2368,11 +2386,12 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _: Gtk.Button) -> None:
         self._results_to_txt(self._txt_to_file)
 
-    def _on_clear_clicked(self, _: Gtk.Button) -> None:
+    def _on_clear_clicked(self, caller: Gtk.Button | Gio.SimpleAction, _=None) -> None:
         if self.button_clear.is_sensitive():
-            self.search_provider.show_search_bar(False)
+            caller._name_ = "Clear Button / Action"
             self.results_model.remove_all()
             self.errors_model.remove_all()
+            self.search_provider.on_filtered_items_changed(caller)
             self.add_toast("✅ Results cleared")
 
     def _on_sort_toggled(self, toggle: Gtk.ToggleButton) -> None:
@@ -2407,13 +2426,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _create_actions(self) -> None:
         actions = (
-            ("show-searchbar", lambda *_: self.search_provider.show_search_bar(True), ["<Ctrl>F"]),
-            ("hide-searchbar", lambda *_: self.search_provider.show_search_bar(False), ["Escape"]),
+            ("show-searchbar", lambda *_: self.search_provider.set_search_bar_visible(True), ["<Ctrl>F"]),
+            ("hide-searchbar", lambda *_: self.search_provider.set_search_bar_visible(False), ["Escape"]),
             ("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
             ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl><Shift>C"]),
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
             ("results-sort", lambda *_: self.toggle_button_sort.set_active(not self.toggle_button_sort.get_active()), ["<Ctrl>R"]),
-            ("results-clear", lambda *_: self._on_clear_clicked(_), ["<Ctrl>L"]),
+            ("results-clear", lambda *_: self._on_clear_clicked(*_), ["<Ctrl>L"]),
             ("quit", lambda *_: self.close(), ["<Ctrl>Q"]),
         )
 
