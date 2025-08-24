@@ -110,6 +110,7 @@ toast { background-color: #000000; }
 .view-switcher button:nth-child(3):hover { background-color: #e03445; color: @accent_fg_color; }
 .view-switcher button:nth-child(3):checked { background-color: #c7162b; color: @accent_fg_color; }
 .no-background { background-color: transparent; }
+.theme-background-see-through { background-color: alpha(@theme_bg_color, 0.9 ); }
 .background-light { background-color: shade(@theme_bg_color, 1.32); }
 .background-dark { background-color: rgba(0, 0, 0, 0.2); }
 .padding-small { padding-top: 2px; padding-left : 2px; padding-right : 2px; padding-bottom: 2px; }
@@ -1264,12 +1265,12 @@ class WidgetChecksumResultRow(WidgetHashRow):
 
     def bind(self, row_data, list_item, model, parent):
         super().bind(row_data, list_item, model, parent)
-        list_item.notify_binding = row_data.connect("notify::line-no", self.on_match_changed)
+        list_item.notify_binding_id = row_data.connect("notify::line-no", self.on_match_changed)
         self.on_match_changed(row_data, None)
 
     def unbind(self, row_data, list_item, parent):
         super().unbind(row_data, list_item, parent)
-        row_data.disconnect(list_item.notify_binding)
+        row_data.disconnect(list_item.notify_binding_id)
 
 
 class WidgetHashErrorRow(WidgetHashRow):
@@ -1307,10 +1308,17 @@ class SearchProvider(Gtk.Button):
         self._search_options: dict[str, bool] = {}
         self._search_terms: list[str] = []
         self._view_stack: Adw.ViewStack | None = None
-        self._filters: dict[str, Gtk.Filter] = {}
+        self._models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]] = None
 
         self.connect("clicked", lambda _: self.show_search_bar(not self.get_search_bar().is_visible()))
+        self._setup_status_page()
         self._setup_search()
+
+    def get_status_page(self) -> Gtk.Revealer:
+        return self._refine_your_search_revealer
+
+    def get_search_bar(self) -> Gtk.Box:
+        return self._search_bar
 
     def toggle_option(self, name: str) -> None:
         if opt := self._setting_search_option_widgets.get(name):
@@ -1319,20 +1327,33 @@ class SearchProvider(Gtk.Button):
         else:
             self.logger.debug(f"Search option '{name}' not found")
 
-    def get_search_bar(self) -> Gtk.Box:
-        return self._content
+    def _has_search(self) -> bool:
+        return len(self._search_entry.get_text()) > 0
+
+    def _setup_status_page(self) -> None:
+        self._refine_your_search_status_page = Adw.StatusPage(
+            title="Refine your search",
+            icon_name="system-search-symbolic",
+            description="Your current search returned no results. Try adjusting your search parameters.",
+            css_classes=["theme-background-see-through"],
+        )
+        self._refine_your_search_revealer = Gtk.Revealer(
+            transition_type=Gtk.RevealerTransitionType.CROSSFADE,
+            reveal_child=False,
+            can_target=False,
+            child=self._refine_your_search_status_page,
+        )
 
     def _setup_search(self) -> None:
-        self._content = Gtk.Box(
+        self._search_bar = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL,
-            css_classes=["background-light", "rounded-medium", "border-small"],
             valign=Gtk.Align.END,
-            spacing=6,
             margin_start=10,
             margin_end=10,
-            margin_bottom=20,
             visible=False,
+            css_classes=["background-light", "rounded-medium", "border-small"],
         )
+
         self._search_entry = Gtk.SearchEntry(
             placeholder_text="Type to filter results (ESC to clear)",
             hexpand=True,
@@ -1341,8 +1362,8 @@ class SearchProvider(Gtk.Button):
         )
         options_box = self._create_options_box()
 
-        self._content.append(self._search_entry)
-        self._content.append(options_box)
+        self._search_bar.append(self._search_entry)
+        self._search_bar.append(options_box)
 
     def _create_options_box(self) -> Gtk.Box:
         options_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_end=8)
@@ -1357,11 +1378,13 @@ class SearchProvider(Gtk.Button):
 
         return options_box
 
-    def complete_setup(self, view_stack: Adw.ViewStack, filters: dict[str, Gtk.Filter]) -> None:
+    def complete_setup(self, view_stack: Adw.ViewStack, models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]]) -> None:
         self._view_stack = view_stack
-        self._filters = filters
+        self._models_n_filters = models_n_filters
         self._connect_search_to_view()
+
         view_stack.connect("notify::visible-child", self._connect_search_to_view)
+        view_stack.connect("notify::visible-child", self.on_filtered_items_changed)
 
     def show_search_bar(self, show: bool) -> None:
         if not self.is_sensitive():
@@ -1380,7 +1403,6 @@ class SearchProvider(Gtk.Button):
         new_value = button.get_active()
         self._search_options[key] = new_value
         self._search_entry.emit("search-changed")
-
         self.logger.debug(f"Search option '{key}' toggled to '{new_value}'")
 
     def _connect_search_to_view(self, _view_stack: Adw.ViewStack = None, _param: GObject.ParamSpecString = None) -> None:
@@ -1388,8 +1410,10 @@ class SearchProvider(Gtk.Button):
             self._search_entry.disconnect(self._search_entry.current_search_handler_id)
 
         current_page_name = self._view_stack.get_visible_child_name()
-        custom_filter = self._filters.get(current_page_name)
+        _, _, custom_filter = self._models_n_filters.get(current_page_name)
+
         self._search_entry.current_search_handler_id = self._search_entry.connect("search-changed", self._on_search_changed, custom_filter)
+        self._search_entry.emit("search-changed")
         self.logger.debug(f"Search connected to '{current_page_name}'")
 
     def _on_search_changed(self, entry: Gtk.SearchEntry, custom_filter: Gtk.Filter) -> None:
@@ -1404,6 +1428,18 @@ class SearchProvider(Gtk.Button):
             self._search_terms = search_text.split()
 
         custom_filter.changed(Gtk.FilterChange.DIFFERENT)
+
+    def on_filtered_items_changed(self, *args):
+        current_page_name = self._view_stack.get_visible_child_name()
+        model, model_filtered, _ = self._models_n_filters.get(current_page_name)
+
+        has_items = model.get_n_items() > 0
+        has_items_filtered = model_filtered.get_n_items() > 0
+        has_search = self._has_search()
+
+        search_status_page = self.get_status_page()
+        search_status_page.set_reveal_child(has_items and not has_items_filtered and has_search)
+        self.logger.debug(f"Caller : '{type(args[0])}'")
 
     def _has_match(self, row: RowData) -> bool:
         if not self._search_terms:
@@ -1576,7 +1612,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.job_in_progress = threading.Event()
 
         self.queue_handler = QueueUpdateHandler()
-        self._calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
+        self.calculate_hashes = CalculateHashes(self.queue_handler, self.cancel_event)
 
         self._build_ui()
         self._create_actions()
@@ -1591,15 +1627,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.overlay = Gtk.Overlay()
         self.toast_overlay.set_child(self.overlay)
 
-        self.search_provider = SearchProvider()
-        self.overlay.add_overlay(self.search_provider.get_search_bar())
-
         self._setup_drag_and_drop()
         self.overlay.add_overlay(self.dnd_revealer)
 
         self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         self.overlay.set_child(self.toolbar_view)
 
+        self.search_provider = SearchProvider()
         self._setup_top_bar()
         self.toolbar_view.add_top_bar(self.top_bar_box)
 
@@ -1704,6 +1738,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.results_custom_filter = Gtk.CustomFilter.new(self.search_provider.results_filter_func)
         self.results_model_filtered = Gtk.FilterListModel.new(results_model_sorted, self.results_custom_filter)
+        self.results_model_filtered.connect("items-changed", self.search_provider.on_filtered_items_changed)
 
         results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
 
@@ -1795,6 +1830,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.errors_custom_filter = Gtk.CustomFilter.new(self.search_provider.errors_filter_func)
         self.errors_model_filtered = Gtk.FilterListModel.new(self.errors_model, self.errors_custom_filter)
+        self.errors_model_filtered.connect("items-changed", self.search_provider.on_filtered_items_changed)
 
         errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
 
@@ -1806,16 +1842,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_content(self) -> None:
         self.content_overlay = Gtk.Overlay()
-
         self.clamp = Adw.Clamp()
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
-
         self.view_stack = Adw.ViewStack(visible=False)
         self.view_switcher.set_stack(self.view_stack)
-        self.clamp.set_child(self.view_stack)
 
-        self.content_overlay.set_child(self.clamp)
         self.content_overlay.add_overlay(self.empty_placeholder)
+        self.content_overlay.add_overlay(self.search_provider.get_status_page())
+        self.content_overlay.add_overlay(self.search_provider.get_search_bar())
+
+        self.clamp.set_child(self.view_stack)
+        self.content_overlay.set_child(self.clamp)
 
         self._setup_results_view()
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_container, "results", "Results", "view-list-symbolic")
@@ -1824,12 +1861,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._setup_errors_view()
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_container, "errors", "Errors", "dialog-error-symbolic")
 
-        filters = {
-            "checksum-results": self.results_custom_filter,
-            "results": self.results_custom_filter,
-            "errors": self.errors_custom_filter,
+        models_n_filters = {
+            "checksum-results": (self.results_model, self.results_model_filtered, self.results_custom_filter),
+            "results": (self.results_model, self.results_model_filtered, self.results_custom_filter),
+            "errors": (self.errors_model, self.errors_model_filtered, self.errors_custom_filter),
         }
-        self.search_provider.complete_setup(self.view_stack, filters)
+        self.search_provider.complete_setup(self.view_stack, models_n_filters)
 
         self.view_stack.connect("notify::visible-child", self.on_items_changed)
 
@@ -1844,26 +1881,31 @@ class MainWindow(Adw.ApplicationWindow):
         self.header_bar.pack_end(button_menu)
         self.header_bar.pack_end(self.search_provider)
 
-    def _modify_placeholder(self, current_page_name: str) -> bool:
+    def _modify_placeholder(self, current_page_name: str) -> bool | None:
+        title = None
         if current_page_name == "results":
             title = "No Results"
             icon_name = "text-x-generic-symbolic"
             description = "Select files or folders to calculate their hashes."
+
+        elif current_page_name == "checksum-results":
+            title = "Nothing to verify"
+            icon_name = "view-list-symbolic"
+            description = " "
+
         elif current_page_name == "errors":
             title = "No Errors"
             icon_name = "object-select-symbolic"
             description = " "
-        else:
-            title = "Nothing to verify"
-            icon_name = "view-list-symbolic"
-            description = " "
-        current_title = self.empty_placeholder.get_title()
-        if current_title == title:
-            return False
-        self.empty_placeholder.set_title(title)
-        self.empty_placeholder.set_icon_name(icon_name)
-        self.empty_placeholder.set_description(description)
-        return True
+
+        if title:
+            current_title = self.empty_placeholder.get_title()
+            if current_title == title:
+                return False
+            self.empty_placeholder.set_title(title)
+            self.empty_placeholder.set_icon_name(icon_name)
+            self.empty_placeholder.set_description(description)
+            return True
 
     def _sort_by_hierarchy(self, row1: ResultRowData, row2: ResultRowData, _) -> int:
         """
@@ -1885,18 +1927,6 @@ class MainWindow(Adw.ApplicationWindow):
             return -1 if p1.name < p2.name else 1
         return 0
 
-    def _timeout_add(self, interval: int, callback: Callable[..., bool], *args):
-        interval_seconds = interval / 1000
-
-        def loop():
-            while True:
-                keep_going = callback(*args)
-                if not keep_going:
-                    break
-                time.sleep(interval_seconds)
-
-        threading.Thread(target=loop, daemon=True).start()
-
     def start_job(
         self,
         base_paths: Iterable[Path] | None,
@@ -1915,12 +1945,24 @@ class MainWindow(Adw.ApplicationWindow):
         self.progress_bar.set_opacity(1.0)
 
         threading.Thread(
-            target=self._calculate_hashes,
+            target=self.calculate_hashes,
             args=(base_paths or paths, paths, hashing_algorithms, options),
             daemon=True,
         ).start()
 
         self._timeout_add(10, self._process_queue)
+
+    def _timeout_add(self, interval: int, callback: Callable[..., bool], *args):
+        interval_seconds = interval / 1000
+
+        def loop():
+            while True:
+                keep_going = callback(*args)
+                if not keep_going:
+                    break
+                time.sleep(interval_seconds)
+
+        threading.Thread(target=loop, daemon=True).start()
 
     def _pending_job(self, *args):
         if self.job_in_progress.is_set():
@@ -1974,7 +2016,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _processing_complete(self) -> None:
         self.queue_handler.reset()
         self.button_cancel_job.set_sensitive(False)
-        self._calculate_hashes.reset_counters()
+        self.calculate_hashes.reset_counters()
 
         def done(_):
             self.progress_bar.set_fraction(0.0)
@@ -2087,9 +2129,16 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_items_changed(self, model: Gio.ListStore, position: int, removed: int, added: int) -> None:
         self.on_items_changed()
 
-    def on_items_changed(self, view_stack: Adw.ViewStack = None, param: GObject.ParamSpec = None) -> None:
-        current_page_name = self.view_stack.get_visible_child_name()
+    def _animate_target(self, anim_target: Gtk.Widget, value_from=0, value_to=1, duration=175):
+        target = Adw.PropertyAnimationTarget.new(anim_target, "opacity")
+        anim = Adw.TimedAnimation(widget=self, target=target, value_from=value_from, value_to=value_to, duration=duration)
+        anim.set_easing(Adw.Easing.EASE_IN_QUAD)
+        anim.play()
 
+    def on_items_changed(self, view_stack: Adw.ViewStack = None, param: GObject.ParamSpec = None) -> None:
+        self.logger.debug(f"Caller : {type(view_stack)}")
+
+        current_page_name = self.view_stack.get_visible_child_name()
         has_results = self.results_model.get_n_items() > 0
         has_errors = self.errors_model.get_n_items() > 0
         save_errors = self.pref.save_errors()
@@ -2121,9 +2170,7 @@ class MainWindow(Adw.ApplicationWindow):
         if target.is_visible() and not (view_stack and param):
             return
 
-        anim_target = Adw.CallbackAnimationTarget.new(lambda opacity: target.set_opacity(opacity))
-        anim = Adw.TimedAnimation(widget=self, value_from=0.4, value_to=1.0, duration=250, target=anim_target)
-        anim.play()
+        self._animate_target(target)
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
