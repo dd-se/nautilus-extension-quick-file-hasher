@@ -110,7 +110,7 @@ toast { background-color: #000000; }
 .view-switcher button:nth-child(3):hover { background-color: #e03445; color: @accent_fg_color; }
 .view-switcher button:nth-child(3):checked { background-color: #c7162b; color: @accent_fg_color; }
 .no-background { background-color: transparent; }
-.theme-background-see-through { background-color: alpha(@theme_bg_color, 0.9 ); }
+.theme-background-see-through { background-color: alpha(@theme_bg_color, 0.8 ); }
 .background-light { background-color: shade(@theme_bg_color, 1.32); }
 .background-dark { background-color: rgba(0, 0, 0, 0.2); }
 .padding-small { padding-top: 2px; padding-left : 2px; padding-right : 2px; padding-bottom: 2px; }
@@ -1080,7 +1080,7 @@ class ResultRowData(RowData):
         return output_style.format(hash=hash_value, filename=filename, algo=algo)
 
     def get_search_fields(self, lower: bool = False) -> tuple[str, str, str]:
-        path_str = self.path.as_posix().lower() if lower else self.path.as_posix()
+        path_str = self.prop_path.lower() if lower else self.prop_path
         return (path_str, self.hash_value, self.algo.replace("_", "-"))
 
     def get_key(self):
@@ -1111,8 +1111,8 @@ class ErrorRowData(RowData):
 
     def get_search_fields(self, lower: bool = False) -> tuple[str, str]:
         if lower:
-            return (self.path.as_posix().lower(), self._error_message.lower())
-        return (self.path.as_posix(), self._error_message)
+            return (self.prop_path.lower(), self._error_message.lower())
+        return (self.prop_path, self._error_message)
 
 
 class WidgetHashRow(Gtk.Box):
@@ -1429,9 +1429,8 @@ class SearchProvider(Gtk.Button):
         has_items = model.get_n_items() > 0
         has_items_filtered = model_filtered.get_n_items() > 0
         self._set_search_button_sensitive(has_items)
-        has_search = self._has_search()
 
-        self._set_status_page_reveal(has_items and not has_items_filtered and has_search)
+        self._set_status_page_reveal(has_items and not has_items_filtered)
         self.logger.debug(f"Caller: '{args[0]._name_}'")
 
     def set_search_bar_visible(self, visible: bool) -> None:
@@ -1483,25 +1482,26 @@ class SearchProvider(Gtk.Button):
         return self._has_match(row)
 
 
-class CompareBanner(Gtk.Revealer):
+class Banner(Gtk.Revealer):
     def __init__(self):
-        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=300, hexpand=True)
+        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=300)
         self.main_grid = Gtk.Grid(
             margin_bottom=8,
             hexpand=True,
-            column_homogeneous=True,
+            column_homogeneous=False,
+            halign=Gtk.Align.CENTER,
             css_classes=["padding-small", "custom-banner-theme", "rounded-bottom", "rounded-top-small"],
         )
 
         self.prefix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
-        self.content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, spacing=4)
+        self.content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
         self.suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
 
         self.main_grid.attach(self.prefix, 0, 0, 1, 1)
         self.main_grid.attach(self.content, 1, 0, 1, 1)
         self.main_grid.attach(self.suffix, 2, 0, 1, 1)
 
-        self.content_label = Gtk.Label(xalign=0)
+        self.content_label = Gtk.Label(xalign=0, margin_start=10, margin_end=10)
         self.content.append(self.content_label)
 
         button_close = Gtk.Button.new_from_icon_name("window-close-symbolic")
@@ -1521,8 +1521,16 @@ class CompareBanner(Gtk.Revealer):
         widget.set_valign(Gtk.Align.CENTER)
         self.prefix.append(widget)
 
-    def show_results(self, matches: int, no_matches: int) -> None:
-        self.content_label.set_text(f"✔ Match: {matches:<10} ✖ No Match: {no_matches}")
+    def add_content(self, widget: Gtk.Widget) -> None:
+        widget.set_valign(Gtk.Align.CENTER)
+        self.content.append(widget)
+
+    def add_suffix(self, widget: Gtk.Widget) -> None:
+        widget.set_valign(Gtk.Align.CENTER)
+        self.suffix.insert_child_after(widget, None)
+
+    def set_content_label(self, text: str) -> None:
+        self.content_label.set_text(text)
         self.set_reveal_child(True)
 
     def close(self):
@@ -1650,19 +1658,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._setup_drag_and_drop()
         self.overlay.add_overlay(self.dnd_revealer)
 
-        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=6)
         self.overlay.set_child(self.toolbar_view)
 
         self.search_provider = SearchProvider()
         self._setup_top_bar()
         self.toolbar_view.add_top_bar(self.top_bar_box)
 
-        self.view_switcher = Adw.ViewSwitcher(
-            halign=Gtk.Align.CENTER,
-            policy=Adw.ViewSwitcherPolicy.WIDE,
-            css_classes=["view-switcher"],
-            margin_bottom=6,
-        )
+        self.view_switcher = Adw.ViewSwitcher(halign=Gtk.Align.CENTER, policy=Adw.ViewSwitcherPolicy.WIDE, css_classes=["view-switcher"])
         self.toolbar_view.add_top_bar(self.view_switcher)
 
         self._setup_content()
@@ -1685,8 +1688,8 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
-        drop.connect("enter", lambda *_: (self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[1])
-        drop.connect("leave", lambda *_: self.dnd_revealer.set_reveal_child(False))
+        drop.connect("enter", lambda *_: (self.dnd_revealer.set_can_target(True), self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[2])
+        drop.connect("leave", lambda *_: (self.dnd_revealer.set_can_target(False), self.dnd_revealer.set_reveal_child(False)))
 
         def on_drop(ctrl, drop: Gdk.FileList, x, y) -> bool:
             try:
@@ -1697,13 +1700,14 @@ class MainWindow(Adw.ApplicationWindow):
                 self.add_toast(f"Drag & Drop failed: {e}")
                 return False
             finally:
+                self.dnd_revealer.set_can_target(False)
                 self.dnd_revealer.set_reveal_child(False)
 
         drop.connect("drop", on_drop)
         self.add_controller(drop)
 
     def _setup_top_bar(self) -> None:
-        self.top_bar_box = Gtk.CenterBox(orientation=Gtk.Orientation.HORIZONTAL, margin_bottom=10)
+        self.top_bar_box = Gtk.CenterBox(orientation=Gtk.Orientation.HORIZONTAL, margin_bottom=6)
 
         button_box = Gtk.Box(spacing=6, css_classes=["toolbar"])
 
@@ -1828,10 +1832,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_checksum_reset.set_child(Adw.ButtonContent(icon_name="edit-undo-symbolic", label="Reset"))
         self.button_checksum_reset.connect("clicked", self._on_checksum_results_reset_request, checksum_results_selection_model)
 
-        self.checksum_banner_compare = CompareBanner()
-        button_hide_matches = Gtk.Button(css_classes=["flat", "rounded-top-small", "rounded-bottom"])
-        button_hide_matches.set_child(Adw.ButtonContent(icon_name="edit-find-symbolic", label="Toggle Hide Matches", tooltip_text=self.search_provider.SEARCH_OPTIONS[2][2]))
-        button_hide_matches.connect("clicked", lambda _: self.search_provider.toggle_option("hide-checksum-matches"))
+        self.checksum_banner_compare = Banner()
+        button_hide_matches = Gtk.Button(css_classes=["flat"])
+        button_hide_matches.set_child(Adw.ButtonContent(icon_name="zoom-out-symbolic", tooltip_text="Toggle Hide Matches"))
+
+        def toggle_hide_matches(button: Gtk.Button):
+            self.search_provider.toggle_option(self.search_provider.SEARCH_OPTIONS[2][0])
+            self.search_provider.set_search_bar_visible(True)
+
+        button_hide_matches.connect("clicked", toggle_hide_matches)
         self.checksum_banner_compare.add_prefix(button_hide_matches)
 
         button_row.append(self.button_checksum_compare)
@@ -1870,7 +1879,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.clamp = Adw.Clamp()
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
         self.view_stack = Adw.ViewStack(visible=False)
-        self.view_stack.set_size_request(MainWindow.DEFAULT_WIDTH, -1)
         self.view_stack._name_ = "View Stack"
         self.view_switcher.set_stack(self.view_stack)
 
@@ -1918,12 +1926,12 @@ class MainWindow(Adw.ApplicationWindow):
         elif current_page_name == "checksum-results":
             title = "Nothing to verify"
             icon_name = "view-list-symbolic"
-            description = " "
+            description = "Select files or folders to calculate their hashes."
 
         elif current_page_name == "errors":
             title = "No Errors"
             icon_name = "object-select-symbolic"
-            description = " "
+            description = "Everything looks good."
 
         if title:
             current_title = self.empty_placeholder.get_title()
@@ -2047,8 +2055,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._scroll_to_bottom()
             self.job_in_progress.clear()
 
-        anim_target = Adw.CallbackAnimationTarget.new(lambda opacity: self.progress_bar.set_opacity(opacity))
+        anim_target = Adw.PropertyAnimationTarget.new(self.progress_bar, "opacity")
         anim = Adw.TimedAnimation.new(self, 1.0, 0.0, 250, anim_target)
+        anim.set_easing(Adw.Easing.EASE_OUT_QUAD)
         anim.connect("done", done)
         anim.play()
 
@@ -2065,7 +2074,7 @@ class MainWindow(Adw.ApplicationWindow):
             value_from=current_value,
             value_to=target_value,
             duration=500,
-            target=Adw.CallbackAnimationTarget.new(lambda value: vadjustment.set_value(value)),
+            target=Adw.PropertyAnimationTarget.new(vadjustment, "value"),
         ).play()
 
     def _txt_to_file(self, output: bytes | None) -> None:
@@ -2153,7 +2162,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_items_changed(self, model: Gio.ListStore, position: int, removed: int, added: int) -> None:
         self.on_items_changed(model)
 
-    def _animate_target(self, anim_target: Gtk.Widget, value_from=0, value_to=1, duration=175):
+    def _animate_target(self, anim_target: Gtk.Widget, value_from=0.4, value_to=1, duration=175):
         target = Adw.PropertyAnimationTarget.new(anim_target, "opacity")
         anim = Adw.TimedAnimation(widget=self, target=target, value_from=value_from, value_to=value_to, duration=duration)
         anim.set_easing(Adw.Easing.EASE_IN_QUAD)
@@ -2237,8 +2246,8 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 GLib.idle_add(set_row_data_line_no, row_data, 0)
                 no_matches += 1
-
-        GLib.idle_add(self.checksum_banner_compare.show_results, matches, no_matches)
+        content = f"✔ Match: {matches:<8} ✖ No Match: {no_matches:<8} Total: {matches + no_matches}"
+        GLib.idle_add(self.checksum_banner_compare.set_content_label, content)
 
     def _on_checksum_file_upload(self, _: Gtk.Button) -> None:
         file_dialog = Gtk.FileDialog(title="Select File")
