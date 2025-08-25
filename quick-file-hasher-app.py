@@ -348,6 +348,7 @@ class ConfigMixin:
 
 class Preferences(Adw.PreferencesWindow, ConfigMixin):
     __gtype_name__ = "Preferences"
+    _name_ = "Preferences"
     _instance = None
     __gsignals__ = {
         "main-window-signal-handler": (GObject.SignalFlags.RUN_FIRST, None, (str, str, bool)),
@@ -1795,6 +1796,7 @@ class MainWindow(Adw.ApplicationWindow):
         button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
 
         checksum_results_selection_model = Gtk.MultiSelection.new(self.results_model_filtered)
+        checksum_results_selection_model._name_ = "Checksum Results Selection Model"
         checksum_results_selection_model.connect("selection-changed", self._on_checksum_selection_changed)
 
         factory = self._setup_factory(WidgetChecksumResultRow)
@@ -1871,6 +1873,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.clamp = Adw.Clamp()
         self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
         self.view_stack = Adw.ViewStack(visible=False)
+        self.view_stack.set_size_request(MainWindow.DEFAULT_WIDTH, -1)
         self.view_stack._name_ = "View Stack"
         self.view_switcher.set_stack(self.view_stack)
 
@@ -2211,8 +2214,11 @@ class MainWindow(Adw.ApplicationWindow):
             toast = "❌ Something went wrong. Check 'Errors' view."
             self.errors_model.splice(self.errors_model.get_n_items(), 0, errors)
 
+        has_selected_rows = len(self.rows_selected) > 0
+        has_checksum_rows = len(self.checksum_rows) > 0
+        self.button_checksum_compare.set_sensitive(has_selected_rows and has_checksum_rows)
+        self.button_checksum_reset.set_sensitive(has_checksum_rows)
         self.add_toast(toast)
-        self.on_items_changed()
 
     def _on_checksum_results_reset_request(self, button: Gtk.Button, selection_model: Gtk.MultiSelection):
         selection_model.select_all()
@@ -2273,7 +2279,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         bitset: Gtk.Bitset = selection_model.get_selection()
         if bitset.is_empty():
-            self.on_items_changed()
+            self.on_items_changed(selection_model)
             return
 
         valid, iter_, index = Gtk.BitsetIter.init_first(bitset)
@@ -2283,7 +2289,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.rows_selected.append(item)
             valid, index = iter_.next()
 
-        self.on_items_changed()
+        self.on_items_changed(selection_model)
 
     def on_multi_hash_requested(self, _: Gtk.Button, row: ResultRowData) -> None:
         MultiHashDialog(self, row, self.pref.get_working_config())
