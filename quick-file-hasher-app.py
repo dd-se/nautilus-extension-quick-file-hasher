@@ -822,10 +822,7 @@ class QueueUpdateHandler:
         self.c = 0
 
     def update_progress(self, progress: float) -> None:
-        self.c = self.c + 1
-        if self.c == 5 or progress == 1.0:
-            self.c = 0
-            self.q.put(("progress", progress))
+        self.q.put(("progress", progress))
 
     def update_result(self, base_path: Path, file: Path, hash_value: str, algo: str) -> None:
         self.q.put(("result", base_path, file, hash_value, algo))
@@ -837,7 +834,7 @@ class QueueUpdateHandler:
         self.q.put(("toast", message))
 
     def get_update(self):
-        return self.q.get_nowait()
+        return self.q.get(timeout=0.10)
 
     def is_empty(self) -> bool:
         return self.q.empty()
@@ -2011,8 +2008,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         new_rows = []
         new_errors = []
-        additions = 0
-        while additions < 500:
+        while True:
             try:
                 update = self.queue_handler.get_update()
             except Empty:
@@ -2023,11 +2019,9 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self.progress_bar.set_fraction, update[1])
 
             elif kind == "result":
-                additions += 1
                 new_rows.append(ResultRowData(*update[1:]))
 
             elif kind == "error":
-                additions += 1
                 new_errors.append(ErrorRowData(*update[1:]))
 
             elif kind == "toast":
