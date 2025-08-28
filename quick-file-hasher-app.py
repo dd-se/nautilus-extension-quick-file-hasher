@@ -1242,31 +1242,28 @@ class WidgetChecksumResultRow(WidgetHashRow):
 
     def on_match_changed(self, row_data: ResultRowData, _):
         if row_data.line_no == -1:
-            self.remove_css_class("custom-success")
-            self.remove_css_class("custom-error")
             self.suffix_label.set_text("")
-            self._set_label_state(None)
             self.prefix_icon.set_from_icon_name(self._icon_name)
+
+            for cls in ("custom-success", "custom-error"):
+                self.suffix_label.remove_css_class(cls)
+                self.prefix_icon.remove_css_class(cls)
+
         elif row_data.line_no > 0:
             self.suffix_label.set_text(f"Matched line {row_data.line_no}")
-            self._set_label_state("success")
             self.prefix_icon.set_from_icon_name("object-select-symbolic")
+            self._set_label_state("custom-success", "custom-error")
+
         else:
             self.suffix_label.set_text("No match found")
-            self._set_label_state("error")
             self.prefix_icon.set_from_icon_name("dialog-error-symbolic")
+            self._set_label_state("custom-error", "custom-success")
 
-    def _set_label_state(self, state: str | None):
-        for cls in ("custom-success", "custom-error"):
-            self.suffix_label.remove_css_class(cls)
-            self.prefix_icon.remove_css_class(cls)
-
-        if state == "success":
-            self.suffix_label.add_css_class("custom-success")
-            self.prefix_icon.add_css_class("custom-success")
-        elif state == "error":
-            self.suffix_label.add_css_class("custom-error")
-            self.prefix_icon.add_css_class("custom-error")
+    def _set_label_state(self, add: str, remove: str):
+        self.suffix_label.add_css_class(add)
+        self.prefix_icon.add_css_class(add)
+        self.suffix_label.remove_css_class(remove)
+        self.prefix_icon.remove_css_class(remove)
 
     def bind(self, row_data, list_item, model, parent):
         super().bind(row_data, list_item, model, parent)
@@ -1423,6 +1420,8 @@ class SearchProvider(Gtk.Button):
         custom_filter.changed(Gtk.FilterChange.DIFFERENT)
 
     def on_filtered_items_changed(self, *args) -> None:
+        self.logger.debug(f"Caller: '{args[0]._name_}'")
+
         current_page_name = self._view_stack.get_visible_child_name()
         model, model_filtered, _ = self._models_n_filters.get(current_page_name)
 
@@ -1431,7 +1430,6 @@ class SearchProvider(Gtk.Button):
         self._set_search_button_sensitive(has_items)
 
         self._set_status_page_reveal(has_items and not has_items_filtered)
-        self.logger.debug(f"Caller: '{args[0]._name_}'")
 
     def set_search_bar_visible(self, visible: bool) -> None:
         if not self.is_sensitive():
@@ -1781,13 +1779,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.toggle_button_sort.set_child(Adw.ButtonContent(icon_name="media-playlist-shuffle-symbolic", label="Sort", tooltip_text="Sort results by path hierarchy"))
         self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
 
-        self.button_clear = Gtk.Button(sensitive=False)
-        self.button_clear.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear results", tooltip_text="Clear all results and errors"))
-        self.button_clear.connect("clicked", self._on_clear_clicked)
+        self.button_clear_all = Gtk.Button(sensitive=False)
+        self.button_clear_all.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear results", tooltip_text="Clear all results and errors"))
+        self.button_clear_all.connect("clicked", self._on_clear_all_clicked)
 
         button_row.append(self.button_copy_all)
         button_row.append(self.toggle_button_sort)
-        button_row.append(self.button_clear)
+        button_row.append(self.button_clear_all)
 
         self.results_container.append(button_row)
         self.results_container.append(self.results_scrolled_window)
@@ -1856,6 +1854,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_errors_view(self) -> None:
         self.errors_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
 
         self.errors_model = Gio.ListStore.new(ErrorRowData)
         self.errors_model._name_ = "Errors Model"
@@ -1872,6 +1871,15 @@ class MainWindow(Adw.ApplicationWindow):
         errors_list_view = Gtk.ListView(model=errors_selection_model, factory=factory, css_classes=["no-background", "rich-list"])
 
         errors_scrolled_window = self._setup_scrolled_window(errors_list_view)
+
+        self.button_clear_errors = Gtk.Button(sensitive=False)
+        self.button_clear_errors._name_ = "Clear Errors Button"
+        self.button_clear_errors.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear Errors", tooltip_text="Clear all errors"))
+        self.button_clear_errors.connect("clicked", self._on_clear_errors_clicked)
+
+        button_row.append(self.button_clear_errors)
+
+        self.errors_container.append(button_row)
         self.errors_container.append(errors_scrolled_window)
 
     def _setup_content(self) -> None:
@@ -2187,7 +2195,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save_to_file.set_sensitive(can_save_or_copy)
         self.button_copy_all.set_sensitive(can_save_or_copy)
         self.toggle_button_sort.set_sensitive(has_results)
-        self.button_clear.set_sensitive(can_clear_or_search)
+        self.button_clear_all.set_sensitive(can_clear_or_search)
+        self.button_clear_errors.set_sensitive(has_errors)
 
         self._update_badge_numbers()
 
@@ -2395,13 +2404,19 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _: Gtk.Button) -> None:
         self._results_to_txt(self._txt_to_file)
 
-    def _on_clear_clicked(self, caller: Gtk.Button | Gio.SimpleAction, _=None) -> None:
-        if self.button_clear.is_sensitive():
+    def _on_clear_all_clicked(self, caller: Gtk.Button | Gio.SimpleAction, _=None) -> None:
+        if self.button_clear_all.is_sensitive():
             caller._name_ = "Clear Button / Action"
             self.results_model.remove_all()
             self.errors_model.remove_all()
             self.search_provider.on_filtered_items_changed(caller)
             self.add_toast("✅ Results cleared")
+
+    def _on_clear_errors_clicked(self, button: Gtk.Button):
+        if button.is_sensitive():
+            self.errors_model.remove_all()
+            self.search_provider.on_filtered_items_changed(button)
+            self.add_toast("✅ Errors cleared")
 
     def _on_sort_toggled(self, toggle: Gtk.ToggleButton) -> None:
         if toggle.get_active():
@@ -2441,7 +2456,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl><Shift>C"]),
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
             ("results-sort", lambda *_: self.toggle_button_sort.set_active(not self.toggle_button_sort.get_active()), ["<Ctrl>R"]),
-            ("results-clear", lambda *_: self._on_clear_clicked(*_), ["<Ctrl>L"]),
+            ("results-clear", lambda *_: self._on_clear_all_clicked(*_), ["<Ctrl>L"]),
             ("quit", lambda *_: self.close(), ["<Ctrl>Q"]),
         )
 
