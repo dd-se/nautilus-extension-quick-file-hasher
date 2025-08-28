@@ -139,11 +139,12 @@ def get_logger(name: str) -> logging.Logger:
     loglevel = getattr(logging, loglevel_str, logging.INFO)
     logger = logging.getLogger(name)
     logger.setLevel(loglevel)
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("[%(asctime)s] %(levelname)-6s | %(name)-15s | %(funcName)-21s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.propagate = False
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter("[%(asctime)s] %(levelname)-5s | %(name)-15s | %(funcName)-25s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.propagate = False
     return logger
 
 
@@ -1656,7 +1657,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._setup_drag_and_drop()
         self.overlay.add_overlay(self.dnd_revealer)
 
-        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=6)
+        self.toolbar_view = Adw.ToolbarView(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         self.overlay.set_child(self.toolbar_view)
 
         self.search_provider = SearchProvider()
