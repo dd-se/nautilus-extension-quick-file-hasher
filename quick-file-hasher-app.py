@@ -54,7 +54,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # 
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_NAME = "Quick File Hasher"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.5"
 
 DEFAULTS = {
     "algo": "sha256",
