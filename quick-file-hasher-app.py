@@ -258,8 +258,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         return has_dir, validated_paths
 
     def get_background_items(self, current_folder: Nautilus.FileInfo) -> list[Nautilus.MenuItem]:
-        if valid_path := current_folder.get_location().get_path():
-            return self._create_menu("bg", [valid_path], True)
+        return
 
     def get_file_items(self, files: list[Nautilus.FileInfo]) -> list[Nautilus.MenuItem]:
         has_dir, files = self._validate_to_string(files)
