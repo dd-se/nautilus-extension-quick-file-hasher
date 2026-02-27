@@ -48,7 +48,7 @@ jobs:
         run: xvfb-run uv run python quick-file-hasher-app.py --help
 
       - name: Verify algorithm listing
-        run: uv run python quick-file-hasher-app.py --list-choices
+        run: xvfb-run uv run python quick-file-hasher-app.py --list-choices
 
       - name: Functional hash test
         run: |

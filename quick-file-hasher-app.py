@@ -2230,8 +2230,7 @@ class MainWindow(Adw.ApplicationWindow):
                 size_str = self._format_size(total_bytes)
                 speed_str = self._format_size(speed)
                 self.add_toast(
-                    f"✅ <b>{file_count}</b> file{'s' if file_count != 1 else ''} · "
-                    f"{size_str} · {elapsed:.1f}s · {speed_str}/s",
+                    f"✅ <b>{file_count}</b> file{'s' if file_count != 1 else ''} · {size_str} · {elapsed:.1f}s · {speed_str}/s",
                     timeout=4,
                 )
             self._last_job_stats = None
