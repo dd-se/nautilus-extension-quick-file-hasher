@@ -158,6 +158,7 @@ def get_logger(name: str) -> logging.Logger:
 
 
 Adw.init()
+Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -1878,14 +1879,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save_to_file.set_child(Adw.ButtonContent(icon_name="document-save-symbolic", label="Save", tooltip_text="Save results to file"))
         self.button_save_to_file.connect("clicked", self._on_save_clicked)
 
-        self.button_hash_text = Gtk.Button()
-        self.button_hash_text.set_child(Adw.ButtonContent(icon_name="accessories-text-editor-symbolic", label="Hash Text", tooltip_text="Hash arbitrary text strings (Ctrl+T)"))
-        self.button_hash_text.connect("clicked", lambda _: HashTextDialog(self))
-
         button_box.append(self.button_cancel_job)
         button_box.append(self.button_select_files)
         button_box.append(self.button_select_folders)
-        button_box.append(self.button_hash_text)
         button_box.append(self.button_save_to_file)
 
         self.header_bar = Adw.HeaderBar(title_widget=Gtk.Label(label=f"<big><b>{APP_NAME}</b></big>", use_markup=True))
