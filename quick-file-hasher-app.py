@@ -1645,6 +1645,8 @@ class HashTextDialog(Adw.Window):
 
     def __init__(self, parent: "MainWindow", **kwargs):
         if hasattr(self, "_initialized"):
+            # Clear the text buffer when reopening to ensure signals work properly
+            self._text_view.get_buffer().set_text("", 0)
             self.set_transient_for(parent)
             self.present()
             return
