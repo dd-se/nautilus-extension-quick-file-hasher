@@ -1653,7 +1653,7 @@ class HashTextDialog(Adw.Window):
             modal=True,
             transient_for=parent,
             default_width=550,
-            default_height=440,
+            default_height=550,
             hide_on_close=True,
             **kwargs,
         )
@@ -1693,7 +1693,7 @@ class HashTextDialog(Adw.Window):
             right_margin=8,
         )
         self._text_view.get_buffer().connect("changed", lambda *_: self._compute_hash())
-        text_scroll = Gtk.ScrolledWindow(child=self._text_view, min_content_height=120, vexpand=True)
+        text_scroll = Gtk.ScrolledWindow(child=self._text_view, min_content_height=120, max_content_height=200, vexpand=False)
         input_frame.set_child(text_scroll)
         main_box.append(input_frame)
 
