@@ -1690,13 +1690,20 @@ class HashTextDialog(Adw.PreferencesWindow):
         input_group = Adw.PreferencesGroup(title="Input Text", description="Type or paste text to hash")
         page.add(group=input_group)
 
+        self._byte_count_row = Adw.ActionRow(
+            title="0 bytes",
+            subtitle="Input size",
+        )
+        self._byte_count_row.add_prefix(Gtk.Image.new_from_icon_name("drive-harddisk-symbolic"))
+        input_group.add(child=self._byte_count_row)
+
         self._text_view = Gtk.TextView(
             wrap_mode=Gtk.WrapMode.WORD_CHAR,
             monospace=True,
-            top_margin=10,
-            bottom_margin=10,
-            left_margin=10,
-            right_margin=10,
+            top_margin=12,
+            bottom_margin=12,
+            left_margin=12,
+            right_margin=12,
         )
         self._text_view.get_buffer().connect("changed", lambda *_: self._compute_hash())
         key_ctrl = Gtk.EventControllerKey()
@@ -1704,19 +1711,11 @@ class HashTextDialog(Adw.PreferencesWindow):
         self._text_view.add_controller(key_ctrl)
         text_scroll = Gtk.ScrolledWindow(
             child=self._text_view,
-            min_content_height=90,
+            min_content_height=100,
             max_content_height=160,
-            css_classes=["card"],
         )
-        input_group.add(child=text_scroll)
-
-        self._byte_count_row = Adw.ActionRow(
-            title="0 bytes",
-            subtitle="Input size",
-            css_classes=["property"],
-        )
-        self._byte_count_row.add_prefix(Gtk.Image.new_from_icon_name("drive-harddisk-symbolic"))
-        input_group.add(child=self._byte_count_row)
+        text_row = Gtk.ListBoxRow(child=text_scroll, activatable=False, selectable=False)
+        input_group.add(child=text_row)
 
         result_group = Adw.PreferencesGroup(title="Hash Result")
         page.add(group=result_group)
