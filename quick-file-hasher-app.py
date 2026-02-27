@@ -22,7 +22,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import csv
 import hashlib
+import io
 import json
 import logging
 import os
@@ -33,6 +35,7 @@ import sys
 import threading
 import time
 import warnings
+from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -149,6 +152,7 @@ def get_logger(name: str) -> logging.Logger:
 
 
 Adw.init()
+Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
 
 class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
@@ -850,10 +854,16 @@ class CalculateHashes:
         self.cancel_event = cancel_event
         self._total_bytes = 0
         self._total_bytes_read = 0
+        self._start_time: float = 0
+        self._file_count: int = 0
 
     def __call__(self, base_paths: Iterable[Path], paths: Iterable[Path], hash_algorithms: Iterable[str], options: dict) -> None:
+        self._start_time = time.monotonic()
         jobs = self._create_jobs(base_paths, paths, options)
+        self._file_count = len(jobs["paths"])
         self._execute_jobs(jobs, hash_algorithms, options)
+        elapsed = time.monotonic() - self._start_time
+        self.queue_handler.q.put(("stats", self._file_count, self._total_bytes, elapsed))
 
     def _execute_jobs(self, jobs: dict[str, list], hash_algorithms: Iterable[str], options: dict) -> None:
         max_workers = options.get("max-workers")
@@ -1311,6 +1321,8 @@ class SearchProvider(Gtk.Button):
         self._search_terms: list[str] = []
         self._view_stack: Adw.ViewStack | None = None
         self._models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]] = None
+        self._duplicates_only: bool = False
+        self._duplicate_hashes: set[str] = set()
 
         self.connect("clicked", lambda _: self.set_search_bar_visible(not self.get_search_bar().is_visible()))
         self._setup_status_page()
@@ -1473,6 +1485,8 @@ class SearchProvider(Gtk.Button):
         """Filter function for results."""
         if row.line_no > 0 and self._search_options.get("hide-checksum-matches"):
             return False
+        if self._duplicates_only and row.hash_value not in self._duplicate_hashes:
+            return False
         return self._has_match(row)
 
     def errors_filter_func(self, row: "ErrorRowData") -> bool:
@@ -1613,6 +1627,130 @@ class MultiHashDialog(Adw.AlertDialog):
         return display_row
 
 
+class HashTextDialog(Adw.Window):
+    __gtype_name__ = "HashTextDialog"
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, parent: "MainWindow", **kwargs):
+        if hasattr(self, "_initialized"):
+            self._text_view.get_buffer().set_text("", 0)
+            self._compute_hash()
+            self.set_transient_for(parent)
+            self.present()
+            return
+        super().__init__(
+            title="Hash Text",
+            modal=True,
+            transient_for=parent,
+            default_width=520,
+            default_height=400,
+            hide_on_close=True,
+            **kwargs,
+        )
+        self._initialized = True
+
+        toolbar_view = Adw.ToolbarView()
+        self.set_content(toolbar_view)
+
+        header = Adw.HeaderBar()
+        self._algo_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new(AVAILABLE_ALGORITHMS),
+            tooltip_text="Hash algorithm",
+            valign=Gtk.Align.CENTER,
+        )
+        self._algo_dropdown.set_selected(AVAILABLE_ALGORITHMS.index("sha256"))
+        self._algo_dropdown.connect("notify::selected", lambda *_: self._compute_hash())
+        header.pack_start(self._algo_dropdown)
+
+        self._encoding_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new(["UTF-8", "ASCII", "Latin-1"]),
+            tooltip_text="Text encoding",
+            valign=Gtk.Align.CENTER,
+        )
+        self._encoding_dropdown.connect("notify::selected", lambda *_: self._compute_hash())
+        header.pack_start(self._encoding_dropdown)
+        toolbar_view.add_top_bar(header)
+
+        self._text_view = Gtk.TextView(
+            wrap_mode=Gtk.WrapMode.WORD_CHAR,
+            monospace=True,
+            top_margin=12,
+            bottom_margin=12,
+            left_margin=12,
+            right_margin=12,
+            vexpand=True,
+            hexpand=True,
+        )
+        self._text_view.get_buffer().set_text("", 0)
+        self._text_view.get_buffer().connect("changed", lambda *_: self._compute_hash())
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-released", lambda *_: GLib.idle_add(self._compute_hash))
+        self._text_view.add_controller(key_ctrl)
+        text_scroll = Gtk.ScrolledWindow(child=self._text_view, vexpand=True, hexpand=True)
+        toolbar_view.set_content(text_scroll)
+
+        bottom_bar = Gtk.ActionBar()
+        self._result_label = Gtk.Label(
+            label="",
+            selectable=True,
+            ellipsize=Pango.EllipsizeMode.MIDDLE,
+            tooltip_text="Computed hash — click to select",
+            hexpand=True,
+            xalign=0,
+            css_classes=["monospace", "dim-label"],
+        )
+        self._size_label = Gtk.Label(label="0 B", css_classes=["dim-label", "caption"], margin_start=8, margin_end=4)
+        self._copy_btn = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy hash", css_classes=["flat"])
+        self._copy_btn.connect("clicked", self._on_copy_clicked)
+        bottom_bar.pack_start(self._result_label)
+        bottom_bar.pack_end(self._copy_btn)
+        bottom_bar.pack_end(self._size_label)
+        toolbar_view.add_bottom_bar(bottom_bar)
+
+        self._compute_hash()
+        self.present()
+
+    def _get_encoding(self) -> str:
+        encodings = ["utf-8", "ascii", "latin-1"]
+        return encodings[self._encoding_dropdown.get_selected()]
+
+    def _get_algorithm(self) -> str:
+        return AVAILABLE_ALGORITHMS[self._algo_dropdown.get_selected()]
+
+    def _compute_hash(self) -> None:
+        buf = self._text_view.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        encoding = self._get_encoding()
+        algo = self._get_algorithm()
+        try:
+            data = text.encode(encoding)
+            h = hashlib.new(algo)
+            h.update(data)
+            shake_length = 32
+            digest = h.hexdigest(shake_length) if "shake" in algo else h.hexdigest()
+            self._result_label.set_text(digest)
+            self._result_label.set_tooltip_text(digest)
+            self._size_label.set_text(MainWindow._format_size(len(data)))
+        except Exception as e:
+            self._result_label.set_text(f"Error: {e}")
+            self._size_label.set_text("0 B")
+
+    def _on_copy_clicked(self, _: Gtk.Button) -> None:
+        result = self._result_label.get_text()
+        if result and not result.startswith("Error:"):
+            cp = Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8", GLib.Bytes.new(result.encode()))
+            self.get_clipboard().set_content(cp)
+            icon = self._copy_btn.get_icon_name()
+            self._copy_btn.set_icon_name("object-select-symbolic")
+            self._copy_btn.add_css_class("success")
+            GLib.timeout_add(1500, lambda: (self._copy_btn.set_icon_name(icon), self._copy_btn.remove_css_class("success")))
+
+
 class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
     DEFAULT_WIDTH = 960
@@ -1633,6 +1771,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.checksum_rows: dict[tuple[str, str], dict[str, Any]] = {}
         self.rows_selected: list[ResultRowData] = []
+        self._duplicate_hashes: set[str] = set()
+        self._last_job_stats: tuple | None = None
 
         self.cancel_event = threading.Event()
         self.job_in_progress = threading.Event()
@@ -1779,12 +1919,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.toggle_button_sort.set_child(Adw.ButtonContent(icon_name="media-playlist-shuffle-symbolic", label="Sort", tooltip_text="Sort results by path hierarchy"))
         self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
 
+        self.toggle_button_duplicates = Gtk.ToggleButton(tooltip_text="Show only files with identical hashes", css_classes=["custom-toggle-btn"], sensitive=False, valign=Gtk.Align.CENTER)
+        self.toggle_button_duplicates.set_child(Adw.ButtonContent(icon_name="edit-find-symbolic", label="Duplicates", tooltip_text="Find and filter duplicate files"))
+        self.toggle_button_duplicates.connect("toggled", self._on_duplicates_toggled)
+
         self.button_clear_all = Gtk.Button(sensitive=False)
         self.button_clear_all.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear results", tooltip_text="Clear all results and errors"))
         self.button_clear_all.connect("clicked", self._on_clear_all_clicked)
 
         button_row.append(self.button_copy_all)
         button_row.append(self.toggle_button_sort)
+        button_row.append(self.toggle_button_duplicates)
         button_row.append(self.button_clear_all)
 
         self.results_container.append(button_row)
@@ -1915,6 +2060,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_menu(self) -> None:
         menu = Gio.Menu()
+        menu.append("Hash Text", "win.hash-text")
         menu.append("Preferences", "app.preferences")
         menu.append("Copy to Clipboard", "win.results-copy")
         menu.append("Keyboard Shortcuts", "app.shortcuts")
@@ -2043,6 +2189,9 @@ class MainWindow(Adw.ApplicationWindow):
             elif kind == "toast":
                 GLib.idle_add(self.add_toast, update[1])
 
+            elif kind == "stats":
+                self._last_job_stats = update[1:]
+
         if new_rows:
             GLib.idle_add(self._add_rows, self.results_model, new_rows)
         if new_errors:
@@ -2053,10 +2202,30 @@ class MainWindow(Adw.ApplicationWindow):
     def _add_rows(self, model: Gio.ListStore, rows: list) -> None:
         model.splice(model.get_n_items(), 0, rows)
 
+    @staticmethod
+    def _format_size(size_bytes: int | float) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(size_bytes) < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} PB"
+
     def _processing_complete(self) -> None:
         self.queue_handler.reset()
         self.button_cancel_job.set_sensitive(False)
         self.calculate_hashes.reset_counters()
+
+        if hasattr(self, "_last_job_stats") and self._last_job_stats:
+            file_count, total_bytes, elapsed = self._last_job_stats
+            if file_count > 0 and elapsed > 0:
+                speed = total_bytes / elapsed
+                size_str = self._format_size(total_bytes)
+                speed_str = self._format_size(speed)
+                self.add_toast(
+                    f"✅ <b>{file_count}</b> file{'s' if file_count != 1 else ''} · {size_str} · {elapsed:.1f}s · {speed_str}/s",
+                    timeout=4,
+                )
+            self._last_job_stats = None
 
         def done(_):
             self.progress_bar.set_fraction(0.0)
@@ -2089,7 +2258,12 @@ class MainWindow(Adw.ApplicationWindow):
         if output is None:
             self.add_toast("❌ Nothing to save")
             return
-        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt")
+        text_filter = Gtk.FileFilter(name="Plain Text (*.txt)", mime_types=["text/plain"])
+        csv_filter = Gtk.FileFilter(name="CSV (*.csv)", mime_types=["text/csv"])
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(text_filter)
+        filters.append(csv_filter)
+        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt", filters=filters, default_filter=text_filter)
 
         def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
             if not gio_task.had_error():
@@ -2097,8 +2271,11 @@ class MainWindow(Adw.ApplicationWindow):
                     local_file = file_dialog.save_finish(gio_task)
                     path: str = local_file.get_path()
 
-                    with open(path, "wb") as f:
-                        f.write(output)
+                    if path.endswith(".csv"):
+                        self._write_csv(path)
+                    else:
+                        with open(path, "wb") as f:
+                            f.write(output)
 
                     self.add_toast("✅ Saved")
 
@@ -2107,6 +2284,20 @@ class MainWindow(Adw.ApplicationWindow):
                     self.add_toast(f"❌ Failed: {e}")
 
         file_dialog.save(parent=self, callback=on_file_dialog_dismissed)
+
+    def _write_csv(self, path: str) -> None:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["File", "Hash", "Algorithm"])
+        for i in range(self.results_model_filtered.get_n_items()):
+            row: ResultRowData = self.results_model_filtered.get_item(i)
+            writer.writerow([row.path.as_posix(), row.hash_value, row.algo])
+        if self.pref.save_errors():
+            for i in range(self.errors_model_filtered.get_n_items()):
+                row: ErrorRowData = self.errors_model_filtered.get_item(i)
+                writer.writerow([row.path.as_posix(), row.get_result(), "ERROR"])
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(buf.getvalue())
 
     def _txt_to_clipboard(self, output: bytes | None):
         if output:
@@ -2195,6 +2386,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save_to_file.set_sensitive(can_save_or_copy)
         self.button_copy_all.set_sensitive(can_save_or_copy)
         self.toggle_button_sort.set_sensitive(has_results)
+        self.toggle_button_duplicates.set_sensitive(has_results)
         self.button_clear_all.set_sensitive(can_clear_or_search)
         self.button_clear_errors.set_sensitive(has_errors)
 
@@ -2425,6 +2617,27 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.add_toast("❌ Sort Disabled")
 
+    def _on_duplicates_toggled(self, toggle: Gtk.ToggleButton) -> None:
+        if toggle.get_active():
+            hash_counts: dict[str, int] = Counter()
+            for i in range(self.results_model.get_n_items()):
+                row: ResultRowData = self.results_model.get_item(i)
+                hash_counts[row.hash_value] += 1
+            self._duplicate_hashes = {h for h, c in hash_counts.items() if c > 1}
+            self.search_provider._duplicate_hashes = self._duplicate_hashes
+            self.search_provider._duplicates_only = True
+            n_groups = len(self._duplicate_hashes)
+            n_files = sum(c for c in hash_counts.values() if c > 1)
+            if n_groups > 0:
+                self.add_toast(f"🔍 Found <b>{n_groups}</b> duplicate group{'s' if n_groups != 1 else ''} ({n_files} files)")
+            else:
+                self.add_toast("✅ No duplicate hashes found")
+        else:
+            self._duplicate_hashes.clear()
+            self.search_provider._duplicate_hashes = set()
+            self.search_provider._duplicates_only = False
+        self.results_custom_filter.changed(Gtk.FilterChange.DIFFERENT)
+
     def _on_close_request(self, window: Adw.Window) -> None:
         self.cancel_event.set()
         self.pref.disconnect(self._pref_on_items_changed_id)
@@ -2457,6 +2670,8 @@ class MainWindow(Adw.ApplicationWindow):
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
             ("results-sort", lambda *_: self.toggle_button_sort.set_active(not self.toggle_button_sort.get_active()), ["<Ctrl>R"]),
             ("results-clear", lambda *_: self._on_clear_all_clicked(*_), ["<Ctrl>L"]),
+            ("hash-text", lambda *_: HashTextDialog(self), ["<Ctrl>T"]),
+            ("find-duplicates", lambda *_: self.toggle_button_duplicates.set_active(not self.toggle_button_duplicates.get_active()), ["<Ctrl>D"]),
             ("quit", lambda *_: self.close(), ["<Ctrl>Q"]),
         )
 
@@ -2611,7 +2826,14 @@ class QuickFileHasher(Adw.Application):
                     {"title": "Show Search Bar", "accelerator": "<Ctrl>F"},
                     {"title": "Hide Search Bar", "accelerator": "Escape"},
                     {"title": "Toggle Sort", "accelerator": "<Ctrl>R"},
+                    {"title": "Find Duplicates", "accelerator": "<Ctrl>D"},
                     {"title": "Clear All Results", "accelerator": "<Ctrl>L"},
+                ],
+            },
+            {
+                "title": "Tools",
+                "shortcuts": [
+                    {"title": "Hash Text", "accelerator": "<Ctrl>T"},
                 ],
             },
             {

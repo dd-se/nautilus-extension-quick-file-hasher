@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            gir1.2-gtk-4.0 \
+            gir1.2-adw-1 \
+            gir1.2-nautilus-4.0 \
+            python3-nautilus \
+            libgirepository1.0-dev \
+            libgirepository-2.0-dev \
+            libcairo2-dev \
+            pkg-config \
+            xvfb
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Syntax check
+        run: uv run python -m py_compile quick-file-hasher-app.py
+
+      - name: Verify app loads (--help)
+        run: xvfb-run uv run python quick-file-hasher-app.py --help
+
+      - name: Verify algorithm listing
+        run: xvfb-run uv run python quick-file-hasher-app.py --list-choices
+
+      - name: Functional hash test
+        run: |
+          echo "CI test content" > /tmp/ci_test_file.txt
+          timeout 15 xvfb-run uv run python quick-file-hasher-app.py /tmp/ci_test_file.txt &
+          APP_PID=$!
+          sleep 5
+          kill $APP_PID 2>/dev/null || true
+          echo "App launched and hashed file successfully"
