@@ -4,7 +4,7 @@
 
 ### Project overview
 
-Quick File Hasher is a single-file Python GTK4/libadwaita desktop app (`quick-file-hasher-app.py`) that computes file hashes. It doubles as a GNOME Nautilus extension. There are no automated tests, no linter config, and no CI pipeline in the repository.
+Quick File Hasher is a single-file Python GTK4/libadwaita desktop app (`quick-file-hasher-app.py`) that computes file hashes. It doubles as a GNOME Nautilus extension. CI is configured via `.github/workflows/ci.yml`.
 
 ### Running the application
 
@@ -27,5 +27,6 @@ Managed by `uv` (lockfile: `uv.lock`). Run `uv sync` from the workspace root.
 
 - Building `pygobject` from source requires both `libgirepository1.0-dev` **and** `libgirepository-2.0-dev`. The latter provides the `girepository-2.0.pc` pkg-config file that the meson build needs.
 - GTK4 apps emit `libEGL warning: DRI3 error` under Xvfb — this is harmless and can be ignored.
-- No automated test suite exists; manual GUI testing via `computerUse` subagent is the primary validation method.
+- `Gtk.Label` does **not** support a `monospace` constructor property in GTK4. Use the `monospace` CSS class instead.
+- No automated test suite exists; manual GUI testing via `computerUse` subagent is the primary validation method. CI runs `py_compile` and `--help` smoke tests.
 - The `Makefile` only handles install/uninstall to user-local directories; it has no build, test, or dependency targets.
