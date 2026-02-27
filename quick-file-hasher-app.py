@@ -22,7 +22,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import base64
 import csv
 import hashlib
 import io
@@ -93,11 +92,6 @@ CHECKSUM_FORMATS: list[dict[str, str]] = [
         "name": "BSD-style",
         "description": "BSD style: '<algorithm> (<filename>) = <hash>'",
         "style": "{algo} ({filename}) = {hash}",
-    },
-    {
-        "name": "SRI",
-        "description": "Subresource Integrity: '<algo>-<base64hash>' (for web developers)",
-        "style": "{algo}-{hash_b64}",
     },
 ]
 CSS = b"""
@@ -628,9 +622,8 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         example_file = "example.txt" if use_relative_paths else "/folder/example.txt"
         example_hash = "FDFBA9FC68" if use_uppercase_hash else "fdfba9fc68"
         example_algo = "SHA256" if use_uppercase_hash else "sha256"
-        example_hash_b64 = base64.b64encode(bytes.fromhex("fdfba9fc68")).decode()
 
-        example_text = output_style.format(hash=example_hash, filename=example_file, algo=example_algo, hash_b64=example_hash_b64)
+        example_text = output_style.format(hash=example_hash, filename=example_file, algo=example_algo)
         self.checksum_format_example_text.set_title(f'<span letter_spacing="1200">{example_text}</span>')
 
     def _on_format_selected(self, button_output_style: Gtk.ToggleButton | None, button_uppercase: Gtk.CheckButton | None) -> None:
@@ -1094,8 +1087,7 @@ class ResultRowData(RowData):
         filename = self.rel_path if use_relative_path else self.path.as_posix()
         hash_value = self.hash_value.upper() if use_uppercase_hash else self.hash_value
         algo = self.algo.upper() if use_uppercase_hash else self.algo
-        hash_b64 = base64.b64encode(bytes.fromhex(self.hash_value)).decode()
-        return output_style.format(hash=hash_value, filename=filename, algo=algo, hash_b64=hash_b64)
+        return output_style.format(hash=hash_value, filename=filename, algo=algo)
 
     def get_search_fields(self, lower: bool = False) -> tuple[str, str, str]:
         path_str = self.prop_path.lower() if lower else self.prop_path

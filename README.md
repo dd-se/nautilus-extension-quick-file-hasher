@@ -18,7 +18,6 @@ Quick File Hasher is a modern Nautilus (GNOME Files) extension and standalone GT
 - **Duplicate Detection**: Find files with identical hashes across your results and filter to show only duplicates (<kbd>Ctrl</kbd>+<kbd>D</kbd>).
 - **Job Statistics**: See elapsed time, throughput (MB/s), and file count after each hashing job completes.
 - **CSV Export**: Save results as CSV in addition to plain text for easy import into spreadsheets.
-- **SRI Output Format**: Subresource Integrity format (`algo-base64hash`) for web developers.
 
 ## Installation
 
@@ -115,7 +114,7 @@ The **Preferences** dialog allows you to customize the application's behavior.
   - Available options include (hashlib): `md5`, `sha1`, `sha256`, `sha512`, `blake2b`, `blake2s` and more. The default is `sha256`.
 - **Output Style**
   - Select the output format for checksum display.
-  - Available options are the app's default style, sha256sum, BSD, and SRI (Subresource Integrity).
+  - Available options are the app's default style, sha256sum, and BSD.
 
 #### **Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, command-line arguments can override these preferences at startup.
 
