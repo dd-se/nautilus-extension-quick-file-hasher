@@ -1645,8 +1645,8 @@ class HashTextDialog(Adw.Window):
 
     def __init__(self, parent: "MainWindow", **kwargs):
         if hasattr(self, "_initialized"):
-            # Clear the text buffer when reopening to ensure signals work properly
             self._text_view.get_buffer().set_text("", 0)
+            self._compute_hash()
             self.set_transient_for(parent)
             self.present()
             return
@@ -1655,7 +1655,7 @@ class HashTextDialog(Adw.Window):
             modal=True,
             transient_for=parent,
             default_width=550,
-            default_height=550,
+            default_height=520,
             hide_on_close=True,
             **kwargs,
         )
@@ -1667,8 +1667,10 @@ class HashTextDialog(Adw.Window):
         header = Adw.HeaderBar()
         toolbar_view.add_top_bar(header)
 
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12, margin_bottom=12, margin_start=16, margin_end=16)
-        toolbar_view.set_content(main_box)
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=12, margin_bottom=12, margin_start=16, margin_end=16)
+        scroll.set_child(main_box)
+        toolbar_view.set_content(scroll)
 
         algo_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
         algo_label = Gtk.Label(label="Algorithm:")
@@ -1695,7 +1697,10 @@ class HashTextDialog(Adw.Window):
             right_margin=8,
         )
         self._text_view.get_buffer().connect("changed", lambda *_: self._compute_hash())
-        text_scroll = Gtk.ScrolledWindow(child=self._text_view, min_content_height=120, max_content_height=200, vexpand=False)
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-released", lambda *_: GLib.idle_add(self._compute_hash))
+        self._text_view.add_controller(key_ctrl)
+        text_scroll = Gtk.ScrolledWindow(child=self._text_view, min_content_height=100, max_content_height=180)
         input_frame.set_child(text_scroll)
         main_box.append(input_frame)
 
@@ -1708,10 +1713,10 @@ class HashTextDialog(Adw.Window):
             label="",
             selectable=True,
             wrap=True,
+            wrap_mode=Pango.WrapMode.CHAR,
             xalign=0,
             hexpand=True,
-            monospace=True,
-            css_classes=["caption"],
+            css_classes=["caption", "monospace"],
         )
         self._copy_btn = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy hash", valign=Gtk.Align.CENTER)
         self._copy_btn.connect("clicked", self._on_copy_clicked)
