@@ -1635,7 +1635,7 @@ class MultiHashDialog(Adw.AlertDialog):
         return display_row
 
 
-class HashTextDialog(Adw.PreferencesWindow):
+class HashTextDialog(Adw.Window):
     __gtype_name__ = "HashTextDialog"
     _instance = None
 
@@ -1655,47 +1655,34 @@ class HashTextDialog(Adw.PreferencesWindow):
             title="Hash Text",
             modal=True,
             transient_for=parent,
+            default_width=520,
+            default_height=400,
             hide_on_close=True,
-            search_enabled=False,
             **kwargs,
         )
-        self.set_default_size(550, 560)
         self._initialized = True
 
-        page = Adw.PreferencesPage(icon_name="accessories-text-editor-symbolic")
-        self.add(page)
+        toolbar_view = Adw.ToolbarView()
+        self.set_content(toolbar_view)
 
-        options_group = Adw.PreferencesGroup(description="Configure algorithm and encoding")
-        page.add(group=options_group)
-
-        self._algo_row = Adw.ComboRow(
-            title="Hash Algorithm",
-            subtitle="Select the hashing algorithm",
+        header = Adw.HeaderBar()
+        self._algo_dropdown = Gtk.DropDown(
             model=Gtk.StringList.new(AVAILABLE_ALGORITHMS),
+            tooltip_text="Hash algorithm",
+            valign=Gtk.Align.CENTER,
         )
-        self._algo_row.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
-        self._algo_row.set_selected(AVAILABLE_ALGORITHMS.index("sha256"))
-        self._algo_row.connect("notify::selected", lambda *_: self._compute_hash())
-        options_group.add(child=self._algo_row)
+        self._algo_dropdown.set_selected(AVAILABLE_ALGORITHMS.index("sha256"))
+        self._algo_dropdown.connect("notify::selected", lambda *_: self._compute_hash())
+        header.pack_start(self._algo_dropdown)
 
-        self._encoding_row = Adw.ComboRow(
-            title="Encoding",
-            subtitle="Text encoding for byte conversion",
+        self._encoding_dropdown = Gtk.DropDown(
             model=Gtk.StringList.new(["UTF-8", "ASCII", "Latin-1"]),
+            tooltip_text="Text encoding",
+            valign=Gtk.Align.CENTER,
         )
-        self._encoding_row.add_prefix(Gtk.Image.new_from_icon_name("preferences-desktop-locale-symbolic"))
-        self._encoding_row.connect("notify::selected", lambda *_: self._compute_hash())
-        options_group.add(child=self._encoding_row)
-
-        input_group = Adw.PreferencesGroup(title="Input Text", description="Type or paste text to hash")
-        page.add(group=input_group)
-
-        self._byte_count_row = Adw.ActionRow(
-            title="0 bytes",
-            subtitle="Input size",
-        )
-        self._byte_count_row.add_prefix(Gtk.Image.new_from_icon_name("drive-harddisk-symbolic"))
-        input_group.add(child=self._byte_count_row)
+        self._encoding_dropdown.connect("notify::selected", lambda *_: self._compute_hash())
+        header.pack_start(self._encoding_dropdown)
+        toolbar_view.add_top_bar(header)
 
         self._text_view = Gtk.TextView(
             wrap_mode=Gtk.WrapMode.WORD_CHAR,
@@ -1704,48 +1691,44 @@ class HashTextDialog(Adw.PreferencesWindow):
             bottom_margin=12,
             left_margin=12,
             right_margin=12,
+            vexpand=True,
+            hexpand=True,
         )
+        self._text_view.get_buffer().set_text("", 0)
         self._text_view.get_buffer().connect("changed", lambda *_: self._compute_hash())
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-released", lambda *_: GLib.idle_add(self._compute_hash))
         self._text_view.add_controller(key_ctrl)
-        text_scroll = Gtk.ScrolledWindow(
-            child=self._text_view,
-            min_content_height=100,
-            max_content_height=160,
-        )
-        text_row = Gtk.ListBoxRow(child=text_scroll, activatable=False, selectable=False)
-        input_group.add(child=text_row)
+        text_scroll = Gtk.ScrolledWindow(child=self._text_view, vexpand=True, hexpand=True)
+        toolbar_view.set_content(text_scroll)
 
-        result_group = Adw.PreferencesGroup(title="Hash Result")
-        page.add(group=result_group)
-
-        self._result_row = Adw.ActionRow(
-            title="",
-            subtitle="Computed hash value",
-            title_selectable=True,
-            css_classes=["property", "monospace"],
+        bottom_bar = Gtk.ActionBar()
+        self._result_label = Gtk.Label(
+            label="",
+            selectable=True,
+            ellipsize=Pango.EllipsizeMode.MIDDLE,
+            tooltip_text="Computed hash — click to select",
+            hexpand=True,
+            xalign=0,
+            css_classes=["monospace", "dim-label"],
         )
-        self._result_row.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
-        self._copy_btn = Gtk.Button(
-            icon_name="edit-copy-symbolic",
-            tooltip_text="Copy hash",
-            valign=Gtk.Align.CENTER,
-            css_classes=["flat"],
-        )
+        self._size_label = Gtk.Label(label="0 B", css_classes=["dim-label", "caption"], margin_start=8, margin_end=4)
+        self._copy_btn = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy hash", css_classes=["flat"])
         self._copy_btn.connect("clicked", self._on_copy_clicked)
-        self._result_row.add_suffix(self._copy_btn)
-        result_group.add(child=self._result_row)
+        bottom_bar.pack_start(self._result_label)
+        bottom_bar.pack_end(self._copy_btn)
+        bottom_bar.pack_end(self._size_label)
+        toolbar_view.add_bottom_bar(bottom_bar)
 
         self._compute_hash()
         self.present()
 
     def _get_encoding(self) -> str:
         encodings = ["utf-8", "ascii", "latin-1"]
-        return encodings[self._encoding_row.get_selected()]
+        return encodings[self._encoding_dropdown.get_selected()]
 
     def _get_algorithm(self) -> str:
-        return AVAILABLE_ALGORITHMS[self._algo_row.get_selected()]
+        return AVAILABLE_ALGORITHMS[self._algo_dropdown.get_selected()]
 
     def _compute_hash(self) -> None:
         buf = self._text_view.get_buffer()
@@ -1758,14 +1741,15 @@ class HashTextDialog(Adw.PreferencesWindow):
             h.update(data)
             shake_length = 32
             digest = h.hexdigest(shake_length) if "shake" in algo else h.hexdigest()
-            self._result_row.set_title(digest)
-            self._byte_count_row.set_title(f"{len(data)} bytes")
+            self._result_label.set_text(digest)
+            self._result_label.set_tooltip_text(digest)
+            self._size_label.set_text(MainWindow._format_size(len(data)))
         except Exception as e:
-            self._result_row.set_title(f"Error: {e}")
-            self._byte_count_row.set_title("0 bytes")
+            self._result_label.set_text(f"Error: {e}")
+            self._size_label.set_text("0 B")
 
     def _on_copy_clicked(self, _: Gtk.Button) -> None:
-        result = self._result_row.get_title()
+        result = self._result_label.get_text()
         if result and not result.startswith("Error:"):
             cp = Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8", GLib.Bytes.new(result.encode()))
             self.get_clipboard().set_content(cp)
