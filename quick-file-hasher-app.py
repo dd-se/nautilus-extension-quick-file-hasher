@@ -1321,8 +1321,6 @@ class SearchProvider(Gtk.Button):
         self._search_terms: list[str] = []
         self._view_stack: Adw.ViewStack | None = None
         self._models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]] = None
-        self._duplicates_only: bool = False
-        self._duplicate_hashes: set[str] = set()
 
         self.connect("clicked", lambda _: self.set_search_bar_visible(not self.get_search_bar().is_visible()))
         self._setup_status_page()
@@ -1484,8 +1482,6 @@ class SearchProvider(Gtk.Button):
     def results_filter_func(self, row: "ResultRowData") -> bool:
         """Filter function for results."""
         if row.line_no > 0 and self._search_options.get("hide-checksum-matches"):
-            return False
-        if self._duplicates_only and row.hash_value not in self._duplicate_hashes:
             return False
         return self._has_match(row)
 
@@ -1771,7 +1767,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.checksum_rows: dict[tuple[str, str], dict[str, Any]] = {}
         self.rows_selected: list[ResultRowData] = []
-        self._duplicate_hashes: set[str] = set()
         self._last_job_stats: tuple | None = None
 
         self.cancel_event = threading.Event()
@@ -1919,17 +1914,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.toggle_button_sort.set_child(Adw.ButtonContent(icon_name="media-playlist-shuffle-symbolic", label="Sort", tooltip_text="Sort results by path hierarchy"))
         self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
 
-        self.toggle_button_duplicates = Gtk.ToggleButton(tooltip_text="Show only files with identical hashes", css_classes=["custom-toggle-btn"], sensitive=False, valign=Gtk.Align.CENTER)
-        self.toggle_button_duplicates.set_child(Adw.ButtonContent(icon_name="edit-find-symbolic", label="Duplicates", tooltip_text="Find and filter duplicate files"))
-        self.toggle_button_duplicates.connect("toggled", self._on_duplicates_toggled)
-
         self.button_clear_all = Gtk.Button(sensitive=False)
         self.button_clear_all.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear results", tooltip_text="Clear all results and errors"))
         self.button_clear_all.connect("clicked", self._on_clear_all_clicked)
 
         button_row.append(self.button_copy_all)
         button_row.append(self.toggle_button_sort)
-        button_row.append(self.toggle_button_duplicates)
         button_row.append(self.button_clear_all)
 
         self.results_container.append(button_row)
@@ -2386,7 +2376,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.button_save_to_file.set_sensitive(can_save_or_copy)
         self.button_copy_all.set_sensitive(can_save_or_copy)
         self.toggle_button_sort.set_sensitive(has_results)
-        self.toggle_button_duplicates.set_sensitive(has_results)
         self.button_clear_all.set_sensitive(can_clear_or_search)
         self.button_clear_errors.set_sensitive(has_errors)
 
@@ -2617,27 +2606,6 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.add_toast("❌ Sort Disabled")
 
-    def _on_duplicates_toggled(self, toggle: Gtk.ToggleButton) -> None:
-        if toggle.get_active():
-            hash_counts: dict[str, int] = Counter()
-            for i in range(self.results_model.get_n_items()):
-                row: ResultRowData = self.results_model.get_item(i)
-                hash_counts[row.hash_value] += 1
-            self._duplicate_hashes = {h for h, c in hash_counts.items() if c > 1}
-            self.search_provider._duplicate_hashes = self._duplicate_hashes
-            self.search_provider._duplicates_only = True
-            n_groups = len(self._duplicate_hashes)
-            n_files = sum(c for c in hash_counts.values() if c > 1)
-            if n_groups > 0:
-                self.add_toast(f"🔍 Found <b>{n_groups}</b> duplicate group{'s' if n_groups != 1 else ''} ({n_files} files)")
-            else:
-                self.add_toast("✅ No duplicate hashes found")
-        else:
-            self._duplicate_hashes.clear()
-            self.search_provider._duplicate_hashes = set()
-            self.search_provider._duplicates_only = False
-        self.results_custom_filter.changed(Gtk.FilterChange.DIFFERENT)
-
     def _on_close_request(self, window: Adw.Window) -> None:
         self.cancel_event.set()
         self.pref.disconnect(self._pref_on_items_changed_id)
@@ -2671,7 +2639,6 @@ class MainWindow(Adw.ApplicationWindow):
             ("results-sort", lambda *_: self.toggle_button_sort.set_active(not self.toggle_button_sort.get_active()), ["<Ctrl>R"]),
             ("results-clear", lambda *_: self._on_clear_all_clicked(*_), ["<Ctrl>L"]),
             ("hash-text", lambda *_: HashTextDialog(self), ["<Ctrl>T"]),
-            ("find-duplicates", lambda *_: self.toggle_button_duplicates.set_active(not self.toggle_button_duplicates.get_active()), ["<Ctrl>D"]),
             ("quit", lambda *_: self.close(), ["<Ctrl>Q"]),
         )
 
@@ -2826,7 +2793,6 @@ class QuickFileHasher(Adw.Application):
                     {"title": "Show Search Bar", "accelerator": "<Ctrl>F"},
                     {"title": "Hide Search Bar", "accelerator": "Escape"},
                     {"title": "Toggle Sort", "accelerator": "<Ctrl>R"},
-                    {"title": "Find Duplicates", "accelerator": "<Ctrl>D"},
                     {"title": "Clear All Results", "accelerator": "<Ctrl>L"},
                 ],
             },
