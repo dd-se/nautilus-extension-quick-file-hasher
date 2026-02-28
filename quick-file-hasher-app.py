@@ -75,6 +75,7 @@ DEFAULTS = {
     "virustotal-api-key": "",
 }
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
+VT_SUPPORTED_ALGORITHMS = {"md5", "sha1", "sha256"}
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
 MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
 NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
@@ -259,7 +260,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             self._add_hash_items(caller, files, quick_file_hasher_submenu)
 
         vt_item = Nautilus.MenuItem(name=f"VT_{caller}", label="Check with VirusTotal")
-        vt_item.connect("activate", self.nautilus_launch_app, files, "sha256", False, True)
+        vt_item.connect("activate", self.nautilus_launch_app, files, None, False, True)
         quick_file_hasher_submenu.append_item(vt_item)
 
         return [quick_file_hasher_menu]
@@ -729,18 +730,19 @@ class VirusTotalClient:
         self._api_key = api_key
         self._logger = get_logger("VirusTotalClient")
 
-    def lookup_hash(self, sha256: str, callback: Callable[[str, Any, str], None]) -> None:
+    def lookup_hash(self, hash_value: str, callback: Callable[[str, Any, str], None]) -> None:
         def worker():
-            url = f"{self.VT_API_BASE}/files/{sha256}"
+            url = f"{self.VT_API_BASE}/files/{hash_value}"
             req = urllib.request.Request(url, headers={"x-apikey": self._api_key})
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read())
                     stats = data["data"]["attributes"]["last_analysis_stats"]
+                    sha256 = data["data"]["attributes"].get("sha256", hash_value)
                     report_url = f"{self.VT_GUI_BASE}/{sha256}"
                     GLib.idle_add(callback, "found", stats, report_url)
             except urllib.error.HTTPError as e:
-                self._logger.debug(f"VT lookup HTTP {e.code} for {sha256[:12]}…")
+                self._logger.debug(f"VT lookup HTTP {e.code} for {hash_value[:12]}…")
                 if e.code == 404:
                     GLib.idle_add(callback, "not_found", None, "")
                 elif e.code == 401:
@@ -750,7 +752,7 @@ class VirusTotalClient:
                 else:
                     GLib.idle_add(callback, "error", f"HTTP {e.code}", "")
             except Exception as e:
-                self._logger.debug(f"VT lookup error for {sha256[:12]}…: {e}")
+                self._logger.debug(f"VT lookup error for {hash_value[:12]}…: {e}")
                 GLib.idle_add(callback, "error", str(e), "")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1383,7 +1385,7 @@ class WidgetHashResultRow(WidgetHashRow):
             self.button_vt.remove_css_class(cls)
 
         status = row_data.vt_status
-        is_sha256 = row_data.algo == "sha256"
+        vt_supported = row_data.algo in VT_SUPPORTED_ALGORITHMS
         has_key = parent.pref.has_vt_api_key()
 
         if status == "loading":
@@ -1428,8 +1430,14 @@ class WidgetHashResultRow(WidgetHashRow):
 
         else:
             self.button_vt.set_icon_name("security-high-symbolic")
-            self.button_vt.set_tooltip_text("Check with VirusTotal")
-            self.button_vt.set_sensitive(has_key and is_sha256)
+            if not has_key:
+                self.button_vt.set_tooltip_text("Configure a VirusTotal API key in Preferences to enable lookups")
+            elif not vt_supported:
+                algo_upper = row_data.algo.upper().replace("_", "-")
+                self.button_vt.set_tooltip_text(f"VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
+            else:
+                self.button_vt.set_tooltip_text("Check with VirusTotal")
+            self.button_vt.set_sensitive(has_key and vt_supported)
 
     def _reset_vt_button(self) -> None:
         self.button_vt.set_child(None)
@@ -2847,8 +2855,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not api_key:
             self.add_toast("⚠ Configure VirusTotal API key in Preferences")
             return
-        if row_data.algo != "sha256":
-            self.add_toast("⚠ VirusTotal lookup requires a SHA-256 hash")
+        if row_data.algo not in VT_SUPPORTED_ALGORITHMS:
+            algo_upper = row_data.algo.upper().replace("_", "-")
+            self.add_toast(f"⚠ VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
             return
 
         row_data.vt_status = "loading"
@@ -2910,7 +2919,7 @@ class MainWindow(Adw.ApplicationWindow):
         checked = 0
         for i in range(self.results_model.get_n_items()):
             row_data: ResultRowData = self.results_model.get_item(i)
-            if row_data.algo == "sha256" and not row_data.vt_status:
+            if row_data.algo in VT_SUPPORTED_ALGORITHMS and not row_data.vt_status:
                 row_data.vt_status = "loading"
                 client = VirusTotalClient(api_key)
 
@@ -2928,7 +2937,7 @@ class MainWindow(Adw.ApplicationWindow):
                 checked += 1
 
         if checked == 0:
-            self.add_toast("⚠ No SHA-256 results to check with VirusTotal")
+            self.add_toast("⚠ No results with supported hash algorithms (MD5, SHA-1, SHA-256)")
 
     def on_delete_row_requested(self, button: Gtk.Button, row_widget: WidgetHashRow, row_data: RowData, model: Gio.ListStore) -> None:
         button.set_sensitive(False)
