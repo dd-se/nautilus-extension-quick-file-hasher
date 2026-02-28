@@ -1355,6 +1355,7 @@ class WidgetHashResultRow(WidgetHashRow):
     __gtype_name__ = "WidgetHashResultRow"
     _icon_name = "dialog-password-symbolic"
     _btn_css = "success"
+    _vt_css_classes = ("custom-success", "custom-error")
 
     def __init__(self):
         super().__init__()
@@ -1367,9 +1368,6 @@ class WidgetHashResultRow(WidgetHashRow):
         self.button_vt.set_sensitive(False)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
-        self.vt_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, margin_top=4, visible=False)
-        self.content_box.append(self.vt_box)
-
     def set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
         self.prefix_icon.set_from_icon_name(icon_name)
 
@@ -1380,86 +1378,69 @@ class WidgetHashResultRow(WidgetHashRow):
         self.remove_css_class("custom-success")
         self.remove_css_class("custom-error")
 
-    def _update_vt_button(self, row_data: "ResultRowData", parent: "MainWindow") -> None:
+    def _apply_vt_button_state(self, row_data: "ResultRowData", parent: "MainWindow") -> None:
+        for cls in self._vt_css_classes:
+            self.button_vt.remove_css_class(cls)
+
         status = row_data.vt_status
+        is_sha256 = row_data.algo == "sha256"
+        has_key = parent.pref.has_vt_api_key()
+
         if status == "loading":
             spinner = Gtk.Spinner(spinning=True)
             self.button_vt.set_child(spinner)
             self.button_vt.set_sensitive(False)
-        else:
-            self.button_vt.set_child(None)
-            self.button_vt.set_icon_name("security-high-symbolic")
-            already_checked = status in ("found", "not_found", "submitted")
-            can_check = parent.pref.has_vt_api_key() and row_data.algo == "sha256" and not already_checked
-            self.button_vt.set_sensitive(can_check)
-
-    def _update_vt_display(self, row_data: "ResultRowData", parent: "MainWindow") -> None:
-        self._update_vt_button(row_data, parent)
-
-        while child := self.vt_box.get_first_child():
-            self.vt_box.remove(child)
-
-        status = row_data.vt_status
-        if not status or status == "loading":
-            self.vt_box.set_visible(False)
+            self.button_vt.set_tooltip_text("Checking with VirusTotal…")
             return
+
+        self.button_vt.set_child(None)
 
         if status == "found":
             stats = row_data.vt_stats or {}
             m, s = stats.get("malicious", 0), stats.get("suspicious", 0)
-            h, u = stats.get("harmless", 0), stats.get("undetected", 0)
-            stats_text = f"Malicious: {m} · Suspicious: {s} · Harmless: {h} · Undetected: {u}"
-            stats_label = Gtk.Label(label=stats_text, xalign=0, css_classes=["dim-label", "caption"])
             if m > 0 or s > 0:
-                stats_label.add_css_class("vt-stats-threat")
+                self.button_vt.set_icon_name("security-low-symbolic")
+                self.button_vt.add_css_class("custom-error")
+                self.button_vt.set_tooltip_text(f"Threats detected — Malicious: {m}, Suspicious: {s}")
             else:
-                stats_label.add_css_class("vt-stats-clean")
-            self.vt_box.append(stats_label)
-            if row_data.vt_report_url:
-                report_btn = Gtk.Button(label="Open Report", css_classes=["flat", "caption"], valign=Gtk.Align.CENTER)
-                report_btn.connect("clicked", lambda _, url=row_data.vt_report_url: Gio.AppInfo.launch_default_for_uri(url, None))
-                self.vt_box.append(report_btn)
+                self.button_vt.set_icon_name("security-high-symbolic")
+                self.button_vt.add_css_class("custom-success")
+                self.button_vt.set_tooltip_text("Clean — No threats detected")
+            self.button_vt.set_sensitive(True)
 
         elif status == "not_found":
-            label = Gtk.Label(label="Not found in VirusTotal database.", xalign=0, css_classes=["dim-label", "caption"])
-            self.vt_box.append(label)
-            submit_btn = Gtk.Button(label="Submit to VirusTotal", css_classes=["flat", "caption"], valign=Gtk.Align.CENTER)
-            submit_btn.connect("clicked", parent.on_vt_submit_requested, row_data)
-            self.vt_box.append(submit_btn)
-
-        elif status == "unauthorized":
-            label = Gtk.Label(label="Invalid API key. Check Preferences.", xalign=0, css_classes=["dim-label", "caption", "custom-error"])
-            self.vt_box.append(label)
-
-        elif status == "rate_limited":
-            label = Gtk.Label(label="Rate limit exceeded. Try again later.", xalign=0, css_classes=["dim-label", "caption", "custom-error"])
-            self.vt_box.append(label)
-
-        elif status == "error":
-            msg = row_data.vt_error_message or "Unknown error"
-            label = Gtk.Label(label=f"VirusTotal error: {msg}", xalign=0, css_classes=["dim-label", "caption", "custom-error"], ellipsize=Pango.EllipsizeMode.END)
-            self.vt_box.append(label)
+            self.button_vt.set_icon_name("security-medium-symbolic")
+            self.button_vt.set_tooltip_text("Not found in VirusTotal — Click for details")
+            self.button_vt.set_sensitive(True)
 
         elif status == "submitted":
-            label = Gtk.Label(label="Submitted to VirusTotal.", xalign=0, css_classes=["dim-label", "caption", "vt-stats-clean"])
-            self.vt_box.append(label)
-            if row_data.vt_report_url:
-                report_btn = Gtk.Button(label="Open Report", css_classes=["flat", "caption"], valign=Gtk.Align.CENTER)
-                report_btn.connect("clicked", lambda _, url=row_data.vt_report_url: Gio.AppInfo.launch_default_for_uri(url, None))
-                self.vt_box.append(report_btn)
+            self.button_vt.set_icon_name("security-high-symbolic")
+            self.button_vt.add_css_class("custom-success")
+            self.button_vt.set_tooltip_text("Submitted to VirusTotal — Click for details")
+            self.button_vt.set_sensitive(True)
 
-        self.vt_box.set_visible(True)
+        elif status in ("unauthorized", "rate_limited", "error"):
+            self.button_vt.set_icon_name("security-low-symbolic")
+            self.button_vt.add_css_class("custom-error")
+            msg = {"unauthorized": "Invalid API key", "rate_limited": "Rate limited", "error": row_data.vt_error_message or "Error"}.get(status, "Error")
+            self.button_vt.set_tooltip_text(f"VirusTotal: {msg} — Click for details")
+            self.button_vt.set_sensitive(True)
 
-    def _reset_vt_display(self) -> None:
+        else:
+            self.button_vt.set_icon_name("security-high-symbolic")
+            self.button_vt.set_tooltip_text("Check with VirusTotal")
+            self.button_vt.set_sensitive(has_key and is_sha256)
+
+    def _reset_vt_button(self) -> None:
         self.button_vt.set_child(None)
         self.button_vt.set_icon_name("security-high-symbolic")
         self.button_vt.set_sensitive(False)
-        while child := self.vt_box.get_first_child():
-            self.vt_box.remove(child)
-        self.vt_box.set_visible(False)
+        self.button_vt.set_tooltip_text("Check with VirusTotal")
+        for cls in self._vt_css_classes:
+            self.button_vt.remove_css_class(cls)
 
     def _on_vt_status_changed(self, row_data: "ResultRowData", pspec, parent: "MainWindow") -> None:
-        self._update_vt_display(row_data, parent)
+        self._apply_vt_button_state(row_data, parent)
 
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
@@ -1467,7 +1448,7 @@ class WidgetHashResultRow(WidgetHashRow):
         list_item.compare_handler_id = self.button_compare.connect("clicked", parent.on_clipboard_compare_requested, self, row_data)
         list_item.vt_handler_id = self.button_vt.connect("clicked", parent.on_vt_lookup_requested, self, row_data)
         list_item.vt_notify_id = row_data.connect("notify::vt-status", self._on_vt_status_changed, parent)
-        self._update_vt_display(row_data, parent)
+        self._apply_vt_button_state(row_data, parent)
 
     def unbind(self, row_data: ResultRowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         super().unbind(row_data, list_item, parent)
@@ -1475,7 +1456,7 @@ class WidgetHashResultRow(WidgetHashRow):
         self.button_compare.disconnect(list_item.compare_handler_id)
         self.button_vt.disconnect(list_item.vt_handler_id)
         row_data.disconnect(list_item.vt_notify_id)
-        self._reset_vt_display()
+        self._reset_vt_button()
 
 
 class WidgetChecksumResultRow(WidgetHashRow):
@@ -1860,6 +1841,78 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.prop_result}")
         display_row.set_margin_bottom(8)
         return display_row
+
+
+class VirusTotalReportDialog(Adw.AlertDialog):
+    def __init__(self, parent: "MainWindow", row_data: ResultRowData, **kwargs):
+        super().__init__(**kwargs)
+        self.set_heading("VirusTotal Report")
+        self.set_close_response("close")
+        self.add_response("close", "Close")
+
+        status = row_data.vt_status
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
+        self.set_extra_child(container)
+
+        display_row = MultiHashDialog.get_display_row(None, row_data)
+        container.append(display_row)
+
+        if status == "found":
+            stats = row_data.vt_stats or {}
+            m = stats.get("malicious", 0)
+            s = stats.get("suspicious", 0)
+            h = stats.get("harmless", 0)
+            u = stats.get("undetected", 0)
+
+            if m > 0 or s > 0:
+                self.set_body("Threats were detected for this file.")
+            else:
+                self.set_body("No threats were detected for this file.")
+
+            grid = Gtk.Grid(column_spacing=24, row_spacing=8, halign=Gtk.Align.CENTER, margin_top=8)
+            labels = [("Malicious", m, "custom-error"), ("Suspicious", s, "custom-error"), ("Harmless", h, "custom-success"), ("Undetected", u, "dim-label")]
+            for col, (name, count, css) in enumerate(labels):
+                name_label = Gtk.Label(label=name, css_classes=["dim-label", "caption"])
+                count_label = Gtk.Label(label=str(count), css_classes=["title-1"])
+                if count > 0 and css in ("custom-error", "custom-success"):
+                    count_label.add_css_class(css)
+                grid.attach(name_label, col, 0, 1, 1)
+                grid.attach(count_label, col, 1, 1, 1)
+            container.append(grid)
+
+            if row_data.vt_report_url:
+                report_btn = Gtk.Button(label="Open Full Report in Browser", css_classes=["suggested-action"], halign=Gtk.Align.CENTER, margin_top=8)
+                report_btn.connect("clicked", lambda _: Gio.AppInfo.launch_default_for_uri(row_data.vt_report_url, None))
+                container.append(report_btn)
+
+        elif status == "not_found":
+            self.set_body("This file's hash was not found in the VirusTotal database.")
+            self.add_response("submit", "Submit to VirusTotal")
+            self.set_response_appearance("submit", Adw.ResponseAppearance.SUGGESTED)
+
+            def on_response(d, response_id):
+                if response_id == "submit":
+                    parent._do_vt_submit(row_data)
+            self.connect("response", on_response)
+
+        elif status == "submitted":
+            self.set_body("This file has been submitted to VirusTotal for analysis.")
+            if row_data.vt_report_url:
+                report_btn = Gtk.Button(label="Open Report in Browser", css_classes=["suggested-action"], halign=Gtk.Align.CENTER, margin_top=8)
+                report_btn.connect("clicked", lambda _: Gio.AppInfo.launch_default_for_uri(row_data.vt_report_url, None))
+                container.append(report_btn)
+
+        elif status == "unauthorized":
+            self.set_body("The VirusTotal API key is invalid. Please check your key in Preferences.")
+
+        elif status == "rate_limited":
+            self.set_body("VirusTotal API rate limit exceeded. Please wait a moment and try again.")
+
+        elif status == "error":
+            msg = row_data.vt_error_message or "An unknown error occurred."
+            self.set_body(f"VirusTotal error: {msg}")
+
+        self.present(parent)
 
 
 class HashTextDialog(Adw.Window):
@@ -2783,14 +2836,19 @@ class MainWindow(Adw.ApplicationWindow):
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
     def on_vt_lookup_requested(self, _: Gtk.Button, row_widget: WidgetHashResultRow, row_data: ResultRowData) -> None:
+        if row_data.vt_status == "loading":
+            return
+
+        if row_data.vt_status:
+            VirusTotalReportDialog(self, row_data)
+            return
+
         api_key = self.pref.get_vt_api_key()
         if not api_key:
             self.add_toast("⚠ Configure VirusTotal API key in Preferences")
             return
         if row_data.algo != "sha256":
             self.add_toast("⚠ VirusTotal lookup requires a SHA-256 hash")
-            return
-        if row_data.vt_status == "loading":
             return
 
         row_data.vt_status = "loading"
@@ -2806,48 +2864,42 @@ class MainWindow(Adw.ApplicationWindow):
 
         client.lookup_hash(row_data.hash_value, on_result)
 
-    def on_vt_submit_requested(self, _: Gtk.Button, row_data: ResultRowData) -> None:
+    def _do_vt_submit(self, row_data: ResultRowData) -> None:
         api_key = self.pref.get_vt_api_key()
         if not api_key:
             self.add_toast("⚠ Configure VirusTotal API key in Preferences")
             return
 
         escaped_name = GLib.markup_escape_text(row_data.path.name)
-        dialog = Adw.AlertDialog()
-        dialog.set_heading("Submit to VirusTotal?")
-        dialog.set_body(
+        confirm = Adw.AlertDialog()
+        confirm.set_heading("Submit to VirusTotal?")
+        confirm.set_body(
             f"The file <b>{escaped_name}</b> will be uploaded to VirusTotal, "
             "a third-party service, for malware analysis.\n\n"
             "This action cannot be undone."
         )
-        dialog.set_body_use_markup(True)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("submit", "Submit")
-        dialog.set_response_appearance("submit", Adw.ResponseAppearance.DESTRUCTIVE)
-        dialog.set_close_response("cancel")
+        confirm.set_body_use_markup(True)
+        confirm.add_response("cancel", "Cancel")
+        confirm.add_response("upload", "Upload")
+        confirm.set_response_appearance("upload", Adw.ResponseAppearance.DESTRUCTIVE)
+        confirm.set_close_response("cancel")
 
-        def on_response(d, response_id):
-            if response_id == "submit":
-                self._do_vt_submit(row_data)
+        def on_confirm(d, response_id):
+            if response_id != "upload":
+                return
+            row_data.vt_status = "loading"
+            client = VirusTotalClient(api_key)
 
-        dialog.connect("response", on_response)
-        dialog.present(self)
+            def on_result(status: str, data, report_url: str):
+                row_data.vt_report_url = report_url or ""
+                if status == "error":
+                    row_data.vt_error_message = str(data) if data else "Upload failed"
+                row_data.vt_status = status
 
-    def _do_vt_submit(self, row_data: ResultRowData) -> None:
-        api_key = self.pref.get_vt_api_key()
-        if not api_key:
-            return
+            client.submit_file(row_data.path, on_result)
 
-        row_data.vt_status = "loading"
-        client = VirusTotalClient(api_key)
-
-        def on_result(status: str, data, report_url: str):
-            row_data.vt_report_url = report_url or ""
-            if status == "error":
-                row_data.vt_error_message = str(data) if data else "Upload failed"
-            row_data.vt_status = status
-
-        client.submit_file(row_data.path, on_result)
+        confirm.connect("response", on_confirm)
+        confirm.present(self)
 
     def _auto_vt_check_results(self) -> None:
         if not self.pref.has_vt_api_key():
