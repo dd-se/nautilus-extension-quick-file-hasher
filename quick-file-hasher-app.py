@@ -34,6 +34,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import warnings
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -70,6 +72,7 @@ DEFAULTS = {
     "include-time": True,
     "output-style": 0,
     "uppercase-hash": False,
+    "virustotal-api-key": "",
 }
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
@@ -129,6 +132,8 @@ toast { background-color: #000000; }
 .rounded-top-small { border-top-left-radius: 4px; border-top-right-radius: 4px; }
 .rounded-bottom { border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
 .rounded-bottom-small { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
+.vt-stats-clean { color: #57EB72; }
+.vt-stats-threat { color: #FF938C; }
 """
 
 css_provider = Gtk.CssProvider()
@@ -165,6 +170,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         files: list[str],
         hash_algorithm: str | None = None,
         recursive_mode: bool = False,
+        virustotal: bool = False,
     ) -> None:
         self.logger.debug(f"App '{APP_ID}' launched by file manager")
 
@@ -174,6 +180,9 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
 
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
+
+        if virustotal:
+            cmd.append("--virustotal")
 
         self.logger.debug(f"Args: '{cmd[2:]}'")
         subprocess.Popen(cmd)
@@ -249,6 +258,10 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
             # Quick > Hash ()
             self._add_hash_items(caller, files, quick_file_hasher_submenu)
 
+        vt_item = Nautilus.MenuItem(name=f"VT_{caller}", label="Check with VirusTotal")
+        vt_item.connect("activate", self.nautilus_launch_app, files, "sha256", False, True)
+        quick_file_hasher_submenu.append_item(vt_item)
+
         return [quick_file_hasher_menu]
 
     def _validate_to_string(self, file_objects: list[Nautilus.FileInfo]) -> tuple[bool, list[str]]:
@@ -313,7 +326,8 @@ class ConfigMixin:
     def update(self, config_key: str, new_value) -> bool | None:
         if self.get(config_key) != new_value:
             self._working_config[config_key] = new_value
-            self.cm_logger.debug(f"Configuration for '{config_key}' changed to '{new_value}'")
+            log_value = "***" if "api-key" in config_key else repr(new_value)
+            self.cm_logger.debug(f"Configuration for '{config_key}' changed to {log_value}")
             return True
 
     def get(self, config_key: str, default=None):
@@ -349,6 +363,12 @@ class ConfigMixin:
     def include_time(self) -> bool:
         return self.get("include-time")
 
+    def get_vt_api_key(self) -> str:
+        return self.get("virustotal-api-key") or ""
+
+    def has_vt_api_key(self) -> bool:
+        return bool(self.get_vt_api_key())
+
 
 class Preferences(Adw.PreferencesWindow, ConfigMixin):
     __gtype_name__ = "Preferences"
@@ -376,6 +396,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         self._setup_processing_page()
         self._setup_saving_page()
         self._setup_hashing_page()
+        self._setup_virustotal_page()
 
         self.apply_config_ui(self.get_working_config())
         self._initialized = True
@@ -467,6 +488,36 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
         hashing_group.add(child=self._create_buttons())
 
+    def _setup_virustotal_page(self) -> None:
+        vt_page = Adw.PreferencesPage(title="VirusTotal", icon_name="security-high-symbolic")
+        self.add(vt_page)
+
+        vt_group = Adw.PreferencesGroup(
+            description="Configure VirusTotal integration for online hash lookups",
+        )
+        vt_page.add(group=vt_group)
+
+        self.setting_vt_api_key = Adw.PasswordEntryRow(title="API Key")
+        self.setting_vt_api_key.set_name("virustotal-api-key")
+        self.setting_vt_api_key.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+        self.setting_vt_api_key.connect("changed", self._on_vt_api_key_changed)
+        self._add_reset_button(self.setting_vt_api_key)
+        self._setting_widgets["virustotal-api-key"] = self.setting_vt_api_key
+        vt_group.add(child=self.setting_vt_api_key)
+
+        info_row = Adw.ActionRow(
+            title="About VirusTotal",
+            subtitle="Get a free API key at virustotal.com. The key is stored locally in the app config file.",
+        )
+        info_row.add_prefix(Gtk.Image.new_from_icon_name("dialog-information-symbolic"))
+        vt_group.add(child=info_row)
+
+        vt_group.add(self._create_buttons())
+
+    def _on_vt_api_key_changed(self, entry_row: Adw.PasswordEntryRow) -> None:
+        new_value = entry_row.get_text()
+        self.update("virustotal-api-key", new_value)
+
     def _create_switch_row(self, name: str, icon_name: str, title: str, subtitle: str) -> Adw.SwitchRow:
         switch_row = Adw.SwitchRow(name=name, title=title, subtitle=subtitle)
         switch_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
@@ -546,6 +597,9 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         elif isinstance(row, Adw.ComboRow):
             reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(value)))
 
+        elif isinstance(row, Adw.EntryRow):
+            reset_button.connect("clicked", lambda _: row.set_text(str(value) if value else ""))
+
         row.add_suffix(reset_button)
 
     def _create_buttons(self) -> Gtk.Box:
@@ -592,6 +646,9 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
                 elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
+
+                elif isinstance(widget, Adw.EntryRow):
+                    widget.set_text(str(value) if value else "")
 
                 elif isinstance(widget, Gtk.CheckButton):
                     widget.set_active(value)
@@ -662,6 +719,92 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         selected_hashing_algorithm = algo.get_selected_item().get_string()
         config_key = algo.get_name()
         self.update(config_key, selected_hashing_algorithm)
+
+
+class VirusTotalClient:
+    VT_API_BASE = "https://www.virustotal.com/api/v3"
+    VT_GUI_BASE = "https://www.virustotal.com/gui/file"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+        self._logger = get_logger("VirusTotalClient")
+
+    def lookup_hash(self, sha256: str, callback: Callable[[str, Any, str], None]) -> None:
+        def worker():
+            url = f"{self.VT_API_BASE}/files/{sha256}"
+            req = urllib.request.Request(url, headers={"x-apikey": self._api_key})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read())
+                    stats = data["data"]["attributes"]["last_analysis_stats"]
+                    report_url = f"{self.VT_GUI_BASE}/{sha256}"
+                    GLib.idle_add(callback, "found", stats, report_url)
+            except urllib.error.HTTPError as e:
+                self._logger.debug(f"VT lookup HTTP {e.code} for {sha256[:12]}…")
+                if e.code == 404:
+                    GLib.idle_add(callback, "not_found", None, "")
+                elif e.code == 401:
+                    GLib.idle_add(callback, "unauthorized", None, "")
+                elif e.code == 429:
+                    GLib.idle_add(callback, "rate_limited", None, "")
+                else:
+                    GLib.idle_add(callback, "error", f"HTTP {e.code}", "")
+            except Exception as e:
+                self._logger.debug(f"VT lookup error for {sha256[:12]}…: {e}")
+                GLib.idle_add(callback, "error", str(e), "")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def submit_file(self, file_path: Path, callback: Callable[[str, Any, str], None]) -> None:
+        def worker():
+            url = f"{self.VT_API_BASE}/files"
+            boundary = f"----QFH{os.urandom(16).hex()}"
+
+            header_part = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+                f"Content-Type: application/octet-stream\r\n\r\n"
+            ).encode("utf-8")
+
+            try:
+                with open(file_path, "rb") as f:
+                    file_data = f.read()
+            except Exception as e:
+                GLib.idle_add(callback, "error", f"Cannot read file: {e}", "")
+                return
+
+            footer_part = f"\r\n--{boundary}--\r\n".encode("utf-8")
+            body = header_part + file_data + footer_part
+
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "x-apikey": self._api_key,
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read())
+                    analysis_id = data.get("data", {}).get("id", "")
+                    sha256 = file_path.name
+                    report_url = f"{self.VT_GUI_BASE}/{analysis_id}" if analysis_id else ""
+                    GLib.idle_add(callback, "submitted", analysis_id, report_url)
+            except urllib.error.HTTPError as e:
+                self._logger.debug(f"VT submit HTTP {e.code} for {file_path.name}")
+                if e.code == 429:
+                    GLib.idle_add(callback, "rate_limited", None, "")
+                elif e.code == 401:
+                    GLib.idle_add(callback, "unauthorized", None, "")
+                else:
+                    GLib.idle_add(callback, "error", f"Upload failed (HTTP {e.code})", "")
+            except Exception as e:
+                self._logger.debug(f"VT submit error for {file_path.name}: {e}")
+                GLib.idle_add(callback, "error", str(e), "")
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 class ChecksumRow:
@@ -1062,11 +1205,15 @@ class ResultRowData(RowData):
     _model = "results_model"
     # -1 for new row, 0 eq no match and >0 is a match
     line_no: int = GObject.Property(type=int, default=-1)
+    vt_status: str = GObject.Property(type=str, default="")
 
     def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
         super().__init__(base_path, path, **kwargs)
         self.hash_value = hash_value
         self.algo = algo
+        self.vt_stats: dict | None = None
+        self.vt_report_url: str = ""
+        self.vt_error_message: str = ""
 
     def __hash__(self):
         return hash((self.path.name, self.hash_value))
@@ -1142,13 +1289,13 @@ class WidgetHashRow(Gtk.Box):
         self.append(self.prefix_icon)
         self.append(self.prefix_label)
 
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        self.append(content_box)
+        self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        self.append(self.content_box)
 
         self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
         self.subtitle = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["dim-label", "caption"], margin_top=2)
-        content_box.append(self.title)
-        content_box.append(self.subtitle)
+        self.content_box.append(self.title)
+        self.content_box.append(self.subtitle)
 
         self.suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
         self.append(self.suffix_box)
@@ -1216,7 +1363,12 @@ class WidgetHashResultRow(WidgetHashRow):
         self.button_multi_hash.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_copy = self._create_button("edit-copy-symbolic", "Copy hash", None)
         self.button_compare = self._create_button("edit-paste-symbolic", "Compare hash with clipboard", None)
+        self.button_vt = self._create_button("security-high-symbolic", "Check with VirusTotal", None)
+        self.button_vt.set_sensitive(False)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
+
+        self.vt_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, margin_top=4, visible=False)
+        self.content_box.append(self.vt_box)
 
     def set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
         self.prefix_icon.set_from_icon_name(icon_name)
@@ -1228,15 +1380,102 @@ class WidgetHashResultRow(WidgetHashRow):
         self.remove_css_class("custom-success")
         self.remove_css_class("custom-error")
 
+    def _update_vt_button(self, row_data: "ResultRowData", parent: "MainWindow") -> None:
+        status = row_data.vt_status
+        if status == "loading":
+            spinner = Gtk.Spinner(spinning=True)
+            self.button_vt.set_child(spinner)
+            self.button_vt.set_sensitive(False)
+        else:
+            self.button_vt.set_child(None)
+            self.button_vt.set_icon_name("security-high-symbolic")
+            already_checked = status in ("found", "not_found", "submitted")
+            can_check = parent.pref.has_vt_api_key() and row_data.algo == "sha256" and not already_checked
+            self.button_vt.set_sensitive(can_check)
+
+    def _update_vt_display(self, row_data: "ResultRowData", parent: "MainWindow") -> None:
+        self._update_vt_button(row_data, parent)
+
+        while child := self.vt_box.get_first_child():
+            self.vt_box.remove(child)
+
+        status = row_data.vt_status
+        if not status or status == "loading":
+            self.vt_box.set_visible(False)
+            return
+
+        if status == "found":
+            stats = row_data.vt_stats or {}
+            m, s = stats.get("malicious", 0), stats.get("suspicious", 0)
+            h, u = stats.get("harmless", 0), stats.get("undetected", 0)
+            stats_text = f"Malicious: {m} · Suspicious: {s} · Harmless: {h} · Undetected: {u}"
+            stats_label = Gtk.Label(label=stats_text, xalign=0, css_classes=["dim-label", "caption"])
+            if m > 0 or s > 0:
+                stats_label.add_css_class("vt-stats-threat")
+            else:
+                stats_label.add_css_class("vt-stats-clean")
+            self.vt_box.append(stats_label)
+            if row_data.vt_report_url:
+                report_btn = Gtk.Button(label="Open Report", css_classes=["flat", "caption"], valign=Gtk.Align.CENTER)
+                report_btn.connect("clicked", lambda _, url=row_data.vt_report_url: Gio.AppInfo.launch_default_for_uri(url, None))
+                self.vt_box.append(report_btn)
+
+        elif status == "not_found":
+            label = Gtk.Label(label="Not found in VirusTotal database.", xalign=0, css_classes=["dim-label", "caption"])
+            self.vt_box.append(label)
+            submit_btn = Gtk.Button(label="Submit to VirusTotal", css_classes=["flat", "caption"], valign=Gtk.Align.CENTER)
+            submit_btn.connect("clicked", parent.on_vt_submit_requested, row_data)
+            self.vt_box.append(submit_btn)
+
+        elif status == "unauthorized":
+            label = Gtk.Label(label="Invalid API key. Check Preferences.", xalign=0, css_classes=["dim-label", "caption", "custom-error"])
+            self.vt_box.append(label)
+
+        elif status == "rate_limited":
+            label = Gtk.Label(label="Rate limit exceeded. Try again later.", xalign=0, css_classes=["dim-label", "caption", "custom-error"])
+            self.vt_box.append(label)
+
+        elif status == "error":
+            msg = row_data.vt_error_message or "Unknown error"
+            label = Gtk.Label(label=f"VirusTotal error: {msg}", xalign=0, css_classes=["dim-label", "caption", "custom-error"], ellipsize=Pango.EllipsizeMode.END)
+            self.vt_box.append(label)
+
+        elif status == "submitted":
+            label = Gtk.Label(label="Submitted to VirusTotal.", xalign=0, css_classes=["dim-label", "caption", "vt-stats-clean"])
+            self.vt_box.append(label)
+            if row_data.vt_report_url:
+                report_btn = Gtk.Button(label="Open Report", css_classes=["flat", "caption"], valign=Gtk.Align.CENTER)
+                report_btn.connect("clicked", lambda _, url=row_data.vt_report_url: Gio.AppInfo.launch_default_for_uri(url, None))
+                self.vt_box.append(report_btn)
+
+        self.vt_box.set_visible(True)
+
+    def _reset_vt_display(self) -> None:
+        self.button_vt.set_child(None)
+        self.button_vt.set_icon_name("security-high-symbolic")
+        self.button_vt.set_sensitive(False)
+        while child := self.vt_box.get_first_child():
+            self.vt_box.remove(child)
+        self.vt_box.set_visible(False)
+
+    def _on_vt_status_changed(self, row_data: "ResultRowData", pspec, parent: "MainWindow") -> None:
+        self._update_vt_display(row_data, parent)
+
     def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
         super().bind(row_data, list_item, model, parent)
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent.on_multi_hash_requested, row_data)
         list_item.compare_handler_id = self.button_compare.connect("clicked", parent.on_clipboard_compare_requested, self, row_data)
+        list_item.vt_handler_id = self.button_vt.connect("clicked", parent.on_vt_lookup_requested, self, row_data)
+        list_item.vt_notify_id = row_data.connect("notify::vt-status", self._on_vt_status_changed, parent)
+        self._update_vt_display(row_data, parent)
 
     def unbind(self, row_data: ResultRowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         super().unbind(row_data, list_item, parent)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
         self.button_compare.disconnect(list_item.compare_handler_id)
+        self.button_vt.disconnect(list_item.vt_handler_id)
+        row_data.disconnect(list_item.vt_notify_id)
+        self._reset_vt_display()
 
 
 class WidgetChecksumResultRow(WidgetHashRow):
@@ -1768,6 +2007,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.checksum_rows: dict[tuple[str, str], dict[str, Any]] = {}
         self.rows_selected: list[ResultRowData] = []
         self._last_job_stats: tuple | None = None
+        self._auto_vt_check: bool = False
 
         self.cancel_event = threading.Event()
         self.job_in_progress = threading.Event()
@@ -2221,6 +2461,9 @@ class MainWindow(Adw.ApplicationWindow):
             self.progress_bar.set_fraction(0.0)
             self._scroll_to_bottom()
             self.job_in_progress.clear()
+            if self._auto_vt_check:
+                self._auto_vt_check = False
+                GLib.timeout_add(500, self._auto_vt_check_results)
 
         anim_target = Adw.PropertyAnimationTarget.new(self.progress_bar, "opacity")
         anim = Adw.TimedAnimation.new(self, 1.0, 0.0, 250, anim_target)
@@ -2539,6 +2782,102 @@ class MainWindow(Adw.ApplicationWindow):
         clipboard = self.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
+    def on_vt_lookup_requested(self, _: Gtk.Button, row_widget: WidgetHashResultRow, row_data: ResultRowData) -> None:
+        api_key = self.pref.get_vt_api_key()
+        if not api_key:
+            self.add_toast("⚠ Configure VirusTotal API key in Preferences")
+            return
+        if row_data.algo != "sha256":
+            self.add_toast("⚠ VirusTotal lookup requires a SHA-256 hash")
+            return
+        if row_data.vt_status == "loading":
+            return
+
+        row_data.vt_status = "loading"
+        client = VirusTotalClient(api_key)
+
+        def on_result(status: str, data, report_url: str):
+            if status == "found":
+                row_data.vt_stats = data
+            elif status == "error":
+                row_data.vt_error_message = str(data) if data else "Unknown error"
+            row_data.vt_report_url = report_url or ""
+            row_data.vt_status = status
+
+        client.lookup_hash(row_data.hash_value, on_result)
+
+    def on_vt_submit_requested(self, _: Gtk.Button, row_data: ResultRowData) -> None:
+        api_key = self.pref.get_vt_api_key()
+        if not api_key:
+            self.add_toast("⚠ Configure VirusTotal API key in Preferences")
+            return
+
+        escaped_name = GLib.markup_escape_text(row_data.path.name)
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Submit to VirusTotal?")
+        dialog.set_body(
+            f"The file <b>{escaped_name}</b> will be uploaded to VirusTotal, "
+            "a third-party service, for malware analysis.\n\n"
+            "This action cannot be undone."
+        )
+        dialog.set_body_use_markup(True)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("submit", "Submit")
+        dialog.set_response_appearance("submit", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+
+        def on_response(d, response_id):
+            if response_id == "submit":
+                self._do_vt_submit(row_data)
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
+
+    def _do_vt_submit(self, row_data: ResultRowData) -> None:
+        api_key = self.pref.get_vt_api_key()
+        if not api_key:
+            return
+
+        row_data.vt_status = "loading"
+        client = VirusTotalClient(api_key)
+
+        def on_result(status: str, data, report_url: str):
+            row_data.vt_report_url = report_url or ""
+            if status == "error":
+                row_data.vt_error_message = str(data) if data else "Upload failed"
+            row_data.vt_status = status
+
+        client.submit_file(row_data.path, on_result)
+
+    def _auto_vt_check_results(self) -> None:
+        if not self.pref.has_vt_api_key():
+            self.add_toast("⚠ No VirusTotal API key configured")
+            return
+
+        api_key = self.pref.get_vt_api_key()
+        checked = 0
+        for i in range(self.results_model.get_n_items()):
+            row_data: ResultRowData = self.results_model.get_item(i)
+            if row_data.algo == "sha256" and not row_data.vt_status:
+                row_data.vt_status = "loading"
+                client = VirusTotalClient(api_key)
+
+                def make_callback(rd):
+                    def on_result(status, data, report_url):
+                        if status == "found":
+                            rd.vt_stats = data
+                        elif status == "error":
+                            rd.vt_error_message = str(data) if data else "Unknown error"
+                        rd.vt_report_url = report_url or ""
+                        rd.vt_status = status
+                    return on_result
+
+                client.lookup_hash(row_data.hash_value, make_callback(row_data))
+                checked += 1
+
+        if checked == 0:
+            self.add_toast("⚠ No SHA-256 results to check with VirusTotal")
+
     def on_delete_row_requested(self, button: Gtk.Button, row_widget: WidgetHashRow, row_data: RowData, model: Gio.ListStore) -> None:
         button.set_sensitive(False)
 
@@ -2690,6 +3029,7 @@ class QuickFileHasher(Adw.Application):
 
         from_cli = "DESKTOP" not in cli_options
         new_window = "new-window" in cli_options
+        auto_vt = cli_options.pop("virustotal", False)
         paths = command_line.get_arguments()[1:]
 
         if from_cli:
@@ -2715,12 +3055,13 @@ class QuickFileHasher(Adw.Application):
         if paths:
             cwd = command_line.get_cwd()
             paths = [(Path(cwd) / path).resolve() for path in paths]
-            self.do_open(paths, len(paths), _config_.get("algo"), _config_, new_window)
+            self.do_open(paths, len(paths), _config_.get("algo"), _config_, new_window, auto_vt)
 
         else:
             self.do_activate(new_window)
 
-        self.logger.debug(f"Effective CLI options out: {_config_}")
+        _safe = {k: ("***" if "api-key" in k else v) for k, v in _config_.items()}
+        self.logger.debug(f"Effective CLI options out: {_safe}")
         return 0
 
     def do_activate(self, new_window: bool) -> None:
@@ -2730,11 +3071,13 @@ class QuickFileHasher(Adw.Application):
             main_window = MainWindow(self)
         main_window.present()
 
-    def do_open(self, paths: Iterable[Path], n_files: int, hash_algorithm: str, options: dict, new_window: bool) -> None:
+    def do_open(self, paths: Iterable[Path], n_files: int, hash_algorithm: str, options: dict, new_window: bool, auto_vt: bool = False) -> None:
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
         main_window = self.get_active_window()
         if not main_window or new_window:
             main_window = MainWindow(self)
+        if auto_vt:
+            main_window._auto_vt_check = True
         main_window.start_job(None, paths, repeat(hash_algorithm), options)
         main_window.present()
 
@@ -2854,6 +3197,7 @@ class QuickFileHasher(Adw.Application):
         self.add_main_option("max-workers", ord("w"), GLib.OptionFlags.NONE, GLib.OptionArg.INT, "Maximum number of parallel hashing operations", "N")
         self.add_main_option("list-choices", ord("l"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "List available hash algorithms", None)
         self.add_main_option("new-window", ord("n"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Open in a new window", None)
+        self.add_main_option("virustotal", 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Auto-check results with VirusTotal after hashing", None)
         self.add_main_option("DESKTOP", 0, GLib.OptionFlags.HIDDEN, GLib.OptionArg.NONE, "Invoked from the Desktop Environment", None)
 
 
