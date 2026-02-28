@@ -18,6 +18,7 @@ Quick File Hasher is a modern Nautilus (GNOME Files) extension and standalone GT
 - **Duplicate Detection**: Find files with identical hashes across your results and filter to show only duplicates (<kbd>Ctrl</kbd>+<kbd>D</kbd>).
 - **Job Statistics**: See elapsed time, throughput (MB/s), and file count after each hashing job completes.
 - **CSV Export**: Save results as CSV in addition to plain text for easy import into spreadsheets.
+- **VirusTotal Integration**: Check file hashes against VirusTotal's database for malware detection. Supports MD5, SHA-1, and SHA-256. Unknown files can be submitted for analysis with automatic polling for results.
 
 ## Installation
 
@@ -89,14 +90,22 @@ pip install pycairo pygobject pygobject-stubs
   - Click "Hash Text" in the toolbar or press <kbd>Ctrl</kbd>+<kbd>T</kbd> to open the text hashing dialog. Type or paste text, select an algorithm and encoding (UTF-8, ASCII, Latin-1), and see the hash update live as you type.
 - **Find Duplicates:**
   - Click "Duplicates" in the results toolbar or press <kbd>Ctrl</kbd>+<kbd>D</kbd> to identify and filter files with identical hashes.
+- **VirusTotal:**
+  - Click the VirusTotal button on any file to check its hash against VirusTotal's database.
+  - If the hash is found, you'll see detection stats (malicious/suspicious/harmless/undetected).
+  - If the hash is not found, you can submit the file to VirusTotal for analysis.
+  - Submitted files are automatically polled for results (every 30s for up to 5 minutes).
+  - Requires a VirusTotal API key (free) configured in Preferences.
 
 ## Arguments
 
 You can also run the app with additional command-line arguments for more control:
 
 ```
-python3 quick-file-hasher-app.py [file1] [file2] ... [folder] [--recursive] [--gitignore] [--max-workers 4] [--algo sha256]
+python3 quick-file-hasher-app.py [file1] [file2] ... [folder] [--recursive] [--gitignore] [--max-workers 4] [--algo sha256] [--virustotal]
 ```
+
+- `--virustotal`: Automatically check hashes with VirusTotal after computing
 
 Type `--help` for more information.
 
@@ -115,6 +124,10 @@ The **Preferences** dialog allows you to customize the application's behavior.
 - **Output Style**
   - Select the output format for checksum display.
   - Available options are the app's default style, sha256sum, and BSD.
+- **VirusTotal API Key**
+  - Enter your VirusTotal API key to enable hash lookups and file submissions.
+  - Get a free API key at [virustotal.com](https://www.virustotal.com).
+  - The key is stored locally in the app's config file.
 
 #### **Note:** Changes to these settings are only saved across sessions when the `Persist` button is clicked. Additionally, command-line arguments can override these preferences at startup.
 

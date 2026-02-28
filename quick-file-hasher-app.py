@@ -34,8 +34,8 @@ import subprocess
 import sys
 import threading
 import time
-import warnings
-from collections import Counter
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -70,8 +70,10 @@ DEFAULTS = {
     "include-time": True,
     "output-style": 0,
     "uppercase-hash": False,
+    "virustotal-api-key": "",
 }
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
+VT_SUPPORTED_ALGORITHMS = {"md5", "sha1", "sha256"}
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
 MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
 NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
@@ -129,6 +131,8 @@ toast { background-color: #000000; }
 .rounded-top-small { border-top-left-radius: 4px; border-top-right-radius: 4px; }
 .rounded-bottom { border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
 .rounded-bottom-small { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
+.vt-stats-clean { color: #57EB72; }
+.vt-stats-threat { color: #FF938C; }
 """
 
 css_provider = Gtk.CssProvider()
@@ -144,7 +148,10 @@ def get_logger(name: str) -> logging.Logger:
     logger.setLevel(loglevel)
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter("[%(asctime)s] %(levelname)-5s | %(name)-15s | %(funcName)-25s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        formatter = logging.Formatter(
+            "[%(asctime)s] %(levelname)-5s | %(name)-15s | %(funcName)-25s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         logger.propagate = False
@@ -165,6 +172,7 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         files: list[str],
         hash_algorithm: str | None = None,
         recursive_mode: bool = False,
+        virustotal: bool = False,
     ) -> None:
         self.logger.debug(f"App '{APP_ID}' launched by file manager")
 
@@ -174,6 +182,9 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
 
         if recursive_mode:
             cmd.extend(["--recursive", "--gitignore"])
+
+        if virustotal:
+            cmd.append("--virustotal")
 
         self.logger.debug(f"Args: '{cmd[2:]}'")
         subprocess.Popen(cmd)
@@ -194,7 +205,13 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         recursive_hash_item.connect("activate", self.nautilus_launch_app, files, hash_name, True)
         return recursive_hash_item
 
-    def _add_hash_items(self, caller: str, files: list[str], simple_submenu: Nautilus.Menu, recursive_submenu: Nautilus.Menu | None = None) -> None:
+    def _add_hash_items(
+        self,
+        caller: str,
+        files: list[str],
+        simple_submenu: Nautilus.Menu,
+        recursive_submenu: Nautilus.Menu | None = None,
+    ) -> None:
         for hash_name in NAUTILUS_CONTEXT_MENU_ALGORITHMS:
             # Hash Simple ()
             simple_hash_item = self._simple_hash_item(caller, hash_name, files)
@@ -248,6 +265,10 @@ class AdwNautilusExtension(GObject.GObject, Nautilus.MenuProvider):
         else:
             # Quick > Hash ()
             self._add_hash_items(caller, files, quick_file_hasher_submenu)
+
+        vt_item = Nautilus.MenuItem(name=f"VT_{caller}", label="Check with VirusTotal")
+        vt_item.connect("activate", self.nautilus_launch_app, files, None, False, True)
+        quick_file_hasher_submenu.append_item(vt_item)
 
         return [quick_file_hasher_menu]
 
@@ -313,7 +334,8 @@ class ConfigMixin:
     def update(self, config_key: str, new_value) -> bool | None:
         if self.get(config_key) != new_value:
             self._working_config[config_key] = new_value
-            self.cm_logger.debug(f"Configuration for '{config_key}' changed to '{new_value}'")
+            log_value = "***" if "api-key" in config_key else repr(new_value)
+            self.cm_logger.debug(f"Configuration for '{config_key}' changed to {log_value}")
             return True
 
     def get(self, config_key: str, default=None):
@@ -329,7 +351,11 @@ class ConfigMixin:
         return self.get("algo")
 
     def get_formatted_params(self) -> tuple[bool, bool, str]:
-        return (self.use_relative_paths(), self.use_uppercase_hash(), self.get_output_style())
+        return (
+            self.use_relative_paths(),
+            self.use_uppercase_hash(),
+            self.get_output_style(),
+        )
 
     def get_output_style(self) -> str:
         return CHECKSUM_FORMATS[self.get_output_style_index()]["style"]
@@ -349,13 +375,23 @@ class ConfigMixin:
     def include_time(self) -> bool:
         return self.get("include-time")
 
+    def get_vt_api_key(self) -> str:
+        return self.get("virustotal-api-key") or ""
+
+    def has_vt_api_key(self) -> bool:
+        return bool(self.get_vt_api_key())
+
 
 class Preferences(Adw.PreferencesWindow, ConfigMixin):
     __gtype_name__ = "Preferences"
     _name_ = "Preferences"
     _instance = None
     __gsignals__ = {
-        "main-window-signal-handler": (GObject.SignalFlags.RUN_FIRST, None, (str, str, bool)),
+        "main-window-signal-handler": (
+            GObject.SignalFlags.RUN_FIRST,
+            None,
+            (str, str, bool),
+        ),
         "on-items-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
@@ -376,6 +412,7 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         self._setup_processing_page()
         self._setup_saving_page()
         self._setup_hashing_page()
+        self._setup_virustotal_page()
 
         self.apply_config_ui(self.get_working_config())
         self._initialized = True
@@ -392,13 +429,28 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         )
         processing_page.add(group=processing_group)
 
-        self.setting_recursive = self._create_switch_row("recursive", "edit-find-symbolic", "Recursive Traversal", "Enable to process all files in subdirectories")
+        self.setting_recursive = self._create_switch_row(
+            "recursive",
+            "edit-find-symbolic",
+            "Recursive Traversal",
+            "Enable to process all files in subdirectories",
+        )
         processing_group.add(child=self.setting_recursive)
 
-        self.setting_gitignore = self._create_switch_row("gitignore", "action-unavailable-symbolic", "Respect .gitignore", "Skip files and folders listed in .gitignore file")
+        self.setting_gitignore = self._create_switch_row(
+            "gitignore",
+            "action-unavailable-symbolic",
+            "Respect .gitignore",
+            "Skip files and folders listed in .gitignore file",
+        )
         processing_group.add(child=self.setting_gitignore)
 
-        self.setting_ignore_empty_files = self._create_switch_row("ignore-empty-files", "action-unavailable-symbolic", "Ignore Empty Files", "Don't raise errors for empty files")
+        self.setting_ignore_empty_files = self._create_switch_row(
+            "ignore-empty-files",
+            "action-unavailable-symbolic",
+            "Ignore Empty Files",
+            "Don't raise errors for empty files",
+        )
         processing_group.add(child=self.setting_ignore_empty_files)
 
         processing_group.add(self._create_buttons())
@@ -410,10 +462,20 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         saving_group = Adw.PreferencesGroup(description="Configure how results are saved")
         saving_page.add(group=saving_group)
 
-        self.setting_save_errors = self._create_switch_row("save-errors", "dialog-error-symbolic", "Save Errors", "Save errors to results file or clipboard")
+        self.setting_save_errors = self._create_switch_row(
+            "save-errors",
+            "dialog-error-symbolic",
+            "Save Errors",
+            "Save errors to results file or clipboard",
+        )
         saving_group.add(child=self.setting_save_errors)
 
-        self.setting_include_time = self._create_switch_row("include-time", "edit-find-symbolic", "Include Timestamp", "Include timestamp in results")
+        self.setting_include_time = self._create_switch_row(
+            "include-time",
+            "edit-find-symbolic",
+            "Include Timestamp",
+            "Include timestamp in results",
+        )
         saving_group.add(child=self.setting_include_time)
 
         self.setting_relative_path = self._create_switch_row(
@@ -422,7 +484,10 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             "Relative Paths",
             "Display results using paths relative to the current working directory",
         )
-        self.setting_relative_path.connect("notify::active", lambda *_: self._set_example_output_format_text(*self.get_formatted_params()))
+        self.setting_relative_path.connect(
+            "notify::active",
+            lambda *_: self._set_example_output_format_text(*self.get_formatted_params()),
+        )
         saving_group.add(child=self.setting_relative_path)
 
         self._create_checksum_format_toggle_group(saving_page)
@@ -467,6 +532,36 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
         hashing_group.add(child=self._create_buttons())
 
+    def _setup_virustotal_page(self) -> None:
+        vt_page = Adw.PreferencesPage(title="VirusTotal", icon_name="security-high-symbolic")
+        self.add(vt_page)
+
+        vt_group = Adw.PreferencesGroup(
+            description="Configure VirusTotal integration for online hash lookups",
+        )
+        vt_page.add(group=vt_group)
+
+        self.setting_vt_api_key = Adw.PasswordEntryRow(title="API Key")
+        self.setting_vt_api_key.set_name("virustotal-api-key")
+        self.setting_vt_api_key.add_prefix(Gtk.Image.new_from_icon_name("dialog-password-symbolic"))
+        self.setting_vt_api_key.connect("changed", self._on_vt_api_key_changed)
+        self._add_reset_button(self.setting_vt_api_key)
+        self._setting_widgets["virustotal-api-key"] = self.setting_vt_api_key
+        vt_group.add(child=self.setting_vt_api_key)
+
+        info_row = Adw.ActionRow(
+            title="About VirusTotal",
+            subtitle="Get a free API key at virustotal.com. The key is stored locally in the app config file.",
+        )
+        info_row.add_prefix(Gtk.Image.new_from_icon_name("dialog-information-symbolic"))
+        vt_group.add(child=info_row)
+
+        vt_group.add(self._create_buttons())
+
+    def _on_vt_api_key_changed(self, entry_row: Adw.PasswordEntryRow) -> None:
+        new_value = entry_row.get_text()
+        self.update("virustotal-api-key", new_value)
+
     def _create_switch_row(self, name: str, icon_name: str, title: str, subtitle: str) -> Adw.SwitchRow:
         switch_row = Adw.SwitchRow(name=name, title=title, subtitle=subtitle)
         switch_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
@@ -487,14 +582,21 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             tooltip_text="Check it for uppercase hash value and algorithm",
             margin_end=3,
         )
-        self.setting_uppercase_check_button.connect("toggled", lambda _: self._on_format_selected(None, self.setting_uppercase_check_button))
+        self.setting_uppercase_check_button.connect(
+            "toggled",
+            lambda _: self._on_format_selected(None, self.setting_uppercase_check_button),
+        )
 
         self.checksum_format_example_text = Adw.ActionRow(css_classes=["background-dark"], title_lines=1, use_markup=True)
         self.checksum_format_example_text.add_prefix(Gtk.Box(hexpand=True))
         self.checksum_format_example_text.add_prefix(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.checksum_format_example_text.add_prefix(self.setting_uppercase_check_button)
 
-        output_format_row = Adw.ActionRow(title="Output Format", tooltip_text="Choose checksum output format", title_lines=1)
+        output_format_row = Adw.ActionRow(
+            title="Output Format",
+            tooltip_text="Choose checksum output format",
+            title_lines=1,
+        )
         output_format_row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
 
         toggle_group = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
@@ -504,7 +606,12 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
         first_toggle = None
         for fmt in CHECKSUM_FORMATS:
-            toggle = Gtk.ToggleButton(name=name_output_style, label=fmt["name"], tooltip_text=fmt["description"], css_classes=["custom-toggle-btn"])
+            toggle = Gtk.ToggleButton(
+                name=name_output_style,
+                label=fmt["name"],
+                tooltip_text=fmt["description"],
+                css_classes=["custom-toggle-btn"],
+            )
             toggle.connect("toggled", self._on_format_selected, None)
 
             if first_toggle is None:
@@ -545,6 +652,9 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
 
         elif isinstance(row, Adw.ComboRow):
             reset_button.connect("clicked", lambda _: row.set_selected(AVAILABLE_ALGORITHMS.index(value)))
+
+        elif isinstance(row, Adw.EntryRow):
+            reset_button.connect("clicked", lambda _: row.set_text(str(value) if value else ""))
 
         row.add_suffix(reset_button)
 
@@ -593,6 +703,9 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
                 elif isinstance(widget, Adw.ComboRow):
                     widget.set_selected(AVAILABLE_ALGORITHMS.index(value))
 
+                elif isinstance(widget, Adw.EntryRow):
+                    widget.set_text(str(value) if value else "")
+
                 elif isinstance(widget, Gtk.CheckButton):
                     widget.set_active(value)
 
@@ -626,7 +739,11 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         example_text = output_style.format(hash=example_hash, filename=example_file, algo=example_algo)
         self.checksum_format_example_text.set_title(f'<span letter_spacing="1200">{example_text}</span>')
 
-    def _on_format_selected(self, button_output_style: Gtk.ToggleButton | None, button_uppercase: Gtk.CheckButton | None) -> None:
+    def _on_format_selected(
+        self,
+        button_output_style: Gtk.ToggleButton | None,
+        button_uppercase: Gtk.CheckButton | None,
+    ) -> None:
         if button_output_style:
             config_key_for_output_style = button_output_style.get_name()
             new_value = self.setting_checksum_format_toggle_group.index(button_output_style)
@@ -638,7 +755,12 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
             uppercase_hash_updated = self.update(config_key_for_uppercase_hash, new_value)
 
             if uppercase_hash_updated:
-                self.emit("main-window-signal-handler", "call-row-data", "set_attr_uppercase_result", new_value)
+                self.emit(
+                    "main-window-signal-handler",
+                    "call-row-data",
+                    "set_attr_uppercase_result",
+                    new_value,
+                )
 
         self._set_example_output_format_text(*self.get_formatted_params())
 
@@ -651,7 +773,12 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
                 self.emit("on-items-changed", None)
 
             elif config_key == "relative-paths":
-                self.emit("main-window-signal-handler", "call-row-data", "set_attr_relative_path", new_value)
+                self.emit(
+                    "main-window-signal-handler",
+                    "call-row-data",
+                    "set_attr_relative_path",
+                    new_value,
+                )
 
     def _on_spin_row_changed(self, spin_row: Adw.SpinRow, param: GObject.ParamSpec) -> None:
         new_value = int(spin_row.get_value())
@@ -662,6 +789,141 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         selected_hashing_algorithm = algo.get_selected_item().get_string()
         config_key = algo.get_name()
         self.update(config_key, selected_hashing_algorithm)
+
+
+class VirusTotalClient:
+    VT_API_BASE = "https://www.virustotal.com/api/v3"
+    VT_GUI_BASE = "https://www.virustotal.com/gui/file"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+        self._logger = get_logger("VirusTotalClient")
+
+    def lookup_hash(self, hash_value: str, callback: Callable[[str, Any, str], None]) -> None:
+        def worker():
+            url = f"{self.VT_API_BASE}/files/{hash_value}"
+            req = urllib.request.Request(url, headers={"x-apikey": self._api_key})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read())
+                    stats = data["data"]["attributes"]["last_analysis_stats"]
+                    sha256 = data["data"]["attributes"].get("sha256", hash_value)
+                    report_url = f"{self.VT_GUI_BASE}/{sha256}"
+                    GLib.idle_add(callback, "found", stats, report_url)
+            except urllib.error.HTTPError as e:
+                self._logger.debug(f"VT lookup HTTP {e.code} for {hash_value[:12]}…")
+                if e.code == 404:
+                    GLib.idle_add(callback, "not_found", None, "")
+                elif e.code == 401:
+                    GLib.idle_add(callback, "unauthorized", None, "")
+                elif e.code == 429:
+                    GLib.idle_add(callback, "rate_limited", None, "")
+                else:
+                    GLib.idle_add(callback, "error", f"HTTP {e.code}", "")
+            except Exception as e:
+                self._logger.debug(f"VT lookup error for {hash_value[:12]}…: {e}")
+                GLib.idle_add(callback, "error", str(e), "")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def get_analysis(
+        self,
+        analysis_id: str,
+        callback: Callable[[str, Any, str], None],
+        max_attempts: int = 10,
+    ) -> None:
+        def worker():
+            url = f"{self.VT_API_BASE}/analyses/{analysis_id}"
+            report_url = ""
+            for attempt in range(max_attempts):
+                req = urllib.request.Request(url, headers={"x-apikey": self._api_key})
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read())
+                        meta = data.get("meta", {})
+                        file_info = meta.get("file_info", {})
+                        sha256 = file_info.get("sha256", "")
+                        report_url = f"{self.VT_GUI_BASE}/{sha256}" if sha256 else ""
+                        if sha256:
+                            file_url = f"{self.VT_API_BASE}/files/{sha256}"
+                            file_req = urllib.request.Request(file_url, headers={"x-apikey": self._api_key})
+                            try:
+                                with urllib.request.urlopen(file_req, timeout=30) as file_resp:
+                                    file_data = json.loads(file_resp.read())
+                                    stats = file_data.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
+                                    if stats.get("undetected", 0) > 0 or stats.get("malicious", 0) > 0 or stats.get("suspicious", 0) > 0 or stats.get("harmless", 0) > 0:
+                                        GLib.idle_add(callback, "found", stats, report_url)
+                                        return
+                            except Exception:
+                                pass
+                        if attempt < max_attempts - 1:
+                            time.sleep(30)
+                except urllib.error.HTTPError as e:
+                    self._logger.debug(f"VT analysis HTTP {e.code} for {analysis_id[:12]}…")
+                    if e.code == 404:
+                        GLib.idle_add(callback, "not_found", None, "")
+                        return
+                    elif e.code == 401:
+                        GLib.idle_add(callback, "unauthorized", None, "")
+                        return
+                    elif e.code == 429:
+                        GLib.idle_add(callback, "rate_limited", None, "")
+                        return
+                except Exception as e:
+                    self._logger.debug(f"VT analysis error for {analysis_id[:12]}…: {e}")
+                    GLib.idle_add(callback, "error", str(e), "")
+                    return
+            GLib.idle_add(callback, "submitted", analysis_id, report_url)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def submit_file(self, file_path: Path, callback: Callable[[str, Any, str], None]) -> None:
+        def worker():
+            url = f"{self.VT_API_BASE}/files"
+            boundary = f"----QFH{os.urandom(16).hex()}"
+
+            header_part = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode("utf-8")
+
+            try:
+                with open(file_path, "rb") as f:
+                    file_data = f.read()
+            except Exception as e:
+                GLib.idle_add(callback, "error", f"Cannot read file: {e}", "")
+                return
+
+            footer_part = f"\r\n--{boundary}--\r\n".encode("utf-8")
+            body = header_part + file_data + footer_part
+
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "x-apikey": self._api_key,
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read())
+                    analysis_id = data.get("data", {}).get("id", "")
+                    if not analysis_id:
+                        GLib.idle_add(callback, "error", "No analysis ID returned", "")
+                        return
+                    self.get_analysis(analysis_id, callback)
+            except urllib.error.HTTPError as e:
+                self._logger.debug(f"VT submit HTTP {e.code} for {file_path.name}")
+                if e.code == 429:
+                    GLib.idle_add(callback, "rate_limited", None, "")
+                elif e.code == 401:
+                    GLib.idle_add(callback, "unauthorized", None, "")
+                else:
+                    GLib.idle_add(callback, "error", f"Upload failed (HTTP {e.code})", "")
+            except Exception as e:
+                self._logger.debug(f"VT submit error for {file_path.name}: {e}")
+                GLib.idle_add(callback, "error", str(e), "")
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 class ChecksumRow:
@@ -718,14 +980,20 @@ class ChecksumRow:
         return (checksum_rows, errors)
 
     @staticmethod
-    def parse_checksum_file(file_path: Path, callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None]) -> None:
+    def parse_checksum_file(
+        file_path: Path,
+        callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None],
+    ) -> None:
         with file_path.open() as f:
             lines = f.read().splitlines()
         checksum_rows, errors = ChecksumRow.parser(lines)
         GLib.idle_add(callback, checksum_rows, errors)
 
     @staticmethod
-    def parse_string(content: str, callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None]) -> None:
+    def parse_string(
+        content: str,
+        callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None],
+    ) -> None:
         checksum_rows, errors = ChecksumRow.parser(content.splitlines())
         GLib.idle_add(callback, checksum_rows, errors)
 
@@ -857,7 +1125,13 @@ class CalculateHashes:
         self._start_time: float = 0
         self._file_count: int = 0
 
-    def __call__(self, base_paths: Iterable[Path], paths: Iterable[Path], hash_algorithms: Iterable[str], options: dict) -> None:
+    def __call__(
+        self,
+        base_paths: Iterable[Path],
+        paths: Iterable[Path],
+        hash_algorithms: Iterable[str],
+        options: dict,
+    ) -> None:
         self._start_time = time.monotonic()
         jobs = self._create_jobs(base_paths, paths, options)
         self._file_count = len(jobs["paths"])
@@ -869,7 +1143,15 @@ class CalculateHashes:
         max_workers = options.get("max-workers")
         with ThreadPoolExecutor(max_workers) as executor:
             self.logger.debug(f"Starting hashing with {max_workers} workers")
-            list(executor.map(self._hash_task, jobs["base_paths"], jobs["paths"], hash_algorithms, jobs["sizes"]))
+            list(
+                executor.map(
+                    self._hash_task,
+                    jobs["base_paths"],
+                    jobs["paths"],
+                    hash_algorithms,
+                    jobs["sizes"],
+                )
+            )
 
     def _create_jobs(self, base_paths: Iterable[Path], paths: Iterable[Path], options: dict) -> dict[str, list]:
         jobs = {"base_paths": [], "paths": [], "sizes": []}
@@ -909,7 +1191,14 @@ class CalculateHashes:
 
         return jobs
 
-    def _process_path_n_rules(self, base_path: Path, current_path: Path, current_rules: list[IgnoreRule], jobs: dict[str, list], options: dict) -> None:
+    def _process_path_n_rules(
+        self,
+        base_path: Path,
+        current_path: Path,
+        current_rules: list[IgnoreRule],
+        jobs: dict[str, list],
+        options: dict,
+    ) -> None:
         if self.cancel_event.is_set():
             return
         try:
@@ -961,7 +1250,14 @@ class CalculateHashes:
             p = 1.0
         self.queue_handler.update_progress(p)
 
-    def _hash_task(self, base_path: Path, file: Path, algorithm: str, file_size: int, shake_length: int = 32) -> None:
+    def _hash_task(
+        self,
+        base_path: Path,
+        file: Path,
+        algorithm: str,
+        file_size: int,
+        shake_length: int = 32,
+    ) -> None:
         if self.cancel_event.is_set():
             return
         try:
@@ -1023,7 +1319,12 @@ class RowData(GObject.Object):
     def get_search_fields(self, lower: bool = False) -> tuple[Any]:
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_formatted(self, use_relative_path: bool, use_uppercase_result: bool, output_style: str | None) -> str:
+    def get_formatted(
+        self,
+        use_relative_path: bool,
+        use_uppercase_result: bool,
+        output_style: str | None,
+    ) -> str:
         raise NotImplementedError("Subclasses must implement this method")
 
     @GObject.Property(type=str)
@@ -1062,11 +1363,15 @@ class ResultRowData(RowData):
     _model = "results_model"
     # -1 for new row, 0 eq no match and >0 is a match
     line_no: int = GObject.Property(type=int, default=-1)
+    vt_status: str = GObject.Property(type=str, default="")
 
     def __init__(self, base_path: Path, path: Path, hash_value: str, algo: str, **kwargs):
         super().__init__(base_path, path, **kwargs)
         self.hash_value = hash_value
         self.algo = algo
+        self.vt_stats: dict | None = None
+        self.vt_report_url: str = ""
+        self.vt_error_message: str = ""
 
     def __hash__(self):
         return hash((self.path.name, self.hash_value))
@@ -1114,7 +1419,12 @@ class ErrorRowData(RowData):
     def get_result(self):
         return self._error_message
 
-    def get_formatted(self, use_relative_path: bool, use_uppercase_error_message: bool, output_style=None) -> str:
+    def get_formatted(
+        self,
+        use_relative_path: bool,
+        use_uppercase_error_message: bool,
+        output_style=None,
+    ) -> str:
         filename = self.rel_path if use_relative_path else self.path.as_posix()
         error_message = self._error_message.upper() if use_uppercase_error_message else self._error_message
         return f"{filename} -> {error_message}"
@@ -1142,13 +1452,18 @@ class WidgetHashRow(Gtk.Box):
         self.append(self.prefix_icon)
         self.append(self.prefix_label)
 
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        self.append(content_box)
+        self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        self.append(self.content_box)
 
         self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
-        self.subtitle = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["dim-label", "caption"], margin_top=2)
-        content_box.append(self.title)
-        content_box.append(self.subtitle)
+        self.subtitle = Gtk.Label(
+            xalign=0,
+            ellipsize=Pango.EllipsizeMode.END,
+            css_classes=["dim-label", "caption"],
+            margin_top=2,
+        )
+        self.content_box.append(self.title)
+        self.content_box.append(self.subtitle)
 
         self.suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
         self.append(self.suffix_box)
@@ -1167,7 +1482,13 @@ class WidgetHashRow(Gtk.Box):
         self.suffix_box.append(button)
         return button
 
-    def bind(self, row_data: RowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
+    def bind(
+        self,
+        row_data: RowData,
+        list_item: Gtk.ListItem,
+        model: Gio.ListStore,
+        parent: "MainWindow",
+    ) -> None:
         self.prefix_label.set_text(row_data.get_prefix())
         list_item.path_to_title_binding = row_data.bind_property("prop_path", self.title, "label", GObject.BindingFlags.SYNC_CREATE)
         list_item.path_to_title_tooltip_text_binding = row_data.bind_property("prop_path", self.title, "tooltip-text", GObject.BindingFlags.SYNC_CREATE)
@@ -1208,6 +1529,7 @@ class WidgetHashResultRow(WidgetHashRow):
     __gtype_name__ = "WidgetHashResultRow"
     _icon_name = "dialog-password-symbolic"
     _btn_css = "success"
+    _vt_css_classes = ("custom-success", "custom-error")
 
     def __init__(self):
         super().__init__()
@@ -1216,9 +1538,14 @@ class WidgetHashResultRow(WidgetHashRow):
         self.button_multi_hash.set_child(Gtk.Label(label="Multi-Hash"))
         self.button_copy = self._create_button("edit-copy-symbolic", "Copy hash", None)
         self.button_compare = self._create_button("edit-paste-symbolic", "Compare hash with clipboard", None)
+        self.button_vt = self._create_button("security-high-symbolic", "Check with VirusTotal", None)
+        self.button_vt.set_sensitive(False)
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this result", None)
 
-    def set_icon_(self, icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"]):
+    def set_icon_(
+        self,
+        icon_name: Literal["text-x-generic-symbolic", "object-select-symbolic", "dialog-error-symbolic"],
+    ):
         self.prefix_icon.set_from_icon_name(icon_name)
 
     def reset_icon(self) -> None:
@@ -1228,15 +1555,101 @@ class WidgetHashResultRow(WidgetHashRow):
         self.remove_css_class("custom-success")
         self.remove_css_class("custom-error")
 
-    def bind(self, row_data: ResultRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
+    def _apply_vt_button_state(self, row_data: "ResultRowData", parent: "MainWindow") -> None:
+        for cls in self._vt_css_classes:
+            self.button_vt.remove_css_class(cls)
+
+        status = row_data.vt_status
+        vt_supported = row_data.algo in VT_SUPPORTED_ALGORITHMS
+        has_key = parent.pref.has_vt_api_key()
+
+        if status == "loading":
+            spinner = Gtk.Spinner(spinning=True)
+            self.button_vt.set_child(spinner)
+            self.button_vt.set_sensitive(False)
+            self.button_vt.set_tooltip_text("Checking with VirusTotal…")
+            return
+
+        self.button_vt.set_child(None)
+
+        if status == "found":
+            stats = row_data.vt_stats or {}
+            m, s = stats.get("malicious", 0), stats.get("suspicious", 0)
+            if m > 0 or s > 0:
+                self.button_vt.set_icon_name("security-low-symbolic")
+                self.button_vt.add_css_class("custom-error")
+                self.button_vt.set_tooltip_text(f"Threats detected — Malicious: {m}, Suspicious: {s}")
+            else:
+                self.button_vt.set_icon_name("security-high-symbolic")
+                self.button_vt.add_css_class("custom-success")
+                self.button_vt.set_tooltip_text("Clean — No threats detected")
+            self.button_vt.set_sensitive(True)
+
+        elif status == "not_found":
+            self.button_vt.set_icon_name("security-medium-symbolic")
+            self.button_vt.set_tooltip_text("Not found in VirusTotal — Click for details")
+            self.button_vt.set_sensitive(True)
+
+        elif status == "submitted":
+            self.button_vt.set_icon_name("security-high-symbolic")
+            self.button_vt.add_css_class("custom-success")
+            self.button_vt.set_tooltip_text("Submitted to VirusTotal — Click for details")
+            self.button_vt.set_sensitive(True)
+
+        elif status in ("unauthorized", "rate_limited", "error"):
+            self.button_vt.set_icon_name("security-low-symbolic")
+            self.button_vt.add_css_class("custom-error")
+            msg = {
+                "unauthorized": "Invalid API key",
+                "rate_limited": "Rate limited",
+                "error": row_data.vt_error_message or "Error",
+            }.get(status, "Error")
+            self.button_vt.set_tooltip_text(f"VirusTotal: {msg} — Click for details")
+            self.button_vt.set_sensitive(True)
+
+        else:
+            self.button_vt.set_icon_name("security-high-symbolic")
+            if not has_key:
+                self.button_vt.set_tooltip_text("Configure a VirusTotal API key in Preferences to enable lookups")
+            elif not vt_supported:
+                algo_upper = row_data.algo.upper().replace("_", "-")
+                self.button_vt.set_tooltip_text(f"VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
+            else:
+                self.button_vt.set_tooltip_text("Check with VirusTotal")
+            self.button_vt.set_sensitive(has_key and vt_supported)
+
+    def _reset_vt_button(self) -> None:
+        self.button_vt.set_child(None)
+        self.button_vt.set_icon_name("security-high-symbolic")
+        self.button_vt.set_sensitive(False)
+        self.button_vt.set_tooltip_text("Check with VirusTotal")
+        for cls in self._vt_css_classes:
+            self.button_vt.remove_css_class(cls)
+
+    def _on_vt_status_changed(self, row_data: "ResultRowData", pspec, parent: "MainWindow") -> None:
+        self._apply_vt_button_state(row_data, parent)
+
+    def bind(
+        self,
+        row_data: ResultRowData,
+        list_item: Gtk.ListItem,
+        model: Gio.ListStore,
+        parent: "MainWindow",
+    ) -> None:
         super().bind(row_data, list_item, model, parent)
         list_item.multi_hash_handler_id = self.button_multi_hash.connect("clicked", parent.on_multi_hash_requested, row_data)
         list_item.compare_handler_id = self.button_compare.connect("clicked", parent.on_clipboard_compare_requested, self, row_data)
+        list_item.vt_handler_id = self.button_vt.connect("clicked", parent.on_vt_lookup_requested, self, row_data)
+        list_item.vt_notify_id = row_data.connect("notify::vt-status", self._on_vt_status_changed, parent)
+        self._apply_vt_button_state(row_data, parent)
 
     def unbind(self, row_data: ResultRowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
         super().unbind(row_data, list_item, parent)
         self.button_multi_hash.disconnect(list_item.multi_hash_handler_id)
         self.button_compare.disconnect(list_item.compare_handler_id)
+        self.button_vt.disconnect(list_item.vt_handler_id)
+        row_data.disconnect(list_item.vt_notify_id)
+        self._reset_vt_button()
 
 
 class WidgetChecksumResultRow(WidgetHashRow):
@@ -1298,7 +1711,13 @@ class WidgetHashErrorRow(WidgetHashRow):
         self.button_delete = self._create_button("user-trash-symbolic", "Remove this error", None)
         self.add_css_class("custom-error")
 
-    def bind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, model: Gio.ListStore, parent: "MainWindow") -> None:
+    def bind(
+        self,
+        row_data: ErrorRowData,
+        list_item: Gtk.ListItem,
+        model: Gio.ListStore,
+        parent: "MainWindow",
+    ) -> None:
         super().bind(row_data, list_item, model, parent)
 
     def unbind(self, row_data: ErrorRowData, list_item: Gtk.ListItem, parent: "MainWindow") -> None:
@@ -1309,7 +1728,11 @@ class SearchProvider(Gtk.Button):
     SEARCH_OPTIONS = [
         ("case-sensitive", "Case Sensitive", "Make search case sensitive"),
         ("exact-match", "Exact Match", "Match the exact search term"),
-        ("hide-checksum-matches", "Hide Matches", "Hide results that match loaded checksums"),
+        (
+            "hide-checksum-matches",
+            "Hide Matches",
+            "Hide results that match loaded checksums",
+        ),
     ]
 
     def __init__(self):
@@ -1322,11 +1745,18 @@ class SearchProvider(Gtk.Button):
         self._view_stack: Adw.ViewStack | None = None
         self._models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]] = None
 
-        self.connect("clicked", lambda _: self.set_search_bar_visible(not self.get_search_bar().is_visible()))
+        self.connect(
+            "clicked",
+            lambda _: self.set_search_bar_visible(not self.get_search_bar().is_visible()),
+        )
         self._setup_status_page()
         self._setup_search()
 
-    def complete_setup(self, view_stack: Adw.ViewStack, models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]]) -> None:
+    def complete_setup(
+        self,
+        view_stack: Adw.ViewStack,
+        models_n_filters: dict[str, tuple[Gio.ListStore, Gio.ListStore, Gtk.Filter]],
+    ) -> None:
         self._view_stack = view_stack
         self._models_n_filters = models_n_filters
         self._connect_search_to_view()
@@ -1492,18 +1922,38 @@ class SearchProvider(Gtk.Button):
 
 class Banner(Gtk.Revealer):
     def __init__(self):
-        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=300)
+        super().__init__(
+            transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
+            transition_duration=300,
+        )
         self.main_grid = Gtk.Grid(
             margin_bottom=8,
             hexpand=True,
             column_homogeneous=False,
             halign=Gtk.Align.CENTER,
-            css_classes=["padding-small", "custom-banner-theme", "rounded-bottom", "rounded-top-small"],
+            css_classes=[
+                "padding-small",
+                "custom-banner-theme",
+                "rounded-bottom",
+                "rounded-top-small",
+            ],
         )
 
-        self.prefix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
-        self.content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
-        self.suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
+        self.prefix = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            halign=Gtk.Align.START,
+            valign=Gtk.Align.CENTER,
+        )
+        self.content = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            halign=Gtk.Align.CENTER,
+            valign=Gtk.Align.CENTER,
+        )
+        self.suffix = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            halign=Gtk.Align.END,
+            valign=Gtk.Align.CENTER,
+        )
 
         self.main_grid.attach(self.prefix, 0, 0, 1, 1)
         self.main_grid.attach(self.content, 1, 0, 1, 1)
@@ -1546,7 +1996,13 @@ class Banner(Gtk.Revealer):
 
 
 class MultiHashDialog(Adw.AlertDialog):
-    def __init__(self, parent: "MainWindow", row_data: ResultRowData, working_config: dict, **kwargs):
+    def __init__(
+        self,
+        parent: "MainWindow",
+        row_data: ResultRowData,
+        working_config: dict,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         heading = "Select Additional Algorithms"
         body = "<small>Choose one or more algorithms to run in addition to the calculated one.</small>"
@@ -1565,7 +2021,12 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row = self.get_display_row(row_data)
 
         horizontal_container_check_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        horizontal_container_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=6, margin_top=10)
+        horizontal_container_buttons = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            halign=Gtk.Align.END,
+            spacing=6,
+            margin_top=10,
+        )
         select_all_button = Gtk.Button(label="Select All", css_classes=["flat"])
         unselect_all_button = Gtk.Button(label="Unselect All", css_classes=["flat"])
         check_buttons: list[Gtk.CheckButton] = []
@@ -1580,7 +2041,12 @@ class MultiHashDialog(Adw.AlertDialog):
                 continue
 
             if count % 5 == 0:
-                current_check_box_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, hexpand=True, halign=Gtk.Align.CENTER)
+                current_check_box_container = Gtk.Box(
+                    orientation=Gtk.Orientation.VERTICAL,
+                    spacing=12,
+                    hexpand=True,
+                    halign=Gtk.Align.CENTER,
+                )
                 horizontal_container_check_buttons.append(current_check_box_container)
 
             check_button = Gtk.CheckButton(label=algo.replace("_", "-").upper())
@@ -1621,6 +2087,100 @@ class MultiHashDialog(Adw.AlertDialog):
         display_row.subtitle.set_text(f"{row_data.get_prefix()}  {row_data.prop_result}")
         display_row.set_margin_bottom(8)
         return display_row
+
+
+class VirusTotalReportDialog(Adw.AlertDialog):
+    def __init__(self, parent: "MainWindow", row_data: ResultRowData, **kwargs):
+        super().__init__(**kwargs)
+        self.set_heading("VirusTotal Report")
+        self.set_close_response("close")
+        self.add_response("close", "Close")
+
+        status = row_data.vt_status
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
+        self.set_extra_child(container)
+
+        display_row = MultiHashDialog.get_display_row(None, row_data)
+        container.append(display_row)
+
+        if status == "found":
+            stats = row_data.vt_stats or {}
+            m = stats.get("malicious", 0)
+            s = stats.get("suspicious", 0)
+            h = stats.get("harmless", 0)
+            u = stats.get("undetected", 0)
+
+            if m > 0 or s > 0:
+                self.set_body("Threats were detected for this file.")
+            else:
+                self.set_body("No threats were detected for this file.")
+
+            grid = Gtk.Grid(column_spacing=24, row_spacing=8, halign=Gtk.Align.CENTER, margin_top=8)
+            labels = [
+                ("Malicious", m, "custom-error"),
+                ("Suspicious", s, "custom-error"),
+                ("Harmless", h, "custom-success"),
+                ("Undetected", u, "dim-label"),
+            ]
+            for col, (name, count, css) in enumerate(labels):
+                name_label = Gtk.Label(label=name, css_classes=["dim-label", "caption"])
+                count_label = Gtk.Label(label=str(count), css_classes=["title-1"])
+                if count > 0 and css in ("custom-error", "custom-success"):
+                    count_label.add_css_class(css)
+                grid.attach(name_label, col, 0, 1, 1)
+                grid.attach(count_label, col, 1, 1, 1)
+            container.append(grid)
+
+            if row_data.vt_report_url:
+                report_btn = Gtk.Button(
+                    label="Open Full Report in Browser",
+                    css_classes=["suggested-action"],
+                    halign=Gtk.Align.CENTER,
+                    margin_top=8,
+                )
+                report_btn.connect(
+                    "clicked",
+                    lambda _: Gio.AppInfo.launch_default_for_uri(row_data.vt_report_url, None),
+                )
+                container.append(report_btn)
+
+        elif status == "not_found":
+            self.set_body("This file's hash was not found in the VirusTotal database.")
+            self.add_response("submit", "Submit to VirusTotal")
+            self.set_response_appearance("submit", Adw.ResponseAppearance.SUGGESTED)
+
+            def on_response(d, response_id):
+                if response_id == "submit":
+                    parent._do_vt_submit(row_data)
+
+            self.connect("response", on_response)
+
+        elif status == "submitted":
+            self.set_body("This file has been submitted to VirusTotal for analysis.")
+            if row_data.vt_report_url:
+                report_btn = Gtk.Button(
+                    label="Open Report in Browser",
+                    css_classes=["suggested-action"],
+                    halign=Gtk.Align.CENTER,
+                    margin_top=8,
+                )
+                report_btn.connect(
+                    "clicked",
+                    lambda _: Gio.AppInfo.launch_default_for_uri(row_data.vt_report_url, None),
+                )
+                container.append(report_btn)
+
+        elif status == "unauthorized":
+            self.set_body("The VirusTotal API key is invalid. Please check your key in Preferences.")
+
+        elif status == "rate_limited":
+            self.set_body("VirusTotal API rate limit exceeded. Please wait a moment and try again.")
+
+        elif status == "error":
+            msg = row_data.vt_error_message or "An unknown error occurred."
+            self.set_body(f"VirusTotal error: {msg}")
+
+        self.present(parent)
 
 
 class HashTextDialog(Adw.Window):
@@ -1700,8 +2260,17 @@ class HashTextDialog(Adw.Window):
             xalign=0,
             css_classes=["monospace", "dim-label"],
         )
-        self._size_label = Gtk.Label(label="0 B", css_classes=["dim-label", "caption"], margin_start=8, margin_end=4)
-        self._copy_btn = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy hash", css_classes=["flat"])
+        self._size_label = Gtk.Label(
+            label="0 B",
+            css_classes=["dim-label", "caption"],
+            margin_start=8,
+            margin_end=4,
+        )
+        self._copy_btn = Gtk.Button(
+            icon_name="edit-copy-symbolic",
+            tooltip_text="Copy hash",
+            css_classes=["flat"],
+        )
         self._copy_btn.connect("clicked", self._on_copy_clicked)
         bottom_bar.pack_start(self._result_label)
         bottom_bar.pack_end(self._copy_btn)
@@ -1744,7 +2313,13 @@ class HashTextDialog(Adw.Window):
             icon = self._copy_btn.get_icon_name()
             self._copy_btn.set_icon_name("object-select-symbolic")
             self._copy_btn.add_css_class("success")
-            GLib.timeout_add(1500, lambda: (self._copy_btn.set_icon_name(icon), self._copy_btn.remove_css_class("success")))
+            GLib.timeout_add(
+                1500,
+                lambda: (
+                    self._copy_btn.set_icon_name(icon),
+                    self._copy_btn.remove_css_class("success"),
+                ),
+            )
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -1768,6 +2343,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.checksum_rows: dict[tuple[str, str], dict[str, Any]] = {}
         self.rows_selected: list[ResultRowData] = []
         self._last_job_stats: tuple | None = None
+        self._auto_vt_check: bool = False
 
         self.cancel_event = threading.Event()
         self.job_in_progress = threading.Event()
@@ -1798,7 +2374,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._setup_top_bar()
         self.toolbar_view.add_top_bar(self.top_bar_box)
 
-        self.view_switcher = Adw.ViewSwitcher(halign=Gtk.Align.CENTER, policy=Adw.ViewSwitcherPolicy.WIDE, css_classes=["view-switcher"])
+        self.view_switcher = Adw.ViewSwitcher(
+            halign=Gtk.Align.CENTER,
+            policy=Adw.ViewSwitcherPolicy.WIDE,
+            css_classes=["view-switcher"],
+        )
         self.toolbar_view.add_top_bar(self.view_switcher)
 
         self._setup_content()
@@ -1821,13 +2401,31 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
-        drop.connect("enter", lambda *_: (self.dnd_revealer.set_can_target(True), self.dnd_revealer.set_reveal_child(True), Gdk.DragAction.COPY)[2])
-        drop.connect("leave", lambda *_: (self.dnd_revealer.set_can_target(False), self.dnd_revealer.set_reveal_child(False)))
+        drop.connect(
+            "enter",
+            lambda *_: (
+                self.dnd_revealer.set_can_target(True),
+                self.dnd_revealer.set_reveal_child(True),
+                Gdk.DragAction.COPY,
+            )[2],
+        )
+        drop.connect(
+            "leave",
+            lambda *_: (
+                self.dnd_revealer.set_can_target(False),
+                self.dnd_revealer.set_reveal_child(False),
+            ),
+        )
 
         def on_drop(ctrl, drop: Gdk.FileList, x, y) -> bool:
             try:
                 files = [Path(file.get_path()) for file in drop.get_files()]
-                self.start_job(None, files, repeat(self.pref.get_algorithm()), self.pref.get_working_config())
+                self.start_job(
+                    None,
+                    files,
+                    repeat(self.pref.get_algorithm()),
+                    self.pref.get_working_config(),
+                )
                 return True
             except Exception as e:
                 self.add_toast(f"Drag & Drop failed: {e}")
@@ -1845,20 +2443,47 @@ class MainWindow(Adw.ApplicationWindow):
         button_box = Gtk.Box(spacing=6, css_classes=["toolbar"])
 
         self.button_cancel_job = Gtk.Button(sensitive=False)
-        self.button_cancel_job.set_child(Adw.ButtonContent(icon_name="process-stop-symbolic", label="Cancel Job", tooltip_text="Cancel an ongoing job"))
+        self.button_cancel_job.set_child(
+            Adw.ButtonContent(
+                icon_name="process-stop-symbolic",
+                label="Cancel Job",
+                tooltip_text="Cancel an ongoing job",
+            )
+        )
         self.button_cancel_job.add_css_class("destructive-action")
-        self.button_cancel_job.connect("clicked", lambda _: (self.cancel_event.set(), self.add_toast("❌ Job Cancelled")))
+        self.button_cancel_job.connect(
+            "clicked",
+            lambda _: (self.cancel_event.set(), self.add_toast("❌ Job Cancelled")),
+        )
 
         self.button_select_files = Gtk.Button()
-        self.button_select_files.set_child(Adw.ButtonContent(icon_name="document-open-symbolic", label="Select Files", tooltip_text="Select files for compute"))
+        self.button_select_files.set_child(
+            Adw.ButtonContent(
+                icon_name="document-open-symbolic",
+                label="Select Files",
+                tooltip_text="Select files for compute",
+            )
+        )
         self.button_select_files.connect("clicked", self._on_select_files_or_folders_clicked, True)
 
         self.button_select_folders = Gtk.Button()
-        self.button_select_folders.set_child(Adw.ButtonContent(icon_name="folder-symbolic", label="Select Folders", tooltip_text="Select folder contents for compute"))
+        self.button_select_folders.set_child(
+            Adw.ButtonContent(
+                icon_name="folder-symbolic",
+                label="Select Folders",
+                tooltip_text="Select folder contents for compute",
+            )
+        )
         self.button_select_folders.connect("clicked", self._on_select_files_or_folders_clicked, False)
 
         self.button_save_to_file = Gtk.Button(sensitive=False)
-        self.button_save_to_file.set_child(Adw.ButtonContent(icon_name="document-save-symbolic", label="Save", tooltip_text="Save results to file"))
+        self.button_save_to_file.set_child(
+            Adw.ButtonContent(
+                icon_name="document-save-symbolic",
+                label="Save",
+                tooltip_text="Save results to file",
+            )
+        )
         self.button_save_to_file.connect("clicked", self._on_save_clicked)
 
         button_box.append(self.button_cancel_job)
@@ -1881,11 +2506,22 @@ class MainWindow(Adw.ApplicationWindow):
         return factory
 
     def _setup_scrolled_window(self, list_view: Gtk.ListView):
-        return Gtk.ScrolledWindow(child=list_view, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
+        return Gtk.ScrolledWindow(
+            child=list_view,
+            hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            hexpand=True,
+            vexpand=True,
+        )
 
     def _setup_results_view(self) -> None:
         self.results_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
+        button_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            css_classes=["toolbar"],
+            halign=Gtk.Align.CENTER,
+        )
 
         self.results_model = Gio.ListStore.new(ResultRowData)
         self.results_model._name_ = "Results Model"
@@ -1902,20 +2538,47 @@ class MainWindow(Adw.ApplicationWindow):
         results_model_selection = Gtk.NoSelection.new(self.results_model_filtered)
 
         factory = self._setup_factory(WidgetHashResultRow)
-        results_list_view = Gtk.ListView(model=results_model_selection, factory=factory, css_classes=["no-background", "rich-list"])
+        results_list_view = Gtk.ListView(
+            model=results_model_selection,
+            factory=factory,
+            css_classes=["no-background", "rich-list"],
+        )
 
         self.results_scrolled_window = self._setup_scrolled_window(results_list_view)
 
         self.button_copy_all = Gtk.Button(sensitive=False)
-        self.button_copy_all.set_child(Adw.ButtonContent(icon_name="edit-copy-symbolic", label="Copy to clipboard", tooltip_text="Copy all results to clipboard"))
+        self.button_copy_all.set_child(
+            Adw.ButtonContent(
+                icon_name="edit-copy-symbolic",
+                label="Copy to clipboard",
+                tooltip_text="Copy all results to clipboard",
+            )
+        )
         self.button_copy_all.connect("clicked", self._on_copy_all_clicked)
 
-        self.toggle_button_sort = Gtk.ToggleButton(tooltip_text="Sort results by path", css_classes=["custom-toggle-btn"], sensitive=False, valign=Gtk.Align.CENTER)
-        self.toggle_button_sort.set_child(Adw.ButtonContent(icon_name="media-playlist-shuffle-symbolic", label="Sort", tooltip_text="Sort results by path hierarchy"))
+        self.toggle_button_sort = Gtk.ToggleButton(
+            tooltip_text="Sort results by path",
+            css_classes=["custom-toggle-btn"],
+            sensitive=False,
+            valign=Gtk.Align.CENTER,
+        )
+        self.toggle_button_sort.set_child(
+            Adw.ButtonContent(
+                icon_name="media-playlist-shuffle-symbolic",
+                label="Sort",
+                tooltip_text="Sort results by path hierarchy",
+            )
+        )
         self.toggle_button_sort.connect("toggled", self._on_sort_toggled)
 
         self.button_clear_all = Gtk.Button(sensitive=False)
-        self.button_clear_all.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear results", tooltip_text="Clear all results and errors"))
+        self.button_clear_all.set_child(
+            Adw.ButtonContent(
+                icon_name="edit-clear-all-symbolic",
+                label="Clear results",
+                tooltip_text="Clear all results and errors",
+            )
+        )
         self.button_clear_all.connect("clicked", self._on_clear_all_clicked)
 
         button_row.append(self.button_copy_all)
@@ -1927,21 +2590,33 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_checksum_results_view(self) -> None:
         self.checksum_results_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
+        button_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            css_classes=["toolbar"],
+            halign=Gtk.Align.CENTER,
+        )
 
         checksum_results_selection_model = Gtk.MultiSelection.new(self.results_model_filtered)
         checksum_results_selection_model._name_ = "Checksum Results Selection Model"
         checksum_results_selection_model.connect("selection-changed", self._on_checksum_selection_changed)
 
         factory = self._setup_factory(WidgetChecksumResultRow)
-        checksum_results_list_view = Gtk.ListView(model=checksum_results_selection_model, factory=factory, css_classes=["no-background", "rich-list"])
+        checksum_results_list_view = Gtk.ListView(
+            model=checksum_results_selection_model,
+            factory=factory,
+            css_classes=["no-background", "rich-list"],
+        )
 
         checksum_results_scrolled_window = self._setup_scrolled_window(checksum_results_list_view)
 
         self.button_checksum_compare = Gtk.Button(sensitive=False)
         self.button_checksum_compare.set_child(Adw.ButtonContent(icon_name="object-select-symbolic", label="Compare"))
         self.button_checksum_compare.set_tooltip_text("Compare your generated hashes against the loaded checksum file/clipboard")
-        self.button_checksum_compare.connect("clicked", lambda _: threading.Thread(target=self._on_checksum_compare_file_or_clipboard, daemon=True).start())
+        self.button_checksum_compare.connect(
+            "clicked",
+            lambda _: threading.Thread(target=self._on_checksum_compare_file_or_clipboard, daemon=True).start(),
+        )
 
         button_checksum_file_upload = Gtk.Button()
         button_checksum_file_upload.set_child(Adw.ButtonContent(icon_name="document-open-symbolic", label="Load Checksum File"))
@@ -1963,7 +2638,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.button_checksum_reset = Gtk.Button()
         self.button_checksum_reset.set_child(Adw.ButtonContent(icon_name="edit-undo-symbolic", label="Reset"))
-        self.button_checksum_reset.connect("clicked", self._on_checksum_results_reset_request, checksum_results_selection_model)
+        self.button_checksum_reset.connect(
+            "clicked",
+            self._on_checksum_results_reset_request,
+            checksum_results_selection_model,
+        )
 
         self.checksum_banner_compare = Banner()
         button_hide_matches = Gtk.Button(css_classes=["flat"])
@@ -1989,7 +2668,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_errors_view(self) -> None:
         self.errors_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, css_classes=["toolbar"], halign=Gtk.Align.CENTER)
+        button_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            css_classes=["toolbar"],
+            halign=Gtk.Align.CENTER,
+        )
 
         self.errors_model = Gio.ListStore.new(ErrorRowData)
         self.errors_model._name_ = "Errors Model"
@@ -2003,13 +2687,23 @@ class MainWindow(Adw.ApplicationWindow):
         errors_selection_model = Gtk.NoSelection(model=self.errors_model_filtered)
 
         factory = self._setup_factory(WidgetHashErrorRow)
-        errors_list_view = Gtk.ListView(model=errors_selection_model, factory=factory, css_classes=["no-background", "rich-list"])
+        errors_list_view = Gtk.ListView(
+            model=errors_selection_model,
+            factory=factory,
+            css_classes=["no-background", "rich-list"],
+        )
 
         errors_scrolled_window = self._setup_scrolled_window(errors_list_view)
 
         self.button_clear_errors = Gtk.Button(sensitive=False)
         self.button_clear_errors._name_ = "Clear Errors Button"
-        self.button_clear_errors.set_child(Adw.ButtonContent(icon_name="edit-clear-all-symbolic", label="Clear Errors", tooltip_text="Clear all errors"))
+        self.button_clear_errors.set_child(
+            Adw.ButtonContent(
+                icon_name="edit-clear-all-symbolic",
+                label="Clear Errors",
+                tooltip_text="Clear all errors",
+            )
+        )
         self.button_clear_errors.connect("clicked", self._on_clear_errors_clicked)
 
         button_row.append(self.button_clear_errors)
@@ -2020,7 +2714,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _setup_content(self) -> None:
         self.content_overlay = Gtk.Overlay()
         self.clamp = Adw.Clamp()
-        self.empty_placeholder = Adw.StatusPage(title="No Results", description="Select files or folders to calculate their hashes.", icon_name="text-x-generic-symbolic")
+        self.empty_placeholder = Adw.StatusPage(
+            title="No Results",
+            description="Select files or folders to calculate their hashes.",
+            icon_name="text-x-generic-symbolic",
+        )
         self.view_stack = Adw.ViewStack(visible=False)
         self.view_stack._name_ = "View Stack"
         self.view_switcher.set_stack(self.view_stack)
@@ -2035,14 +2733,31 @@ class MainWindow(Adw.ApplicationWindow):
         self._setup_results_view()
         self.results_stack_page = self.view_stack.add_titled_with_icon(self.results_container, "results", "Results", "view-list-symbolic")
         self._setup_checksum_results_view()
-        self.checksum_results_stack_page = self.view_stack.add_titled_with_icon(self.checksum_results_container, "checksum-results", "Checksum", "object-select-symbolic")
+        self.checksum_results_stack_page = self.view_stack.add_titled_with_icon(
+            self.checksum_results_container,
+            "checksum-results",
+            "Checksum",
+            "object-select-symbolic",
+        )
         self._setup_errors_view()
         self.errors_stack_page = self.view_stack.add_titled_with_icon(self.errors_container, "errors", "Errors", "dialog-error-symbolic")
 
         models_n_filters = {
-            "checksum-results": (self.results_model, self.results_model_filtered, self.results_custom_filter),
-            "results": (self.results_model, self.results_model_filtered, self.results_custom_filter),
-            "errors": (self.errors_model, self.errors_model_filtered, self.errors_custom_filter),
+            "checksum-results": (
+                self.results_model,
+                self.results_model_filtered,
+                self.results_custom_filter,
+            ),
+            "results": (
+                self.results_model,
+                self.results_model_filtered,
+                self.results_custom_filter,
+            ),
+            "errors": (
+                self.errors_model,
+                self.errors_model_filtered,
+                self.errors_custom_filter,
+            ),
         }
         self.search_provider.complete_setup(self.view_stack, models_n_filters)
 
@@ -2221,6 +2936,9 @@ class MainWindow(Adw.ApplicationWindow):
             self.progress_bar.set_fraction(0.0)
             self._scroll_to_bottom()
             self.job_in_progress.clear()
+            if self._auto_vt_check:
+                self._auto_vt_check = False
+                GLib.timeout_add(500, self._auto_vt_check_results)
 
         anim_target = Adw.PropertyAnimationTarget.new(self.progress_bar, "opacity")
         anim = Adw.TimedAnimation.new(self, 1.0, 0.0, 250, anim_target)
@@ -2253,7 +2971,12 @@ class MainWindow(Adw.ApplicationWindow):
         filters = Gio.ListStore.new(Gtk.FileFilter)
         filters.append(text_filter)
         filters.append(csv_filter)
-        file_dialog = Gtk.FileDialog(title="Save", initial_name="results.txt", filters=filters, default_filter=text_filter)
+        file_dialog = Gtk.FileDialog(
+            title="Save",
+            initial_name="results.txt",
+            filters=filters,
+            default_filter=text_filter,
+        )
 
         def on_file_dialog_dismissed(file_dialog: Gtk.FileDialog, gio_task: Gio.Task) -> None:
             if not gio_task.had_error():
@@ -2326,7 +3049,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_factory_setup(self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem, obj: WidgetHashRow) -> None:
+    def _on_factory_setup(
+        self,
+        factory: Gtk.SignalListItemFactory,
+        list_item: Gtk.ListItem,
+        obj: WidgetHashRow,
+    ) -> None:
         row_widget = obj()
         selectable = isinstance(row_widget, WidgetChecksumResultRow)
         list_item.set_selectable(selectable)
@@ -2353,7 +3081,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _animate_target(self, anim_target: Gtk.Widget, value_from=0.4, value_to=1, duration=175):
         target = Adw.PropertyAnimationTarget.new(anim_target, "opacity")
-        anim = Adw.TimedAnimation(widget=self, target=target, value_from=value_from, value_to=value_to, duration=duration)
+        anim = Adw.TimedAnimation(
+            widget=self,
+            target=target,
+            value_from=value_from,
+            value_to=value_to,
+            duration=duration,
+        )
         anim.set_easing(Adw.Easing.EASE_IN_QUAD)
         anim.play()
 
@@ -2395,7 +3129,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible(not show_empty)
         self.empty_placeholder.set_visible(show_empty)
 
-    def checksum_add_rows(self, checksum_rows: dict[tuple[str, str], dict[str, Any]] | None, errors: list[ErrorRowData] | None):
+    def checksum_add_rows(
+        self,
+        checksum_rows: dict[tuple[str, str], dict[str, Any]] | None,
+        errors: list[ErrorRowData] | None,
+    ):
         """Callback"""
         if checksum_rows:
             toast = "✅ Success"
@@ -2451,7 +3189,11 @@ class MainWindow(Adw.ApplicationWindow):
             if not gio_task.had_error():
                 file: Gio.File = file_dialog.open_finish(gio_task)
                 path = Path(file.get_path())
-                threading.Thread(target=ChecksumRow.parse_checksum_file, args=(path, self.checksum_add_rows), daemon=True).start()
+                threading.Thread(
+                    target=ChecksumRow.parse_checksum_file,
+                    args=(path, self.checksum_add_rows),
+                    daemon=True,
+                ).start()
 
         file_dialog.open(parent=self, callback=on_files_dialog_dismissed)
 
@@ -2459,7 +3201,11 @@ class MainWindow(Adw.ApplicationWindow):
         def handle_clipboard_comparison(clipboard: Gdk.Clipboard, result):
             try:
                 clipboard_text = clipboard.read_text_finish(result).strip()
-                threading.Thread(target=ChecksumRow.parse_string, args=(clipboard_text, self.checksum_add_rows), daemon=True).start()
+                threading.Thread(
+                    target=ChecksumRow.parse_string,
+                    args=(clipboard_text, self.checksum_add_rows),
+                    daemon=True,
+                ).start()
             except Exception as e:
                 self.add_toast(f"Clipboard read failed: {e}")
 
@@ -2539,7 +3285,108 @@ class MainWindow(Adw.ApplicationWindow):
         clipboard = self.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
-    def on_delete_row_requested(self, button: Gtk.Button, row_widget: WidgetHashRow, row_data: RowData, model: Gio.ListStore) -> None:
+    def on_vt_lookup_requested(self, _: Gtk.Button, row_widget: WidgetHashResultRow, row_data: ResultRowData) -> None:
+        if row_data.vt_status == "loading":
+            return
+
+        if row_data.vt_status:
+            VirusTotalReportDialog(self, row_data)
+            return
+
+        api_key = self.pref.get_vt_api_key()
+        if not api_key:
+            self.add_toast("⚠ Configure VirusTotal API key in Preferences")
+            return
+        if row_data.algo not in VT_SUPPORTED_ALGORITHMS:
+            algo_upper = row_data.algo.upper().replace("_", "-")
+            self.add_toast(f"⚠ VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
+            return
+
+        row_data.vt_status = "loading"
+        client = VirusTotalClient(api_key)
+
+        def on_result(status: str, data, report_url: str):
+            if status == "found":
+                row_data.vt_stats = data
+            elif status == "error":
+                row_data.vt_error_message = str(data) if data else "Unknown error"
+            row_data.vt_report_url = report_url or ""
+            row_data.vt_status = status
+
+        client.lookup_hash(row_data.hash_value, on_result)
+
+    def _do_vt_submit(self, row_data: ResultRowData) -> None:
+        api_key = self.pref.get_vt_api_key()
+        if not api_key:
+            self.add_toast("⚠ Configure VirusTotal API key in Preferences")
+            return
+
+        escaped_name = GLib.markup_escape_text(row_data.path.name)
+        confirm = Adw.AlertDialog()
+        confirm.set_heading("Submit to VirusTotal?")
+        confirm.set_body(f"The file <b>{escaped_name}</b> will be uploaded to VirusTotal, a third-party service, for malware analysis.\n\nThis action cannot be undone.")
+        confirm.set_body_use_markup(True)
+        confirm.add_response("cancel", "Cancel")
+        confirm.add_response("upload", "Upload")
+        confirm.set_response_appearance("upload", Adw.ResponseAppearance.DESTRUCTIVE)
+        confirm.set_close_response("cancel")
+
+        def on_confirm(d, response_id):
+            if response_id != "upload":
+                return
+            row_data.vt_status = "loading"
+            client = VirusTotalClient(api_key)
+
+            def on_result(status: str, data, report_url: str):
+                row_data.vt_report_url = report_url or ""
+                if status == "found":
+                    row_data.vt_stats = data
+                elif status == "error":
+                    row_data.vt_error_message = str(data) if data else "Upload failed"
+                row_data.vt_status = status
+
+            client.submit_file(row_data.path, on_result)
+
+        confirm.connect("response", on_confirm)
+        confirm.present(self)
+
+    def _auto_vt_check_results(self) -> None:
+        if not self.pref.has_vt_api_key():
+            self.add_toast("⚠ No VirusTotal API key configured")
+            return
+
+        api_key = self.pref.get_vt_api_key()
+        checked = 0
+        for i in range(self.results_model.get_n_items()):
+            row_data: ResultRowData = self.results_model.get_item(i)
+            if row_data.algo in VT_SUPPORTED_ALGORITHMS and not row_data.vt_status:
+                row_data.vt_status = "loading"
+                client = VirusTotalClient(api_key)
+
+                def make_callback(rd):
+                    def on_result(status, data, report_url):
+                        if status == "found":
+                            rd.vt_stats = data
+                        elif status == "error":
+                            rd.vt_error_message = str(data) if data else "Unknown error"
+                        rd.vt_report_url = report_url or ""
+                        rd.vt_status = status
+
+                    return on_result
+
+                client.lookup_hash(row_data.hash_value, make_callback(row_data))
+                checked += 1
+
+        if checked == 0:
+            self.add_toast("⚠ No results with supported hash algorithms (MD5, SHA-1, SHA-256)")
+
+    def on_delete_row_requested(
+        self,
+        button: Gtk.Button,
+        row_widget: WidgetHashRow,
+        row_data: RowData,
+        model: Gio.ListStore,
+    ) -> None:
         button.set_sensitive(False)
 
         found, position = model.find(row_data)
@@ -2631,12 +3478,32 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _create_actions(self) -> None:
         actions = (
-            ("show-searchbar", lambda *_: self.search_provider.set_search_bar_visible(True), ["<Ctrl>F"]),
-            ("hide-searchbar", lambda *_: self.search_provider.set_search_bar_visible(False), ["Escape"]),
-            ("open-files", lambda *_: self._on_select_files_or_folders_clicked(_, files=True), ["<Ctrl>O"]),
-            ("results-copy", lambda *_: self._on_copy_all_clicked(_), ["<Ctrl><Shift>C"]),
+            (
+                "show-searchbar",
+                lambda *_: self.search_provider.set_search_bar_visible(True),
+                ["<Ctrl>F"],
+            ),
+            (
+                "hide-searchbar",
+                lambda *_: self.search_provider.set_search_bar_visible(False),
+                ["Escape"],
+            ),
+            (
+                "open-files",
+                lambda *_: self._on_select_files_or_folders_clicked(_, files=True),
+                ["<Ctrl>O"],
+            ),
+            (
+                "results-copy",
+                lambda *_: self._on_copy_all_clicked(_),
+                ["<Ctrl><Shift>C"],
+            ),
             ("results-save", lambda *_: self._on_save_clicked(_), ["<Ctrl>S"]),
-            ("results-sort", lambda *_: self.toggle_button_sort.set_active(not self.toggle_button_sort.get_active()), ["<Ctrl>R"]),
+            (
+                "results-sort",
+                lambda *_: self.toggle_button_sort.set_active(not self.toggle_button_sort.get_active()),
+                ["<Ctrl>R"],
+            ),
             ("results-clear", lambda *_: self._on_clear_all_clicked(*_), ["<Ctrl>L"]),
             ("hash-text", lambda *_: HashTextDialog(self), ["<Ctrl>T"]),
             ("quit", lambda *_: self.close(), ["<Ctrl>Q"]),
@@ -2657,7 +3524,10 @@ class QuickFileHasher(Adw.Application):
     __gtype_name__ = "QuickFileHasher"
 
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN)
+        super().__init__(
+            application_id=APP_ID,
+            flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.HANDLES_OPEN,
+        )
         self.logger = get_logger(self.__class__.__name__)
         self.pref = Preferences()
 
@@ -2690,6 +3560,7 @@ class QuickFileHasher(Adw.Application):
 
         from_cli = "DESKTOP" not in cli_options
         new_window = "new-window" in cli_options
+        auto_vt = cli_options.pop("virustotal", False)
         paths = command_line.get_arguments()[1:]
 
         if from_cli:
@@ -2715,12 +3586,13 @@ class QuickFileHasher(Adw.Application):
         if paths:
             cwd = command_line.get_cwd()
             paths = [(Path(cwd) / path).resolve() for path in paths]
-            self.do_open(paths, len(paths), _config_.get("algo"), _config_, new_window)
+            self.do_open(paths, len(paths), _config_.get("algo"), _config_, new_window, auto_vt)
 
         else:
             self.do_activate(new_window)
 
-        self.logger.debug(f"Effective CLI options out: {_config_}")
+        _safe = {k: ("***" if "api-key" in k else v) for k, v in _config_.items()}
+        self.logger.debug(f"Effective CLI options out: {_safe}")
         return 0
 
     def do_activate(self, new_window: bool) -> None:
@@ -2730,11 +3602,21 @@ class QuickFileHasher(Adw.Application):
             main_window = MainWindow(self)
         main_window.present()
 
-    def do_open(self, paths: Iterable[Path], n_files: int, hash_algorithm: str, options: dict, new_window: bool) -> None:
+    def do_open(
+        self,
+        paths: Iterable[Path],
+        n_files: int,
+        hash_algorithm: str,
+        options: dict,
+        new_window: bool,
+        auto_vt: bool = False,
+    ) -> None:
         self.logger.debug(f"App {self.get_application_id()} opened with files ({n_files})")
         main_window = self.get_active_window()
         if not main_window or new_window:
             main_window = MainWindow(self)
+        if auto_vt:
+            main_window._auto_vt_check = True
         main_window.start_job(None, paths, repeat(hash_algorithm), options)
         main_window.present()
 
@@ -2848,13 +3730,70 @@ class QuickFileHasher(Adw.Application):
     def _create_options(self) -> None:
         self.set_option_context_summary(f"{APP_NAME} - Verify your files with speed and confidence")
         self.set_option_context_parameter_string("[FILE|FOLDER...] [--recursive] [--gitignore] [--max-workers 4] [--algo sha256]")
-        self.add_main_option("algo", ord("a"), GLib.OptionFlags.NONE, GLib.OptionArg.STRING, "Default hashing algorithm", "ALGORITHM")
-        self.add_main_option("recursive", ord("r"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Process files within subdirectories", None)
-        self.add_main_option("gitignore", ord("g"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Skip files/folders listed in .gitignore", None)
-        self.add_main_option("max-workers", ord("w"), GLib.OptionFlags.NONE, GLib.OptionArg.INT, "Maximum number of parallel hashing operations", "N")
-        self.add_main_option("list-choices", ord("l"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "List available hash algorithms", None)
-        self.add_main_option("new-window", ord("n"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Open in a new window", None)
-        self.add_main_option("DESKTOP", 0, GLib.OptionFlags.HIDDEN, GLib.OptionArg.NONE, "Invoked from the Desktop Environment", None)
+        self.add_main_option(
+            "algo",
+            ord("a"),
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.STRING,
+            "Default hashing algorithm",
+            "ALGORITHM",
+        )
+        self.add_main_option(
+            "recursive",
+            ord("r"),
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.NONE,
+            "Process files within subdirectories",
+            None,
+        )
+        self.add_main_option(
+            "gitignore",
+            ord("g"),
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.NONE,
+            "Skip files/folders listed in .gitignore",
+            None,
+        )
+        self.add_main_option(
+            "max-workers",
+            ord("w"),
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.INT,
+            "Maximum number of parallel hashing operations",
+            "N",
+        )
+        self.add_main_option(
+            "list-choices",
+            ord("l"),
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.NONE,
+            "List available hash algorithms",
+            None,
+        )
+        self.add_main_option(
+            "new-window",
+            ord("n"),
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.NONE,
+            "Open in a new window",
+            None,
+        )
+        self.add_main_option(
+            "virustotal",
+            0,
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.NONE,
+            "Auto-check results with VirusTotal after hashing",
+            None,
+        )
+        self.add_main_option(
+            "DESKTOP",
+            0,
+            GLib.OptionFlags.HIDDEN,
+            GLib.OptionArg.NONE,
+            "Invoked from the Desktop Environment",
+            None,
+        )
 
 
 if __name__ == "__main__":
