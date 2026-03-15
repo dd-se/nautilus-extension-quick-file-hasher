@@ -74,6 +74,8 @@ DEFAULTS = {
 }
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 VT_SUPPORTED_ALGORITHMS = {"md5", "sha1", "sha256"}
+VT_RETRYABLE_STATUSES = {"error", "rate_limited", "unauthorized", "submitted"}
+VT_MAX_FILE_SIZE = 32 * 1024 * 1024  # 32 MB — VirusTotal free-tier limit
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
 MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
 NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
@@ -873,6 +875,16 @@ class VirusTotalClient:
 
     def submit_file(self, file_path: Path, callback: Callable[[str, Any, str], None]) -> None:
         def worker():
+            try:
+                file_size = file_path.stat().st_size
+            except OSError as e:
+                GLib.idle_add(callback, "error", f"Cannot access file: {e}", "")
+                return
+            if file_size > VT_MAX_FILE_SIZE:
+                size_mb = file_size / (1024 * 1024)
+                GLib.idle_add(callback, "error", f"File too large ({size_mb:.1f} MB) — VirusTotal limit is 32 MB", "")
+                return
+
             url = f"{self.VT_API_BASE}/files"
             boundary = f"----QFH{os.urandom(16).hex()}"
 
@@ -3279,11 +3291,16 @@ class MainWindow(Adw.ApplicationWindow):
         clipboard = self.get_clipboard()
         clipboard.read_text_async(None, handle_clipboard_comparison)
 
+    def _clear_vt_state(self, row_data: ResultRowData) -> None:
+        row_data.vt_stats = None
+        row_data.vt_error_message = ""
+        row_data.vt_report_url = ""
+
     def on_vt_lookup_requested(self, _: Gtk.Button, row_widget: WidgetHashResultRow, row_data: ResultRowData) -> None:
         if row_data.vt_status == "loading":
             return
 
-        if row_data.vt_status:
+        if row_data.vt_status and row_data.vt_status not in VT_RETRYABLE_STATUSES:
             VirusTotalReportDialog(self, row_data)
             return
 
@@ -3296,6 +3313,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.add_toast(f"⚠ VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
             return
 
+        self._clear_vt_state(row_data)
         row_data.vt_status = "loading"
         client = VirusTotalClient(api_key)
 
@@ -3328,6 +3346,7 @@ class MainWindow(Adw.ApplicationWindow):
         def on_confirm(d, response_id):
             if response_id != "upload":
                 return
+            self._clear_vt_state(row_data)
             row_data.vt_status = "loading"
             client = VirusTotalClient(api_key)
 
@@ -3350,29 +3369,67 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         api_key = self.pref.get_vt_api_key()
-        checked = 0
+        pending: list[ResultRowData] = []
+        seen_hashes: dict[str, ResultRowData] = {}
         for i in range(self.results_model.get_n_items()):
             row_data: ResultRowData = self.results_model.get_item(i)
             if row_data.algo in VT_SUPPORTED_ALGORITHMS and not row_data.vt_status:
-                row_data.vt_status = "loading"
-                client = VirusTotalClient(api_key)
+                if row_data.hash_value in seen_hashes:
+                    source = seen_hashes[row_data.hash_value]
+                    source.connect("notify::vt-status", lambda src, _, rd=row_data: self._copy_vt_result(src, rd))
+                else:
+                    seen_hashes[row_data.hash_value] = row_data
+                    pending.append(row_data)
 
-                def make_callback(rd):
-                    def on_result(status, data, report_url):
-                        if status == "found":
-                            rd.vt_stats = data
-                        elif status == "error":
-                            rd.vt_error_message = str(data) if data else "Unknown error"
-                        rd.vt_report_url = report_url or ""
-                        rd.vt_status = status
-
-                    return on_result
-
-                client.lookup_hash(row_data.hash_value, make_callback(row_data))
-                checked += 1
-
-        if checked == 0:
+        if not pending:
             self.add_toast("⚠ No results with supported hash algorithms (MD5, SHA-1, SHA-256)")
+            return
+
+        for rd in pending:
+            rd.vt_status = "loading"
+
+        def run_serial():
+            client = VirusTotalClient(api_key)
+            stop = False
+            for rd in pending:
+                if stop:
+                    GLib.idle_add(self._set_vt_status, rd, "error", None, "", "Batch aborted — rate limited")
+                    continue
+                event = threading.Event()
+                result_holder: list = []
+
+                def on_result(status, data, report_url, _event=event, _holder=result_holder):
+                    _holder.extend([status, data, report_url])
+                    _event.set()
+
+                client.lookup_hash(rd.hash_value, on_result)
+                event.wait(timeout=45)
+                if result_holder:
+                    status, data, report_url = result_holder
+                    if status == "rate_limited":
+                        stop = True
+                    GLib.idle_add(self._set_vt_status, rd, status, data, report_url)
+                else:
+                    GLib.idle_add(self._set_vt_status, rd, "error", None, "", "Timeout")
+                if not stop:
+                    time.sleep(1)
+
+        threading.Thread(target=run_serial, daemon=True).start()
+
+    def _set_vt_status(self, rd: ResultRowData, status: str, data: Any, report_url: str, error_msg: str | None = None) -> None:
+        if status == "found":
+            rd.vt_stats = data
+        elif status == "error":
+            rd.vt_error_message = error_msg or (str(data) if data else "Unknown error")
+        rd.vt_report_url = report_url or ""
+        rd.vt_status = status
+
+    def _copy_vt_result(self, source: ResultRowData, target: ResultRowData) -> None:
+        if source.vt_status and source.vt_status != "loading":
+            target.vt_stats = source.vt_stats
+            target.vt_report_url = source.vt_report_url
+            target.vt_error_message = source.vt_error_message
+            target.vt_status = source.vt_status
 
     def on_delete_row_requested(
         self,
