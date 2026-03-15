@@ -840,24 +840,18 @@ class VirusTotalClient:
                 try:
                     with urllib.request.urlopen(req, timeout=30) as resp:
                         data = json.loads(resp.read())
+                        attrs = data.get("data", {}).get("attributes", {})
+                        status = attrs.get("status", "")
                         meta = data.get("meta", {})
                         file_info = meta.get("file_info", {})
                         sha256 = file_info.get("sha256", "")
                         report_url = f"{self.VT_GUI_BASE}/{sha256}" if sha256 else ""
-                        if sha256:
-                            file_url = f"{self.VT_API_BASE}/files/{sha256}"
-                            file_req = urllib.request.Request(file_url, headers={"x-apikey": self._api_key})
-                            try:
-                                with urllib.request.urlopen(file_req, timeout=30) as file_resp:
-                                    file_data = json.loads(file_resp.read())
-                                    stats = file_data.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
-                                    if stats.get("undetected", 0) > 0 or stats.get("malicious", 0) > 0 or stats.get("suspicious", 0) > 0 or stats.get("harmless", 0) > 0:
-                                        GLib.idle_add(callback, "found", stats, report_url)
-                                        return
-                            except Exception:
-                                pass
+                        if status == "completed":
+                            stats = attrs.get("stats", {})
+                            GLib.idle_add(callback, "found", stats, report_url)
+                            return
                         if attempt < max_attempts - 1:
-                            time.sleep(30)
+                            time.sleep(15)
                 except urllib.error.HTTPError as e:
                     self._logger.debug(f"VT analysis HTTP {e.code} for {analysis_id[:12]}…")
                     if e.code == 404:
