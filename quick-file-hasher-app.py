@@ -2,7 +2,7 @@
 
 # MIT License
 
-# Copyright (c) 2025 Doğukan Doğru
+# Copyright (c) 2026 Doğukan Doğru
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -57,7 +57,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # 
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_NAME = "Quick File Hasher"
-APP_VERSION = "2.0.5"
+APP_VERSION = "2.1.5"
 
 DEFAULTS = {
     "algo": "sha256",
@@ -2720,12 +2720,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.checksum_results_container.append(checksum_results_scrolled_window)
 
     def _on_checksum_file_drop(self, files: list[Path]) -> None:
-        for path in files:
-            threading.Thread(
-                target=ChecksumRow.parse_checksum_file,
-                args=(path, self.checksum_add_rows),
-                daemon=True,
-            ).start()
+        if len(files) != 1:
+            self.add_toast("Only one checksum file can be dropped at a time")
+            return
+        threading.Thread(
+            target=ChecksumRow.parse_checksum_file,
+            args=(files[0], self.checksum_add_rows),
+            daemon=True,
+        ).start()
 
     def _setup_errors_view(self) -> None:
         self.errors_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -3197,10 +3199,11 @@ class MainWindow(Adw.ApplicationWindow):
     ):
         """Callback"""
         if checksum_rows:
-            toast = "✅ Success"
+            toast = f"✅ Loaded {len(checksum_rows)} checksum rows"
             self.checksum_rows = checksum_rows
-        elif not errors:
+        else:
             self.checksum_rows.clear()
+            toast = "⚠️ No checksum rows found"
 
         if errors:
             toast = "❌ Something went wrong. Check 'Errors' view."
