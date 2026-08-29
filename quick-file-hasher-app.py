@@ -123,6 +123,7 @@ toast { background-color: #000000; }
 .padding-small { padding-top: 2px; padding-left : 2px; padding-right : 2px; padding-bottom: 2px; }
 .padding-large { padding-top: 8px; padding-left : 8px; padding-right : 8px; padding-bottom: 8px; }
 .dnd-overlay { background-color: alpha(@accent_bg_color, 0.5); color: @accent_fg_color; }
+.dnd-overlay-split > .dnd-overlay { margin: 12px; border-radius: 12px; }
 .custom-toggle-btn:checked { background: shade(@theme_selected_bg_color,0.9); }
 .custom-banner-theme { background-color: shade(@theme_bg_color, 1.32); color: @accent_fg_color; font-weight: bold; }
 .widget-hash-row { background-color: @card_bg_color; box-shadow: 0 1px 1px alpha(@card_shade_color, 0.5); transition: background-color 200ms ease;}
@@ -990,8 +991,15 @@ class ChecksumRow:
         file_path: Path,
         callback: Callable[[dict[tuple[str, str], dict[str, Any]], list["ErrorRowData"]], None],
     ) -> None:
-        with file_path.open() as f:
-            lines = f.read().splitlines()
+        try:
+            with file_path.open(encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except (UnicodeDecodeError, OSError) as e:
+            msg = f"Not a valid checksum file (failed to read as text): {e}"
+            errors = [ErrorRowData(file_path, file_path, msg)]
+            ChecksumRow._logger.debug(msg)
+            GLib.idle_add(callback, {}, errors)
+            return
         checksum_rows, errors = ChecksumRow.parser(lines)
         GLib.idle_add(callback, checksum_rows, errors)
 
@@ -2394,44 +2402,74 @@ class MainWindow(Adw.ApplicationWindow):
         self.toolbar_view.add_bottom_bar(self.progress_bar)
 
     def _setup_drag_and_drop(self) -> None:
-        dnd_status_page = Adw.StatusPage(
+        dnd_left_status_page = Adw.StatusPage(
             title="Drop Files Here",
             icon_name="document-send-symbolic",
             css_classes=["dnd-overlay"],
+            hexpand=True,
         )
+        dnd_right_status_page = Adw.StatusPage(
+            title="Drop Checksum File Here",
+            icon_name="text-x-generic-symbolic",
+            css_classes=["dnd-overlay"],
+            hexpand=True,
+        )
+        dnd_overlay_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        dnd_overlay_box.append(dnd_left_status_page)
+        dnd_overlay_box.append(dnd_right_status_page)
+        self.dnd_overlay_box = dnd_overlay_box
+        self.dnd_right_status_page = dnd_right_status_page
+
         self.dnd_revealer = Gtk.Revealer(
             transition_type=Gtk.RevealerTransitionType.CROSSFADE,
             reveal_child=False,
             can_target=False,
-            child=dnd_status_page,
+            child=dnd_overlay_box,
         )
 
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
-        drop.connect(
-            "enter",
-            lambda *_: (
-                self.dnd_revealer.set_can_target(True),
-                self.dnd_revealer.set_reveal_child(True),
-                Gdk.DragAction.COPY,
-            )[2],
-        )
-        drop.connect(
-            "leave",
-            lambda *_: (
-                self.dnd_revealer.set_can_target(False),
-                self.dnd_revealer.set_reveal_child(False),
-            ),
-        )
+
+        # Matches the pane margin in the .dnd-overlay-split CSS rule; the gap
+        # between the two panes (2 * margin) is a dead zone where the overlay
+        # is hidden and drops are rejected.
+        dnd_pane_margin = 12
+
+        def is_in_dead_zone(x: float) -> bool:
+            return self.dnd_right_status_page.get_visible() and abs(x - self.get_width() / 2) < dnd_pane_margin
+
+        def on_enter(ctrl, x, y) -> Gdk.DragAction:
+            self._update_dnd_overlay_mode()
+            self.dnd_revealer.set_can_target(True)
+            self.dnd_revealer.set_reveal_child(not is_in_dead_zone(x))
+            return Gdk.DragAction.COPY
+
+        def on_leave(ctrl) -> None:
+            self.dnd_revealer.set_can_target(False)
+            self.dnd_revealer.set_reveal_child(False)
+
+        def on_motion(ctrl, x, y) -> Gdk.DragAction:
+            in_dead_zone = is_in_dead_zone(x)
+            self.dnd_revealer.set_reveal_child(not in_dead_zone)
+            return 0 if in_dead_zone else Gdk.DragAction.COPY
+
+        drop.connect("enter", on_enter)
+        drop.connect("leave", on_leave)
+        drop.connect("motion", on_motion)
 
         def on_drop(ctrl, drop: Gdk.FileList, x, y) -> bool:
             try:
+                if is_in_dead_zone(x):
+                    return False
                 files = [Path(file.get_path()) for file in drop.get_files()]
-                self.start_job(
-                    None,
-                    files,
-                    repeat(self.pref.get_algorithm()),
-                    self.pref.get_working_config(),
-                )
+                if self.dnd_right_status_page.get_visible() and x >= self.get_width() / 2:
+                    self._on_checksum_file_drop(files)
+                else:
+                    self.start_job(
+                        None,
+                        files,
+                        repeat(self.pref.get_algorithm()),
+                        self.pref.get_working_config(),
+                    )
                 return True
             except Exception as e:
                 self.add_toast(f"Drag & Drop failed: {e}")
@@ -2442,6 +2480,15 @@ class MainWindow(Adw.ApplicationWindow):
 
         drop.connect("drop", on_drop)
         self.add_controller(drop)
+
+    def _update_dnd_overlay_mode(self) -> None:
+        """Split the DnD overlay in two (files / checksum file) only on the Checksum page."""
+        on_checksum_page = self.view_stack.get_visible_child_name() == "checksum-results"
+        self.dnd_right_status_page.set_visible(on_checksum_page)
+        if on_checksum_page:
+            self.dnd_overlay_box.add_css_class("dnd-overlay-split")
+        else:
+            self.dnd_overlay_box.remove_css_class("dnd-overlay-split")
 
     def _setup_top_bar(self) -> None:
         self.top_bar_box = Gtk.CenterBox(orientation=Gtk.Orientation.HORIZONTAL, margin_bottom=6)
@@ -2671,6 +2718,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.checksum_results_container.append(button_row)
         self.checksum_results_container.append(self.checksum_banner_compare)
         self.checksum_results_container.append(checksum_results_scrolled_window)
+
+    def _on_checksum_file_drop(self, files: list[Path]) -> None:
+        for path in files:
+            threading.Thread(
+                target=ChecksumRow.parse_checksum_file,
+                args=(path, self.checksum_add_rows),
+                daemon=True,
+            ).start()
 
     def _setup_errors_view(self) -> None:
         self.errors_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -3144,7 +3199,7 @@ class MainWindow(Adw.ApplicationWindow):
         if checksum_rows:
             toast = "✅ Success"
             self.checksum_rows = checksum_rows
-        else:
+        elif not errors:
             self.checksum_rows.clear()
 
         if errors:

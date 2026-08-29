@@ -13,9 +13,8 @@ Quick File Hasher is a modern Nautilus (GNOME Files) extension and standalone GT
 - **Batch Processing**: Quickly calculate hashes for multiple files and folders in parallel.
 - **Copy/Compare**: Copy results to clipboard or compare file hash with clipboard contents.
 - **Progress bar & cancel**: See progress and cancel long jobs.
-- **Drag & Drop**: Drop files/folders into the app.
+- **Drag & Drop**: Drop files/folders into the app. On the Checksum tab the drop overlay splits in two — drop a file on the left to compute its hash, or a checksum file on the right to compare.
 - **Hash Text**: Hash arbitrary text strings with live preview — type or paste text, choose your algorithm and encoding, and see the hash update in real time (<kbd>Ctrl</kbd>+<kbd>T</kbd>).
-- **Duplicate Detection**: Find files with identical hashes across your results and filter to show only duplicates (<kbd>Ctrl</kbd>+<kbd>D</kbd>).
 - **Job Statistics**: See elapsed time, throughput (MB/s), and file count after each hashing job completes.
 - **CSV Export**: Save results as CSV in addition to plain text for easy import into spreadsheets.
 - **VirusTotal Integration**: Check file hashes against VirusTotal's database for malware detection. Supports MD5, SHA-1, and SHA-256. Unknown files can be submitted for analysis with automatic polling for results.
@@ -82,19 +81,18 @@ pip install pycairo pygobject pygobject-stubs
   - After running `make install`, a desktop shortcut will be created. You can then launch the app from your system application overview. (Press the Super key and search for "Quick File Hasher")
 - **Drag-and-drop:**
   - Drag files/folders into the app window to compute their hashes.
+  - In the Checksum tab, the drop overlay splits in two halves: drop a file on the left "Drop Files Here" half to compute its hash, or drop a checksum text file on the right "Drop Checksum File Here" half to load it for comparison.
 - **Filter results:**
   - Click the search icon in the header bar or press <kbd>Ctrl</kbd>+<kbd>F</kbd> to show the search bar. Filter results instantly as you type.
 - **Multi-Hash:**
   - This feature enables selection of additional hashing algorithms for the given file.
 - **Hash Text:**
   - Click "Hash Text" in the toolbar or press <kbd>Ctrl</kbd>+<kbd>T</kbd> to open the text hashing dialog. Type or paste text, select an algorithm and encoding (UTF-8, ASCII, Latin-1), and see the hash update live as you type.
-- **Find Duplicates:**
-  - Click "Duplicates" in the results toolbar or press <kbd>Ctrl</kbd>+<kbd>D</kbd> to identify and filter files with identical hashes.
 - **VirusTotal:**
   - Click the VirusTotal button on any file to check its hash against VirusTotal's database.
   - If the hash is found, you'll see detection stats (malicious/suspicious/harmless/undetected).
   - If the hash is not found, you can submit the file to VirusTotal for analysis.
-  - Submitted files are automatically polled for results (every 30s for up to 5 minutes).
+  - Submitted files are automatically polled for results (every 15s for up to 10 attempts, ~2.5 minutes).
   - Requires a VirusTotal API key (free) configured in Preferences.
 
 ## Arguments
@@ -106,6 +104,8 @@ python3 quick-file-hasher-app.py [file1] [file2] ... [folder] [--recursive] [--g
 ```
 
 - `--virustotal`: Automatically check hashes with VirusTotal after computing
+- `--list-choices`: List available hash algorithms
+- `--new-window`: Open in a new window
 
 Type `--help` for more information.
 
@@ -139,11 +139,13 @@ The **Preferences** dialog allows you to customize the application's behavior.
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save Results |
 | <kbd>Ctrl</kbd>+<kbd>T</kbd> | Hash Text |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Show Search Bar |
-| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Find Duplicates |
+| <kbd>Escape</kbd> | Hide Search Bar |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Toggle Sort |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Clear Results |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy All Results |
-| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Close Window |
+| <kbd>Ctrl</kbd>+<kbd>,</kbd> | Preferences |
+| <kbd>Ctrl</kbd>+<kbd>?</kbd> | Keyboard Shortcuts |
 
 ## Screenshot
 
