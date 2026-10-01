@@ -39,7 +39,7 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from functools import lru_cache
+from functools import cache
 from itertools import repeat
 from pathlib import Path
 from queue import Empty, Queue
@@ -51,13 +51,25 @@ import gi  # type: ignore
 
 gi.require_version(namespace="Gtk", version="4.0")
 gi.require_version(namespace="Adw", version="1")
-gi.require_version(namespace="Nautilus", version="4.0")
+# Nautilus typelib version differs per distro release:
+#   Ubuntu 24.04 (Nautilus 46) -> 4.0
+#   Ubuntu 25.10+/26.04 (Nautilus 48/50) -> 4.1
+# Try each in turn so the same file works everywhere. Nautilus is a
+# hard requirement — raise a clear error if no supported version exists.
+for _nautilus_version in ("4.0", "4.1"):
+    try:
+        gi.require_version(namespace="Nautilus", version=_nautilus_version)
+        break
+    except ValueError:
+        continue
+else:
+    raise ValueError("Namespace Nautilus not available for version 4.0 or 4.1. Install gir1.2-nautilus-4.0 (Ubuntu 24.04) or gir1.2-nautilus-4.1 (Ubuntu 25.10+/26.04).")
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_NAME = "Quick File Hasher"
-APP_VERSION = "2.1.5"
+APP_VERSION = "2.1.6"
 
 DEFAULTS = {
     "algo": "sha256",
@@ -889,7 +901,7 @@ class VirusTotalClient:
             url = f"{self.VT_API_BASE}/files"
             boundary = f"----QFH{os.urandom(16).hex()}"
 
-            header_part = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode("utf-8")
+            header_part = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode()
 
             try:
                 with open(file_path, "rb") as f:
@@ -898,7 +910,7 @@ class VirusTotalClient:
                 GLib.idle_add(callback, "error", f"Cannot read file: {e}", "")
                 return
 
-            footer_part = f"\r\n--{boundary}--\r\n".encode("utf-8")
+            footer_part = f"\r\n--{boundary}--\r\n".encode()
             body = header_part + file_data + footer_part
 
             req = urllib.request.Request(
@@ -1069,7 +1081,7 @@ class IgnoreRule:
 
         return f"{prefix}{pattern}{suffix}"
 
-    @lru_cache(maxsize=None)
+    @cache
     def _get_rel_path(self, path: Path) -> str:
         return path.relative_to(self.base_path).as_posix()
 
@@ -2971,7 +2983,7 @@ class MainWindow(Adw.ApplicationWindow):
         model.splice(model.get_n_items(), 0, rows)
 
     @staticmethod
-    def _format_size(size_bytes: int | float) -> str:
+    def _format_size(size_bytes: float) -> str:
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if abs(size_bytes) < 1024.0:
                 return f"{size_bytes:.1f} {unit}"

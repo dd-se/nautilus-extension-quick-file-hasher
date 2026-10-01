@@ -179,8 +179,9 @@ This project uses GitHub Actions for continuous integration. On every pull reque
 
 This extension has been tested on:
 
-- Ubuntu 24.04 LTS
+- Ubuntu 26.04 LTS
 - Ubuntu 25.04
+- Ubuntu 24.04 LTS
 - Fedora 42
 - CachyOS
 
