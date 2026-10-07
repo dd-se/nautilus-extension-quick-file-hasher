@@ -11,3 +11,6 @@ wheels/
 
 # Custom
 .vscode/
+
+# Test files
+tests/

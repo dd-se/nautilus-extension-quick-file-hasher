@@ -55,7 +55,7 @@ gi.require_version(namespace="Adw", version="1")
 #   Ubuntu 24.04 (Nautilus 46) -> 4.0
 #   Ubuntu 25.10+/26.04 (Nautilus 48/50) -> 4.1
 # Try each in turn so the same file works everywhere. Nautilus is a
-# hard requirement — raise a clear error if no supported version exists.
+# hard requirement: raise a clear error if no supported version exists.
 for _nautilus_version in ("4.0", "4.1"):
     try:
         gi.require_version(namespace="Nautilus", version=_nautilus_version)
@@ -69,7 +69,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # 
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
 APP_NAME = "Quick File Hasher"
-APP_VERSION = "2.1.6"
+APP_VERSION = "2.2.0"
 
 DEFAULTS = {
     "algo": "sha256",
@@ -86,8 +86,40 @@ DEFAULTS = {
 }
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 VT_SUPPORTED_ALGORITHMS = {"md5", "sha1", "sha256"}
-VT_RETRYABLE_STATUSES = {"error", "rate_limited", "unauthorized", "submitted"}
-VT_MAX_FILE_SIZE = 32 * 1024 * 1024  # 32 MB — VirusTotal free-tier limit
+VT_MAX_FILE_SIZE = 32 * 1024 * 1024  # 32 MB (VirusTotal free-tier limit)
+VT_DIALOG_MIN_WIDTH = 360
+VT_DIALOG_MAX_WIDTH = 460
+
+# VirusTotal result statuses that are terminal failures: the dialog offers
+# neither retry nor submit for them, and no upload is attempted.
+# To plug in a future unretryable error:
+#   1. emit the new status (instead of "error") from the worker/pre-flight,
+#   2. register it here,
+#   3. give it a dialog branch (or let the generic terminal branch below
+#      handle it).
+# Everything else keeps flowing through the retryable "error" status.
+VT_TERMINAL_STATUSES = frozenset({"too_large"})
+
+
+def vt_upload_block_reason(file_path: Path) -> tuple[str, str] | None:
+    """Pre-flight gate: (status, message) if an upload must not be attempted.
+
+    Returns None when the upload may proceed. Only unretryable conditions
+    belong here. Transient failures keep surfacing as retryable "error"
+    from the background attempt. OSError on stat is deliberately *not*
+    blocking: readability is re-checked by the upload attempt itself.
+    """
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return None
+    if size > VT_MAX_FILE_SIZE:
+        size_mb = size / (1024 * 1024)
+        limit_mb = VT_MAX_FILE_SIZE // (1024 * 1024)
+        return ("too_large", f"File too large ({size_mb:.1f} MB). VirusTotal limit is {limit_mb} MB.")
+    return None
+
+
 AVAILABLE_ALGORITHMS = PRIORITY_ALGORITHMS + sorted(hashlib.algorithms_available - set(PRIORITY_ALGORITHMS))
 MAX_WIDTH = max(len(algo) for algo in AVAILABLE_ALGORITHMS)
 NAUTILUS_CONTEXT_MENU_ALGORITHMS = [None] + AVAILABLE_ALGORITHMS
@@ -806,102 +838,132 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         self.update(config_key, selected_hashing_algorithm)
 
 
+def fit_dialog_content(container: Gtk.Box) -> None:
+    """Fit a dialog content box to its natural width, clamped.
+
+    AlertDialog sizes to the content minimum width (and ignores
+    content-width), so enforce the natural width explicitly. Clamping keeps
+    tiny content usable and overlong filenames inside the window.
+    """
+    _minimum, natural, _min_baseline, _nat_baseline = container.measure(Gtk.Orientation.HORIZONTAL, -1)
+    container.set_size_request(min(max(int(natural), VT_DIALOG_MIN_WIDTH), VT_DIALOG_MAX_WIDTH), -1)
+
+
 class VirusTotalClient:
     VT_API_BASE = "https://www.virustotal.com/api/v3"
     VT_GUI_BASE = "https://www.virustotal.com/gui/file"
+    VT_TIMEOUT = 30
+    VT_POLL_ATTEMPTS = 10
+    VT_POLL_INTERVAL = 15
 
     def __init__(self, api_key: str):
         self._api_key = api_key
         self._logger = get_logger("VirusTotalClient")
 
-    def lookup_hash(self, hash_value: str, callback: Callable[[str, Any, str], None]) -> None:
-        def worker():
-            url = f"{self.VT_API_BASE}/files/{hash_value}"
-            req = urllib.request.Request(url, headers={"x-apikey": self._api_key})
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    data = json.loads(resp.read())
-                    stats = data["data"]["attributes"]["last_analysis_stats"]
-                    sha256 = data["data"]["attributes"].get("sha256", hash_value)
-                    report_url = f"{self.VT_GUI_BASE}/{sha256}"
-                    GLib.idle_add(callback, "found", stats, report_url)
-            except urllib.error.HTTPError as e:
-                self._logger.debug(f"VT lookup HTTP {e.code} for {hash_value[:12]}…")
-                if e.code == 404:
-                    GLib.idle_add(callback, "not_found", None, "")
-                elif e.code == 401:
-                    GLib.idle_add(callback, "unauthorized", None, "")
-                elif e.code == 429:
-                    GLib.idle_add(callback, "rate_limited", None, "")
-                else:
-                    GLib.idle_add(callback, "error", f"HTTP {e.code}", "")
-            except Exception as e:
-                self._logger.debug(f"VT lookup error for {hash_value[:12]}…: {e}")
-                GLib.idle_add(callback, "error", str(e), "")
+    def _request(
+        self,
+        url: str,
+        data: bytes | None = None,
+        headers: dict | None = None,
+        timeout: int = VT_TIMEOUT,
+        method: str | None = None,
+    ) -> Any:
+        """Perform an API call and return the decoded JSON payload."""
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={"x-apikey": self._api_key, **(headers or {})},
+            method=method or ("POST" if data is not None else "GET"),
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read())
 
+    def _fail(
+        self,
+        callback: Callable[[str, Any, str], None],
+        context: str,
+        exc: Exception,
+        error_prefix: str | None = None,
+    ) -> None:
+        """Map any exception onto a VirusTotal result status and report it."""
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 404:
+                status, message = "not_found", ""
+            elif exc.code == 401:
+                status, message = "unauthorized", ""
+            elif exc.code == 429:
+                status, message = "rate_limited", ""
+            else:
+                detail = f"HTTP {exc.code}"
+                status = "error"
+                message = f"{error_prefix} ({detail})" if error_prefix else detail
+            self._logger.debug(f"VT {context} HTTP {exc.code}")
+        else:
+            status, message = "error", str(exc)
+            self._logger.debug(f"VT {context} error: {exc}")
+        GLib.idle_add(callback, status, message, "")
+
+    @staticmethod
+    def _spawn(worker: Callable[[], None]) -> None:
         threading.Thread(target=worker, daemon=True).start()
+
+    def lookup_hash(self, hash_value: str, callback: Callable[[str, Any, str], None]) -> None:
+        short = hash_value[:12]
+
+        def worker():
+            try:
+                data = self._request(f"{self.VT_API_BASE}/files/{hash_value}")
+                attributes = data["data"]["attributes"]
+                stats = attributes["last_analysis_stats"]
+                report_url = f"{self.VT_GUI_BASE}/{attributes.get('sha256', hash_value)}"
+                GLib.idle_add(callback, "found", stats, report_url)
+            except Exception as e:
+                self._fail(callback, f"lookup for {short}…", e)
+
+        self._spawn(worker)
 
     def get_analysis(
         self,
         analysis_id: str,
         callback: Callable[[str, Any, str], None],
-        max_attempts: int = 10,
+        max_attempts: int = VT_POLL_ATTEMPTS,
     ) -> None:
+        short = analysis_id[:12]
+
         def worker():
-            url = f"{self.VT_API_BASE}/analyses/{analysis_id}"
             report_url = ""
             for attempt in range(max_attempts):
-                req = urllib.request.Request(url, headers={"x-apikey": self._api_key})
                 try:
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        data = json.loads(resp.read())
-                        attrs = data.get("data", {}).get("attributes", {})
-                        status = attrs.get("status", "")
-                        meta = data.get("meta", {})
-                        file_info = meta.get("file_info", {})
-                        sha256 = file_info.get("sha256", "")
-                        report_url = f"{self.VT_GUI_BASE}/{sha256}" if sha256 else ""
-                        if status == "completed":
-                            stats = attrs.get("stats", {})
-                            GLib.idle_add(callback, "found", stats, report_url)
-                            return
-                        if attempt < max_attempts - 1:
-                            time.sleep(15)
-                except urllib.error.HTTPError as e:
-                    self._logger.debug(f"VT analysis HTTP {e.code} for {analysis_id[:12]}…")
-                    if e.code == 404:
-                        GLib.idle_add(callback, "not_found", None, "")
+                    data = self._request(f"{self.VT_API_BASE}/analyses/{analysis_id}")
+                    attributes = data.get("data", {}).get("attributes", {})
+                    sha256 = data.get("meta", {}).get("file_info", {}).get("sha256", "")
+                    report_url = f"{self.VT_GUI_BASE}/{sha256}" if sha256 else ""
+
+                    if attributes.get("status", "") == "completed":
+                        GLib.idle_add(callback, "found", attributes.get("stats", {}), report_url)
                         return
-                    elif e.code == 401:
-                        GLib.idle_add(callback, "unauthorized", None, "")
-                        return
-                    elif e.code == 429:
-                        GLib.idle_add(callback, "rate_limited", None, "")
-                        return
+
+                    if attempt < max_attempts - 1:
+                        time.sleep(self.VT_POLL_INTERVAL)
+
                 except Exception as e:
-                    self._logger.debug(f"VT analysis error for {analysis_id[:12]}…: {e}")
-                    GLib.idle_add(callback, "error", str(e), "")
+                    self._fail(callback, f"analysis {short}…", e)
                     return
+
+            # Never reached "completed": the file is queued, not yet analysed.
             GLib.idle_add(callback, "submitted", analysis_id, report_url)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._spawn(worker)
 
     def submit_file(self, file_path: Path, callback: Callable[[str, Any, str], None]) -> None:
         def worker():
-            try:
-                file_size = file_path.stat().st_size
-            except OSError as e:
-                GLib.idle_add(callback, "error", f"Cannot access file: {e}", "")
+            # Fail fast on unretryable conditions: same gate as the
+            # UI pre-flight, so a file that grows past the limit between
+            # the click and the upload still lands on a terminal status.
+            if (blocked := vt_upload_block_reason(file_path)) is not None:
+                status, message = blocked
+                GLib.idle_add(callback, status, message, "")
                 return
-            if file_size > VT_MAX_FILE_SIZE:
-                size_mb = file_size / (1024 * 1024)
-                GLib.idle_add(callback, "error", f"File too large ({size_mb:.1f} MB) — VirusTotal limit is 32 MB", "")
-                return
-
-            url = f"{self.VT_API_BASE}/files"
-            boundary = f"----QFH{os.urandom(16).hex()}"
-
-            header_part = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode()
 
             try:
                 with open(file_path, "rb") as f:
@@ -910,39 +972,26 @@ class VirusTotalClient:
                 GLib.idle_add(callback, "error", f"Cannot read file: {e}", "")
                 return
 
-            footer_part = f"\r\n--{boundary}--\r\n".encode()
-            body = header_part + file_data + footer_part
+            boundary = f"----QFH{os.urandom(16).hex()}"
+            header = f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+            body = header.encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
 
-            req = urllib.request.Request(
-                url,
-                data=body,
-                headers={
-                    "x-apikey": self._api_key,
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                },
-                method="POST",
-            )
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    data = json.loads(resp.read())
-                    analysis_id = data.get("data", {}).get("id", "")
-                    if not analysis_id:
-                        GLib.idle_add(callback, "error", "No analysis ID returned", "")
-                        return
-                    self.get_analysis(analysis_id, callback)
-            except urllib.error.HTTPError as e:
-                self._logger.debug(f"VT submit HTTP {e.code} for {file_path.name}")
-                if e.code == 429:
-                    GLib.idle_add(callback, "rate_limited", None, "")
-                elif e.code == 401:
-                    GLib.idle_add(callback, "unauthorized", None, "")
-                else:
-                    GLib.idle_add(callback, "error", f"Upload failed (HTTP {e.code})", "")
+                data = self._request(
+                    f"{self.VT_API_BASE}/files",
+                    data=body,
+                    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                    timeout=120,
+                )
+                analysis_id = data.get("data", {}).get("id", "")
+                if not analysis_id:
+                    GLib.idle_add(callback, "error", "No analysis ID returned", "")
+                    return
+                self.get_analysis(analysis_id, callback)
             except Exception as e:
-                self._logger.debug(f"VT submit error for {file_path.name}: {e}")
-                GLib.idle_add(callback, "error", str(e), "")
+                self._fail(callback, f"submit for {file_path.name}", e, "Upload failed")
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._spawn(worker)
 
 
 class ChecksumRow:
@@ -1604,33 +1653,33 @@ class WidgetHashResultRow(WidgetHashRow):
             if m > 0 or s > 0:
                 self.button_vt.set_icon_name("security-low-symbolic")
                 self.button_vt.add_css_class("custom-error")
-                self.button_vt.set_tooltip_text(f"Threats detected — Malicious: {m}, Suspicious: {s}")
+                self.button_vt.set_tooltip_text(f"Threats detected. Malicious: {m}, Suspicious: {s}")
             else:
                 self.button_vt.set_icon_name("security-high-symbolic")
                 self.button_vt.add_css_class("custom-success")
-                self.button_vt.set_tooltip_text("Clean — No threats detected")
+                self.button_vt.set_tooltip_text("Clean. No threats detected")
             self.button_vt.set_sensitive(True)
 
         elif status == "not_found":
             self.button_vt.set_icon_name("security-medium-symbolic")
-            self.button_vt.set_tooltip_text("Not found in VirusTotal — Click for details")
+            self.button_vt.set_tooltip_text("Not found in VirusTotal. Click for details.")
             self.button_vt.set_sensitive(True)
 
         elif status == "submitted":
             self.button_vt.set_icon_name("security-high-symbolic")
             self.button_vt.add_css_class("custom-success")
-            self.button_vt.set_tooltip_text("Submitted to VirusTotal — Click for details")
+            self.button_vt.set_tooltip_text("Submitted to VirusTotal. Click for details.")
             self.button_vt.set_sensitive(True)
 
-        elif status in ("unauthorized", "rate_limited", "error"):
+        elif status in ("unauthorized", "rate_limited", "error", *VT_TERMINAL_STATUSES):
             self.button_vt.set_icon_name("security-low-symbolic")
             self.button_vt.add_css_class("custom-error")
             msg = {
                 "unauthorized": "Invalid API key",
                 "rate_limited": "Rate limited",
-                "error": row_data.vt_error_message or "Error",
-            }.get(status, "Error")
-            self.button_vt.set_tooltip_text(f"VirusTotal: {msg} — Click for details")
+                "too_large": "File too large",
+            }.get(status, row_data.vt_error_message or "Error")
+            self.button_vt.set_tooltip_text(f"{msg}. Click for details.")
             self.button_vt.set_sensitive(True)
 
         else:
@@ -1639,7 +1688,7 @@ class WidgetHashResultRow(WidgetHashRow):
                 self.button_vt.set_tooltip_text("Configure a VirusTotal API key in Preferences to enable lookups")
             elif not vt_supported:
                 algo_upper = row_data.algo.upper().replace("_", "-")
-                self.button_vt.set_tooltip_text(f"VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
+                self.button_vt.set_tooltip_text(f"VirusTotal does not support {algo_upper}. Use MD5, SHA-1, or SHA-256")
             else:
                 self.button_vt.set_tooltip_text("Check with VirusTotal")
             self.button_vt.set_sensitive(has_key and vt_supported)
@@ -2102,7 +2151,8 @@ class MultiHashDialog(Adw.AlertDialog):
         self.connect("response", on_response)
         self.present(parent)
 
-    def get_display_row(self, row_data: ResultRowData) -> WidgetHashRow:
+    @staticmethod
+    def get_display_row(row_data: ResultRowData) -> WidgetHashRow:
         display_row = WidgetHashRow()
         display_row.set_spacing(12)
         display_row.remove(display_row.prefix_label)
@@ -2115,19 +2165,84 @@ class MultiHashDialog(Adw.AlertDialog):
         return display_row
 
 
-class VirusTotalReportDialog(Adw.AlertDialog):
-    def __init__(self, parent: "MainWindow", row_data: ResultRowData, **kwargs):
+class VirusTotalDialog(Adw.AlertDialog):
+    def __init__(
+        self,
+        parent: "MainWindow",
+        row_data: ResultRowData,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        self.set_heading("VirusTotal Report")
+        self._parent = parent
+        self._row = row_data
+        self._notify_id = None
         self.set_close_response("close")
         self.add_response("close", "Close")
+        self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
+        self.set_extra_child(self._container)
+        self.connect("response", self._on_response)
+        self._notify_id = row_data.connect("notify::vt-status", self._on_status_changed)
+        self.connect("closed", self._on_closed)
+        self._render()
+        self.present(parent)
 
-        status = row_data.vt_status
-        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
-        self.set_extra_child(container)
+    def _on_closed(self, *_args) -> None:
+        if self._notify_id is not None:
+            self._row.disconnect(self._notify_id)
+            self._notify_id = None
 
-        display_row = MultiHashDialog.get_display_row(None, row_data)
-        container.append(display_row)
+    def _on_status_changed(self, _row_data, _pspec) -> None:
+        self._render()
+
+    def _on_response(self, _dialog, response_id: str) -> None:
+        if response_id == "submit":
+            # Background upload: close and follow the row spinner. A
+            # pre-flight terminal failure (e.g. too large) sets row state
+            # synchronously instead, keep the dialog open so it re-renders
+            # to the terminal view in place.
+            if self._parent._submit_vt_file(self._row):
+                self.close()
+        elif response_id == "retry":
+            # Dismiss; the lookup continues in the background with the
+            # row's spinner, and the result is a click away.
+            self._parent._start_vt_lookup(self._row)
+            self.close()
+        elif response_id == "open-report":
+            Gio.AppInfo.launch_default_for_uri(self._row.vt_report_url, None)
+
+    def _clear_container(self) -> None:
+        for response_id in ("submit", "retry", "open-report"):
+            if self.has_response(response_id):
+                self.remove_response(response_id)
+        child = self._container.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._container.remove(child)
+            child = nxt
+
+    def _render(self) -> None:
+        self._clear_container()
+        status = self._row.vt_status
+        if status == "loading":
+            self._render_loading()
+        else:
+            self._render_result(status)
+        fit_dialog_content(self._container)
+
+    def _render_loading(self) -> None:
+        self.set_heading("VirusTotal Report")
+        self.set_body("Contacting VirusTotal…")
+        self.set_response_label("close", "Close")
+        self._container.append(MultiHashDialog.get_display_row(self._row))
+        spinner_box = Gtk.Box(halign=Gtk.Align.CENTER, margin_top=8)
+        spinner_box.append(Gtk.Spinner(spinning=True))
+        self._container.append(spinner_box)
+
+    def _render_result(self, status: str) -> None:
+        row_data = self._row
+        self.set_heading("VirusTotal Report")
+        self.set_response_label("close", "Close")
+        self._container.append(MultiHashDialog.get_display_row(row_data))
 
         if status == "found":
             stats = row_data.vt_stats or {}
@@ -2155,58 +2270,55 @@ class VirusTotalReportDialog(Adw.AlertDialog):
                     count_label.add_css_class(css)
                 grid.attach(name_label, col, 0, 1, 1)
                 grid.attach(count_label, col, 1, 1, 1)
-            container.append(grid)
+            self._container.append(grid)
 
             if row_data.vt_report_url:
-                report_btn = Gtk.Button(
-                    label="Open Full Report in Browser",
-                    css_classes=["suggested-action"],
-                    halign=Gtk.Align.CENTER,
-                    margin_top=8,
-                )
-                report_btn.connect(
-                    "clicked",
-                    lambda _: Gio.AppInfo.launch_default_for_uri(row_data.vt_report_url, None),
-                )
-                container.append(report_btn)
+                self.add_response("open-report", "Open Full Report")
+                self.set_response_appearance("open-report", Adw.ResponseAppearance.SUGGESTED)
 
         elif status == "not_found":
-            self.set_body("This file's hash was not found in the VirusTotal database.")
+            self.set_heading("Submit to VirusTotal?")
+            self.set_body("The file's hash was not found in the VirusTotal database.\n\nUpload it to VirusTotal, a third-party service, for malware analysis?\n\nThis action cannot be undone.")
+            self.set_response_label("close", "Cancel")
             self.add_response("submit", "Submit to VirusTotal")
             self.set_response_appearance("submit", Adw.ResponseAppearance.SUGGESTED)
 
-            def on_response(d, response_id):
-                if response_id == "submit":
-                    parent._do_vt_submit(row_data)
-
-            self.connect("response", on_response)
-
         elif status == "submitted":
             self.set_body("This file has been submitted to VirusTotal for analysis.")
+            self._add_retry_action()
             if row_data.vt_report_url:
-                report_btn = Gtk.Button(
-                    label="Open Report in Browser",
-                    css_classes=["suggested-action"],
-                    halign=Gtk.Align.CENTER,
-                    margin_top=8,
-                )
-                report_btn.connect(
-                    "clicked",
-                    lambda _: Gio.AppInfo.launch_default_for_uri(row_data.vt_report_url, None),
-                )
-                container.append(report_btn)
+                self.add_response("open-report", "Open Report")
+                self.set_response_appearance("open-report", Adw.ResponseAppearance.SUGGESTED)
 
         elif status == "unauthorized":
             self.set_body("The VirusTotal API key is invalid. Please check your key in Preferences.")
+            self._add_retry_action()
 
         elif status == "rate_limited":
             self.set_body("VirusTotal API rate limit exceeded. Please wait a moment and try again.")
+            self._add_retry_action()
+
+        elif status in VT_TERMINAL_STATUSES:
+            self._render_terminal_error(row_data.vt_error_message or "This file cannot be submitted to VirusTotal.")
 
         elif status == "error":
             msg = row_data.vt_error_message or "An unknown error occurred."
             self.set_body(f"VirusTotal error: {msg}")
+            self._add_retry_action()
 
-        self.present(parent)
+        else:
+            self.set_body("No VirusTotal result for this file yet.")
+            self._add_retry_action()
+
+    def _render_terminal_error(self, message: str) -> None:
+        """Terminal failure details: no retry, no submit. Future
+        VT_TERMINAL_STATUSES entries are rendered here automatically."""
+        self.set_body(message)
+        self.set_response_label("close", "Close")
+
+    def _add_retry_action(self) -> None:
+        self.add_response("retry", "Check Again")
+        self.set_response_appearance("retry", Adw.ResponseAppearance.SUGGESTED)
 
 
 class HashTextDialog(Adw.Window):
@@ -2281,7 +2393,7 @@ class HashTextDialog(Adw.Window):
             label="",
             selectable=True,
             ellipsize=Pango.EllipsizeMode.MIDDLE,
-            tooltip_text="Computed hash — click to select",
+            tooltip_text="Computed hash. Click to select",
             hexpand=True,
             xalign=0,
             css_classes=["monospace", "dim-label"],
@@ -2351,7 +2463,7 @@ class HashTextDialog(Adw.Window):
 class MainWindow(Adw.ApplicationWindow):
     __gtype_name__ = "MainWindow"
     DEFAULT_WIDTH = 960
-    DEFAULT_HEIGHT = 540
+    DEFAULT_HEIGHT = 560
     __gsignals__ = {"call-row-data": (GObject.SignalFlags.RUN_FIRST, None, (str, bool))}
 
     def __init__(self, app: "QuickFileHasher"):
@@ -3370,68 +3482,56 @@ class MainWindow(Adw.ApplicationWindow):
         if row_data.vt_status == "loading":
             return
 
-        if row_data.vt_status and row_data.vt_status not in VT_RETRYABLE_STATUSES:
-            VirusTotalReportDialog(self, row_data)
+        if not row_data.vt_status and not self._start_vt_lookup(row_data):
             return
+        VirusTotalDialog(self, row_data)
 
+    def _start_vt_lookup(self, row_data: ResultRowData) -> bool:
         api_key = self.pref.get_vt_api_key()
         if not api_key:
             self.add_toast("⚠ Configure VirusTotal API key in Preferences")
-            return
+            return False
         if row_data.algo not in VT_SUPPORTED_ALGORITHMS:
             algo_upper = row_data.algo.upper().replace("_", "-")
-            self.add_toast(f"⚠ VirusTotal does not support {algo_upper} — Use MD5, SHA-1, or SHA-256")
-            return
+            self.add_toast(f"⚠ VirusTotal does not support {algo_upper}. Use MD5, SHA-1, or SHA-256")
+            return False
 
         self._clear_vt_state(row_data)
         row_data.vt_status = "loading"
         client = VirusTotalClient(api_key)
+        client.lookup_hash(
+            row_data.hash_value,
+            lambda s, d, u: self._set_vt_status(row_data, s, d, u),
+        )
+        return True
 
-        def on_result(status: str, data, report_url: str):
-            if status == "found":
-                row_data.vt_stats = data
-            elif status == "error":
-                row_data.vt_error_message = str(data) if data else "Unknown error"
-            row_data.vt_report_url = report_url or ""
-            row_data.vt_status = status
+    def _submit_vt_file(self, row_data: ResultRowData) -> bool:
+        """Start a background upload. True = work started (caller closes the dialog).
 
-        client.lookup_hash(row_data.hash_value, on_result)
-
-    def _do_vt_submit(self, row_data: ResultRowData) -> None:
+        Returns False when nothing was started: either refused (no API key,
+        toast shown, dialog keeps the submit view) or blocked by an
+        unretryable pre-flight failure (terminal status set on the row, the
+        observing dialog re-renders in place, no close needed).
+        """
         api_key = self.pref.get_vt_api_key()
         if not api_key:
             self.add_toast("⚠ Configure VirusTotal API key in Preferences")
-            return
+            return False
 
-        escaped_name = GLib.markup_escape_text(row_data.path.name)
-        confirm = Adw.AlertDialog()
-        confirm.set_heading("Submit to VirusTotal?")
-        confirm.set_body(f"The file <b>{escaped_name}</b> will be uploaded to VirusTotal, a third-party service, for malware analysis.\n\nThis action cannot be undone.")
-        confirm.set_body_use_markup(True)
-        confirm.add_response("cancel", "Cancel")
-        confirm.add_response("upload", "Upload")
-        confirm.set_response_appearance("upload", Adw.ResponseAppearance.DESTRUCTIVE)
-        confirm.set_close_response("cancel")
-
-        def on_confirm(d, response_id):
-            if response_id != "upload":
-                return
+        if (blocked := vt_upload_block_reason(row_data.path)) is not None:
+            status, message = blocked
             self._clear_vt_state(row_data)
-            row_data.vt_status = "loading"
-            client = VirusTotalClient(api_key)
+            self._set_vt_status(row_data, status, message, "")
+            return False
 
-            def on_result(status: str, data, report_url: str):
-                row_data.vt_report_url = report_url or ""
-                if status == "found":
-                    row_data.vt_stats = data
-                elif status == "error":
-                    row_data.vt_error_message = str(data) if data else "Upload failed"
-                row_data.vt_status = status
-
-            client.submit_file(row_data.path, on_result)
-
-        confirm.connect("response", on_confirm)
-        confirm.present(self)
+        self._clear_vt_state(row_data)
+        row_data.vt_status = "loading"
+        client = VirusTotalClient(api_key)
+        client.submit_file(
+            row_data.path,
+            lambda s, d, u: self._set_vt_status(row_data, s, d, u, "Upload failed"),
+        )
+        return True
 
     def _auto_vt_check_results(self) -> None:
         if not self.pref.has_vt_api_key():
@@ -3463,7 +3563,7 @@ class MainWindow(Adw.ApplicationWindow):
             stop = False
             for rd in pending:
                 if stop:
-                    GLib.idle_add(self._set_vt_status, rd, "error", None, "", "Batch aborted — rate limited")
+                    GLib.idle_add(self._set_vt_status, rd, "error", None, "", "Batch aborted. Rate limited")
                     continue
                 event = threading.Event()
                 result_holder: list = []
@@ -3487,10 +3587,18 @@ class MainWindow(Adw.ApplicationWindow):
         threading.Thread(target=run_serial, daemon=True).start()
 
     def _set_vt_status(self, rd: ResultRowData, status: str, data: Any, report_url: str, error_msg: str | None = None) -> None:
+        if status == "not_found":
+            # A hash with no report on an unsubmittable file (e.g. too
+            # large) is not "not found", record the terminal status so the
+            # row button and the dialog agree. Single enforcement point:
+            # every lookup/submit path flows through here.
+            block_path = getattr(rd, "path", None)
+            if block_path is not None and (blocked := vt_upload_block_reason(block_path)) is not None:
+                status, data = blocked
         if status == "found":
             rd.vt_stats = data
-        elif status == "error":
-            rd.vt_error_message = error_msg or (str(data) if data else "Unknown error")
+        elif status == "error" or status in VT_TERMINAL_STATUSES:
+            rd.vt_error_message = str(data) if data else (error_msg or "Unknown error")
         rd.vt_report_url = report_url or ""
         rd.vt_status = status
 
