@@ -7,5 +7,14 @@ requires-python = ">=3.12"
 dependencies = [
     "pycairo>=1.28.0",
     "pygobject>=3.52.3",
+]
+
+[dependency-groups]
+dev = [
     "pygobject-stubs>=2.13.0",
 ]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "none"

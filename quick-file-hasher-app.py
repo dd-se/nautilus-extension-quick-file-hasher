@@ -47,15 +47,10 @@ from typing import Any, Literal
 
 signal.signal(signal.SIGINT, lambda s, f: exit(print("Interrupted by user (Ctrl+C)")))
 os.environ["LANG"] = "en_US.UTF-8"
-import gi  # type: ignore
+import gi
 
 gi.require_version(namespace="Gtk", version="4.0")
 gi.require_version(namespace="Adw", version="1")
-# Nautilus typelib version differs per distro release:
-#   Ubuntu 24.04 (Nautilus 46) -> 4.0
-#   Ubuntu 25.10+/26.04 (Nautilus 48/50) -> 4.1
-# Try each in turn so the same file works everywhere. Nautilus is a
-# hard requirement: raise a clear error if no supported version exists.
 for _nautilus_version in ("4.0", "4.1"):
     try:
         gi.require_version(namespace="Nautilus", version=_nautilus_version)
@@ -64,7 +59,6 @@ for _nautilus_version in ("4.0", "4.1"):
         continue
 else:
     raise ValueError("Namespace Nautilus not available for version 4.0 or 4.1. Install gir1.2-nautilus-4.0 (Ubuntu 24.04) or gir1.2-nautilus-4.1 (Ubuntu 25.10+/26.04).")
-
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Nautilus, Pango  # type: ignore
 
 APP_ID = "com.github.dd-se.quick-file-hasher"
@@ -87,8 +81,7 @@ DEFAULTS = {
 PRIORITY_ALGORITHMS = ["md5", "sha1", "sha256", "sha512"]
 VT_SUPPORTED_ALGORITHMS = {"md5", "sha1", "sha256"}
 VT_MAX_FILE_SIZE = 32 * 1024 * 1024  # 32 MB (VirusTotal free-tier limit)
-VT_DIALOG_MIN_WIDTH = 360
-VT_DIALOG_MAX_WIDTH = 460
+VT_DIALOG_WIDTH = 460
 
 # VirusTotal result statuses that are terminal failures: the dialog offers
 # neither retry nor submit for them, and no upload is attempted.
@@ -836,17 +829,6 @@ class Preferences(Adw.PreferencesWindow, ConfigMixin):
         selected_hashing_algorithm = algo.get_selected_item().get_string()
         config_key = algo.get_name()
         self.update(config_key, selected_hashing_algorithm)
-
-
-def fit_dialog_content(container: Gtk.Box) -> None:
-    """Fit a dialog content box to its natural width, clamped.
-
-    AlertDialog sizes to the content minimum width (and ignores
-    content-width), so enforce the natural width explicitly. Clamping keeps
-    tiny content usable and overlong filenames inside the window.
-    """
-    _minimum, natural, _min_baseline, _nat_baseline = container.measure(Gtk.Orientation.HORIZONTAL, -1)
-    container.set_size_request(min(max(int(natural), VT_DIALOG_MIN_WIDTH), VT_DIALOG_MAX_WIDTH), -1)
 
 
 class VirusTotalClient:
@@ -2179,6 +2161,7 @@ class VirusTotalDialog(Adw.AlertDialog):
         self.set_close_response("close")
         self.add_response("close", "Close")
         self._container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=5)
+        self._container.set_size_request(VT_DIALOG_WIDTH, -1)
         self.set_extra_child(self._container)
         self.connect("response", self._on_response)
         self._notify_id = row_data.connect("notify::vt-status", self._on_status_changed)
@@ -2227,7 +2210,6 @@ class VirusTotalDialog(Adw.AlertDialog):
             self._render_loading()
         else:
             self._render_result(status)
-        fit_dialog_content(self._container)
 
     def _render_loading(self) -> None:
         self.set_heading("VirusTotal Report")
@@ -2278,7 +2260,7 @@ class VirusTotalDialog(Adw.AlertDialog):
 
         elif status == "not_found":
             self.set_heading("Submit to VirusTotal?")
-            self.set_body("The file's hash was not found in the VirusTotal database.\n\nUpload it to VirusTotal, a third-party service, for malware analysis?\n\nThis action cannot be undone.")
+            self.set_body("The file's hash was not found in the VirusTotal database.\n\nUpload it to VirusTotal for analysis?\n\nThis action cannot be undone.")
             self.set_response_label("close", "Cancel")
             self.add_response("submit", "Submit to VirusTotal")
             self.set_response_appearance("submit", Adw.ResponseAppearance.SUGGESTED)
