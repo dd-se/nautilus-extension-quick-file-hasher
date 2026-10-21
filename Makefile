@@ -37,7 +37,6 @@ shortcut:
 	@echo "Type=Application" >> $(SHORTCUT_NAME)
 	@echo "Terminal=false" >> $(SHORTCUT_NAME)
 	@echo "Categories=Utility;FileTools;" >> $(SHORTCUT_NAME)
-	@echo "MimeType=all/all;" >> $(SHORTCUT_NAME)
 	@echo "StartupNotify=true" >> $(SHORTCUT_NAME)
 	@echo "Actions=new-window;" >> $(SHORTCUT_NAME)
 
