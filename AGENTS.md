@@ -16,7 +16,9 @@ Quick File Hasher is a single-file Python GTK4/libadwaita desktop app (`quick-fi
 
 These apt packages are required in the local environment and should be installed via the host package manager if missing:
 
-`libgtk-4-dev libadwaita-1-dev gir1.2-gtk-4.0 gir1.2-adw-1 libgirepository1.0-dev libgirepository-2.0-dev libcairo2-dev gir1.2-nautilus-4.0 python3-nautilus python3-dev pkg-config xvfb`
+`libgtk-4-dev libadwaita-1-dev gir1.2-gtk-4.0 gir1.2-adw-1 libgirepository1.0-dev libgirepository-2.0-dev libcairo2-dev python3-nautilus python3-dev pkg-config xvfb`
+
+The Nautilus typelib package is `gir1.2-nautilus-4.0` on Ubuntu 24.04 and `gir1.2-nautilus-4.1` on Ubuntu 25.10/26.04.
 
 ### Python dependencies
 

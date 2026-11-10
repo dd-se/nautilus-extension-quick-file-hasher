@@ -28,9 +28,12 @@ The app requires GTK4, libadwaita, and Python GObject bindings. Install the syst
 ```bash
 # Ubuntu / Debian
 sudo apt-get install python3-nautilus libgtk-4-dev libadwaita-1-dev \
-  gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-nautilus-4.0 \
+  gir1.2-gtk-4.0 gir1.2-adw-1 \
   libgirepository1.0-dev libgirepository-2.0-dev libcairo2-dev pkg-config
 ```
+
+Install the Nautilus typelib package available for your Ubuntu release:
+`gir1.2-nautilus-4.0` on Ubuntu 24.04 or `gir1.2-nautilus-4.1` on Ubuntu 25.10/26.04.
 ```bash
 # Arch Linux
 sudo pacman -S nautilus-python gtk4 libadwaita gobject-introspection cairo
