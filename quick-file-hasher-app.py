@@ -835,8 +835,7 @@ class VirusTotalClient:
     VT_API_BASE = "https://www.virustotal.com/api/v3"
     VT_GUI_BASE = "https://www.virustotal.com/gui/file"
     VT_TIMEOUT = 30
-    VT_POLL_ATTEMPTS = 10
-    VT_POLL_INTERVAL = 15
+    VT_POLL_INTERVAL = 30
 
     def __init__(self, api_key: str):
         self._api_key = api_key
@@ -908,32 +907,32 @@ class VirusTotalClient:
         self,
         analysis_id: str,
         callback: Callable[[str, Any, str], None],
-        max_attempts: int = VT_POLL_ATTEMPTS,
     ) -> None:
         short = analysis_id[:12]
 
         def worker():
             report_url = ""
-            for attempt in range(max_attempts):
+            while True:
                 try:
                     data = self._request(f"{self.VT_API_BASE}/analyses/{analysis_id}")
                     attributes = data.get("data", {}).get("attributes", {})
                     sha256 = data.get("meta", {}).get("file_info", {}).get("sha256", "")
                     report_url = f"{self.VT_GUI_BASE}/{sha256}" if sha256 else ""
 
-                    if attributes.get("status", "") == "completed":
+                    status = attributes.get("status")
+                    if status == "completed":
                         GLib.idle_add(callback, "found", attributes.get("stats", {}), report_url)
                         return
 
-                    if attempt < max_attempts - 1:
-                        time.sleep(self.VT_POLL_INTERVAL)
+                    if status not in ("queued", "in-progress"):
+                        GLib.idle_add(callback, "error", f"Unexpected analysis status: {status!r}", report_url)
+                        return
+
+                    time.sleep(self.VT_POLL_INTERVAL)
 
                 except Exception as e:
                     self._fail(callback, f"analysis {short}…", e)
                     return
-
-            # Never reached "completed": the file is queued, not yet analysed.
-            GLib.idle_add(callback, "submitted", analysis_id, report_url)
 
         self._spawn(worker)
 
@@ -1621,8 +1620,9 @@ class WidgetHashResultRow(WidgetHashRow):
         has_key = parent.pref.has_vt_api_key()
 
         if status == "loading":
-            spinner = Gtk.Spinner(spinning=True)
+            spinner = Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
             self.button_vt.set_child(spinner)
+            self.button_vt.add_css_class("image-button")
             self.button_vt.set_sensitive(False)
             self.button_vt.set_tooltip_text("Checking with VirusTotal…")
             return
