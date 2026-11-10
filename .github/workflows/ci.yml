@@ -8,10 +8,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
         python-version: ["3.12", "3.13", "3.14"]
+        include:
+          - os: ubuntu-24.04
+            nautilus-package: gir1.2-nautilus-4.0
+          - os: ubuntu-26.04
+            nautilus-package: gir1.2-nautilus-4.1
 
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +30,7 @@ jobs:
             libadwaita-1-dev \
             gir1.2-gtk-4.0 \
             gir1.2-adw-1 \
-            gir1.2-nautilus-4.0 \
+            ${{ matrix.nautilus-package }} \
             python3-nautilus \
             libgirepository1.0-dev \
             libgirepository-2.0-dev \
